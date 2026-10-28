@@ -2,9 +2,10 @@
 
 ## Scope
 
-This change is restricted to iOS stock PhoneAPI inspection. It does not change
+These changes cover iOS stock PhoneAPI inspection and verified post-installation
+handoff to existing guided Bluetooth repair. It does not change
 Android acquisition, firmware, backend configuration, the host UI contract, or
-post-migration guided repair. Both SDK hosts receive the fix through the existing
+the guided repair UI and its strict runtime verification. Both SDK hosts receive the fix through the existing
 inspection API; no new host state or integration is required.
 
 ## Connected stock discovery
@@ -72,3 +73,30 @@ inspection/codec tests. Analysis of changed files passed. Root analysis is affec
 pre-existing generated QA scripts under ignored `build/` with unresolved imports;
 the detailed log is retained outside the repository. Physical verification must
 still be recorded separately; unit tests do not prove Ready or provisioning.
+
+## Verified installation with a cached stock service table
+
+The physical flow completed protected inspection and revalidation, then one
+approved catalog DFU to version `2.7.68`. A read-only standard Device Information
+Service read on that same iOS peripheral returned `2.7.68.f9a277c`, while iOS
+still exposed the stock service table. Compatibility-first migration verification
+had rejected the connection before reading this installation evidence.
+
+Only on iOS, migration verification may read DIS despite missing Eixam runtime
+services. Entering the existing `bluetoothRepairRequired` state requires the
+exact captured peripheral, the inspected model-105 hardware MAC, a matching
+installed target version, and the authoritative migration-owned firmware session
+with artifact verification and native transfer engagement. Release, target
+version and hardware identity must agree. This also handles a retained stock name
+after process restart. Firmware completion records installation only; runtime
+readiness still requires the existing guided repair checks, notifications and
+normal provisioning. Android compatibility gates are unchanged. This path never
+starts another transfer or changes bonds.
+
+Migration, session-store and firmware-coordinator regression suites passed 221
+tests, including iOS/Android, existing/scanned connections, cached stock names,
+missing transfer proof, version mismatch and failed DIS reads. Changed-file
+analysis passed. Restart fixtures reuse a fake canonical firmware service and do
+not establish atomic crash recovery between firmware completion and durable
+migration-state publication. Physical guided repair/provisioning remain separate
+acceptance requirements.

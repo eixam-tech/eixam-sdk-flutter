@@ -132,6 +132,220 @@ void main() {
     rediscoveryTimeout: const Duration(milliseconds: 1),
   );
 
+  group('verified installation with stale runtime service table', () {
+    FirmwareUpdateSession evidence() => FirmwareUpdateSession(
+      sessionId: 'installed',
+      deviceId: selectedId,
+      hardwareId: selectedId,
+      releaseId: 'release-1',
+      fromVersion: '2.5.0',
+      targetVersion: '3.0.0',
+      state: FirmwareUpdateState.reconnecting,
+      startedAt: DateTime.now(),
+      migrationOwned: true,
+      nativeTransferEngaged: true,
+      artifactVerified: true,
+    );
+
+    for (final ios in [false, true]) {
+      for (final connected in [false, true]) {
+        for (final cachedStockName in [false, true]) {
+          test(
+            'installed version enters repair only on iOS; connected=$connected ios=$ios cachedStockName=$cachedStockName',
+            () async {
+              final transferred = evidence();
+              final store = _MemoryMigrationStore()
+                ..value = _durableSession(
+                  DeviceMigrationState.waitingForDevice,
+                ).copyWith(firmwareSession: transferred);
+              final firmware = _FakeMigrationFirmwareService(
+                activeFirmware: transferred,
+              );
+              final ble = _MigrationBleClient(
+                compatible: false,
+                scans: [
+                  cachedStockName
+                      ? BleScanResult(
+                          deviceId: selectedId,
+                          name: 'Meshtastic_eeff',
+                          rssi: 0,
+                          connectable: true,
+                          discoveredAt: DateTime.now(),
+                        )
+                      : _repairScan(selectedId),
+                ],
+              );
+              if (connected) ble.connectedIds.add(selectedId);
+              final coordinator = build(
+                probe: _FakeProbe(_probe(model: 105)),
+                firmware: firmware,
+                store: store,
+                ble: ble,
+                ios: ios,
+              );
+              final result = await coordinator.reconcile();
+              expect(
+                result?.state == DeviceMigrationState.bluetoothRepairRequired,
+                ios,
+              );
+              if (ios) {
+                expect(
+                  result?.nextAction,
+                  DeviceMigrationNextAction.repairBluetooth,
+                );
+                expect(
+                  result?.firmwareSession?.state,
+                  FirmwareUpdateState.completed,
+                );
+                expect(result?.migratedDevice?.deviceId, selectedId);
+                final restarted = build(
+                  probe: _FakeProbe(_probe(model: 105)),
+                  firmware: firmware,
+                  store: store,
+                  ble: ble,
+                  ios: true,
+                );
+                expect(
+                  (await restarted.reconcile())?.state,
+                  DeviceMigrationState.bluetoothRepairRequired,
+                );
+              }
+              expect(firmware.startCalls, 0);
+              expect(firmware.recoveryCalls, 0);
+              expect(
+                ble.connectedTargets.every((id) => id == selectedId),
+                true,
+              );
+            },
+          );
+        }
+      }
+    }
+
+    test(
+      'first migration exposes existing repair state after one verified transfer',
+      () async {
+        final store = _MemoryMigrationStore();
+        final firmware = _FakeMigrationFirmwareService(
+          activeFirmware: evidence(),
+          evidenceAfterStartOnly: true,
+        );
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          firmware: firmware,
+          store: store,
+          ble: _MigrationBleClient(
+            compatible: false,
+            scans: [_repairScan(selectedId)],
+          ),
+          ios: true,
+        );
+        final candidate = await coordinator.inspect(deviceId: selectedId);
+        final result = await coordinator.migrate(candidate);
+        expect(result.outcome, DeviceMigrationOutcome.recoveryRequired);
+        expect(
+          store.value?.state,
+          DeviceMigrationState.bluetoothRepairRequired,
+        );
+        expect(
+          store.value?.firmwareSession?.state,
+          FirmwareUpdateState.completed,
+        );
+        expect(firmware.startCalls, 1);
+        await coordinator.reconcile();
+        expect(firmware.startCalls, 1);
+        expect(firmware.recoveryCalls, 0);
+      },
+    );
+
+    for (final version in <String?>['2.5.0', '4.0.0', null]) {
+      test(
+        'missing runtime without matching installed version is not repair: $version',
+        () async {
+          final transferred = evidence();
+          final store = _MemoryMigrationStore()
+            ..value = _durableSession(
+              DeviceMigrationState.waitingForDevice,
+            ).copyWith(firmwareSession: transferred);
+          final coordinator = build(
+            probe: _FakeProbe(_probe(model: 105)),
+            firmware: _FakeMigrationFirmwareService(
+              activeFirmware: transferred,
+            ),
+            store: store,
+            ble: _MigrationBleClient(
+              compatible: false,
+              firmwareVersion: version,
+              scans: [_repairScan(selectedId)],
+            ),
+            ios: true,
+          );
+          expect(
+            (await coordinator.reconcile())?.state,
+            isNot(DeviceMigrationState.bluetoothRepairRequired),
+          );
+        },
+      );
+    }
+
+    for (final transferred in <FirmwareUpdateSession?>[
+      null,
+      evidence().copyWith(nativeTransferEngaged: false),
+      evidence().copyWith(artifactVerified: false),
+      evidence().copyWith(hardwareId: '11:22:33:44:55:66'),
+    ]) {
+      test(
+        'repair requires authoritative matching migration evidence: ${transferred?.hardwareId}/${transferred?.artifactVerified}/${transferred?.nativeTransferEngaged}',
+        () async {
+          final store = _MemoryMigrationStore()
+            ..value = _durableSession(DeviceMigrationState.waitingForDevice);
+          final coordinator = build(
+            probe: _FakeProbe(_probe(model: 105)),
+            firmware: _FakeMigrationFirmwareService(
+              activeFirmware: transferred,
+            ),
+            store: store,
+            ble: _MigrationBleClient(
+              compatible: false,
+              scans: [_repairScan(selectedId)],
+            ),
+            ios: true,
+          );
+          expect(
+            (await coordinator.reconcile())?.state,
+            isNot(DeviceMigrationState.bluetoothRepairRequired),
+          );
+        },
+      );
+    }
+
+    test(
+      'DIS read failure cannot establish installed firmware or repair',
+      () async {
+        final transferred = evidence();
+        final store = _MemoryMigrationStore()
+          ..value = _durableSession(
+            DeviceMigrationState.waitingForDevice,
+          ).copyWith(firmwareSession: transferred);
+        final ble = _MigrationBleClient(
+          compatible: false,
+          scans: [_repairScan(selectedId)],
+        )..firmwareReadError = StateError('read failed');
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          firmware: _FakeMigrationFirmwareService(activeFirmware: transferred),
+          store: store,
+          ble: ble,
+          ios: true,
+        );
+        expect(
+          (await coordinator.reconcile())?.state,
+          isNot(DeviceMigrationState.bluetoothRepairRequired),
+        );
+      },
+    );
+  });
+
   group('iOS post-migration Bluetooth repair', () {
     Object stale() => FlutterBluePlusException(
       ErrorPlatform.apple,
@@ -1796,9 +2010,11 @@ final class _FakeMigrationFirmwareService
     this.recoveryGate,
     this.releaseUnavailable = false,
     this.startError,
+    this.evidenceAfterStartOnly = false,
   });
 
   final bool releaseUnavailable;
+  final bool evidenceAfterStartOnly;
   final FirmwareUpdateException? startError;
   final Completer<void>? transferGate;
   final FirmwareUpdateException? recoveryError;
@@ -1830,7 +2046,7 @@ final class _FakeMigrationFirmwareService
 
   @override
   Future<FirmwareUpdateSession?> getActiveMigrationFirmwareUpdate() async =>
-      activeFirmware;
+      evidenceAfterStartOnly && startCalls == 0 ? null : activeFirmware;
 
   @override
   Stream<FirmwareUpdateProgress> watchMigrationFirmwareProgress({
@@ -2012,7 +2228,8 @@ final class _MigrationBleClient implements BleClient {
   final Object? scanError;
   final List<BleScanResult> scans;
   final List<List<BleScanResult>> scanBatches;
-  final String firmwareVersion;
+  final String? firmwareVersion;
+  Object? firmwareReadError;
   final bool compatible;
   final Completer<void>? scanGate;
   final List<String> compatibilityChecks = <String>[];
@@ -2061,7 +2278,10 @@ final class _MigrationBleClient implements BleClient {
   }
 
   @override
-  Future<String?> readFirmwareVersion(String deviceId) async => firmwareVersion;
+  Future<String?> readFirmwareVersion(String deviceId) async {
+    if (firmwareReadError != null) throw firmwareReadError!;
+    return firmwareVersion;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

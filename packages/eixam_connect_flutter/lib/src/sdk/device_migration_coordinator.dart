@@ -47,7 +47,7 @@ final class DeviceMigrationCoordinator {
   Future<DeviceMigrationSession?>? _reconciliationFuture;
   bool get ownsBleOperation =>
       _migrationInProgress || _reconciliationFuture != null;
-  BleScanResult? _verifiedMigratedDevice;
+  ({BleScanResult device, bool runtimeMissing})? _verifiedMigration;
   DeviceMigrationSession? _session;
   Future<void>? _restoreFuture;
   Future<void> _writeTail = Future<void>.value();
@@ -88,7 +88,7 @@ final class DeviceMigrationCoordinator {
       );
       await sessionStore.clear();
       _session = null;
-      _verifiedMigratedDevice = null;
+      _verifiedMigration = null;
     } finally {
       _migrationInProgress = false;
     }
@@ -306,7 +306,7 @@ final class DeviceMigrationCoordinator {
       ),
     );
 
-    _verifiedMigratedDevice = null;
+    _verifiedMigration = null;
     final sourceStatus = DeviceStatus(
       deviceId: revalidated.deviceId,
       nodeId: revalidated.sourceNodeNumber,
@@ -354,25 +354,37 @@ final class DeviceMigrationCoordinator {
     }
 
     if (session.state == FirmwareUpdateState.completed &&
-        _verifiedMigratedDevice != null) {
+        _verifiedMigration != null) {
+      final repair = _verifiedMigration!.runtimeMissing;
       await _publish(
         _session!.copyWith(
           firmwareSession: session,
-          migratedDevice: _verifiedMigratedDevice!.toPublic(),
-          state: DeviceMigrationState.completed,
+          migratedDevice: _verifiedMigration!.device.toPublic(),
+          state: repair
+              ? DeviceMigrationState.bluetoothRepairRequired
+              : DeviceMigrationState.completed,
           clearFailure: true,
-          outcome: DeviceMigrationOutcome.completed,
-          reconciliationOutcome: DeviceMigrationReconciliationOutcome.completed,
-          nextAction: DeviceMigrationNextAction.completed,
+          outcome: repair
+              ? DeviceMigrationOutcome.recoveryRequired
+              : DeviceMigrationOutcome.completed,
+          reconciliationOutcome: repair
+              ? DeviceMigrationReconciliationOutcome.recoveryRequired
+              : DeviceMigrationReconciliationOutcome.completed,
+          nextAction: repair
+              ? DeviceMigrationNextAction.repairBluetooth
+              : DeviceMigrationNextAction.completed,
+          failureCode: repair ? 'bluetoothBondRepairRequired' : null,
           canCancel: false,
           updatedAt: DateTime.now(),
         ),
       );
       return DeviceMigrationResult(
-        outcome: DeviceMigrationOutcome.completed,
+        outcome: repair
+            ? DeviceMigrationOutcome.recoveryRequired
+            : DeviceMigrationOutcome.completed,
         candidate: revalidated,
         firmwareSession: session,
-        migratedDevice: _verifiedMigratedDevice!.toPublic(),
+        migratedDevice: _verifiedMigration!.device.toPublic(),
       );
     }
     final ambiguous = session.failureCode == ambiguousDeviceCode;
@@ -479,7 +491,7 @@ final class DeviceMigrationCoordinator {
       return _completeReconciledMigration(
         current,
         connected,
-        _verifiedMigratedDevice!,
+        _verifiedMigration!.device,
       );
     }
     if (current.nextAction != DeviceMigrationNextAction.physicalRecovery &&
@@ -661,6 +673,22 @@ final class DeviceMigrationCoordinator {
           _stronglyMatches(current.candidate, scan),
     );
     if (sourceFound) {
+      // CoreBluetooth may retain the stock name as well as its service table.
+      // Verify the installed image before treating this as the original source.
+      if (_isIosPlatform()) {
+        final sourceScan = sourceScans.firstWhere(
+          (scan) => !scan.toPublic().isDfuBootloader && !_looksLikeEixam(scan),
+        );
+        final status = await _verifyMigratedScan(scan: sourceScan);
+        if (status.connected &&
+            firmwareIdentityMatches(
+              status.firmwareVersion,
+              current.targetVersion,
+              policy: current.verificationPolicy,
+            )) {
+          return _completeReconciledMigration(current, status, sourceScan);
+        }
+      }
       final source = await inspect(
         deviceId: current.candidate.deviceId,
         advertisedName: current.candidate.advertisedName,
@@ -909,6 +937,17 @@ final class DeviceMigrationCoordinator {
       );
     }
     if (matches.isEmpty) {
+      if (_isIosPlatform()) {
+        final retained = scans.where(
+          (scan) =>
+              scan.deviceId == candidate.deviceId &&
+              !scan.toPublic().isDfuBootloader &&
+              _stronglyMatches(candidate, scan),
+        );
+        if (retained.length == 1) {
+          return _verifyMigratedScan(scan: retained.single);
+        }
+      }
       return _disconnectedStatus(candidate.deviceId);
     }
 
@@ -923,14 +962,27 @@ final class DeviceMigrationCoordinator {
   ) async {
     final verifiedFirmware = await firmwareUpdates
         .verifyRecoveredMigrationFirmware(verifiedStatus: status);
+    final repair = _verifiedMigration?.runtimeMissing == true;
+    if (repair && verifiedFirmware?.state != FirmwareUpdateState.completed) {
+      return current;
+    }
     final completed = current.copyWith(
       firmwareSession: verifiedFirmware,
       migratedDevice: device.toPublic(),
-      state: DeviceMigrationState.completed,
+      state: repair
+          ? DeviceMigrationState.bluetoothRepairRequired
+          : DeviceMigrationState.completed,
       clearFailure: true,
-      outcome: DeviceMigrationOutcome.completed,
-      reconciliationOutcome: DeviceMigrationReconciliationOutcome.completed,
-      nextAction: DeviceMigrationNextAction.completed,
+      outcome: repair
+          ? DeviceMigrationOutcome.recoveryRequired
+          : DeviceMigrationOutcome.completed,
+      reconciliationOutcome: repair
+          ? DeviceMigrationReconciliationOutcome.recoveryRequired
+          : DeviceMigrationReconciliationOutcome.completed,
+      nextAction: repair
+          ? DeviceMigrationNextAction.repairBluetooth
+          : DeviceMigrationNextAction.completed,
+      failureCode: repair ? 'bluetoothBondRepairRequired' : null,
       canCancel: false,
       updatedAt: DateTime.now(),
     );
@@ -941,17 +993,16 @@ final class DeviceMigrationCoordinator {
   Future<DeviceStatus?> _verifyAlreadyConnected(
     DeviceMigrationCandidate candidate,
   ) async {
+    _verifiedMigration = null;
     try {
-      if (!await bleClient.isConnected(candidate.deviceId) ||
-          !await bleClient.isEixamCompatible(candidate.deviceId)) {
+      if (!await bleClient.isConnected(candidate.deviceId)) {
         return null;
       }
-      final installed = await bleClient.readFirmwareVersion(candidate.deviceId);
       // The normal runtime may reconnect first after Bluetooth returns. Verify
       // that exact captured identity through its existing GATT connection; a
       // connected peripheral no longer needs to advertise. Leave its owner intact.
       final hardwareId = normalizeCanonicalHardwareId(candidate.stableIdentity);
-      _verifiedMigratedDevice = BleScanResult(
+      final scan = BleScanResult(
         deviceId: candidate.deviceId,
         canonicalHardwareId: hardwareId,
         name: candidate.advertisedName ?? '',
@@ -960,15 +1011,7 @@ final class DeviceMigrationCoordinator {
         brandClassification: BleDiscoveredDeviceBrand.eixam,
         discoveredAt: DateTime.now(),
       );
-      return DeviceStatus(
-        deviceId: candidate.deviceId,
-        canonicalHardwareId: hardwareId,
-        model: eixamFirmwareCatalogModel,
-        paired: true,
-        activated: false,
-        connected: true,
-        firmwareVersion: installed,
-      );
+      return await _readVerifiedMigrationStatus(scan, alreadyConnected: true);
     } catch (error) {
       safeSdkDebugPrint('MIGRATION_CONNECTED_VERIFICATION_WAIT error=$error');
       return null;
@@ -978,28 +1021,19 @@ final class DeviceMigrationCoordinator {
   Future<DeviceStatus> _verifyMigratedScan({
     required BleScanResult scan,
   }) async {
+    _verifiedMigration = null;
     var connectedForVerification = false;
     try {
       await bleClient.connect(scan.deviceId);
       connectedForVerification = true;
-      if (!await bleClient.isEixamCompatible(scan.deviceId)) {
+      final status = await _readVerifiedMigrationStatus(scan);
+      if (status == null) {
         safeSdkDebugPrint(
           'MIGRATION_VERIFICATION_WAIT reason=runtimeUnavailable',
         );
         return _disconnectedStatus(scan.deviceId);
       }
-      final installed = await bleClient.readFirmwareVersion(scan.deviceId);
-      _verifiedMigratedDevice = scan;
-      return DeviceStatus(
-        deviceId: scan.deviceId,
-        canonicalHardwareId: scan.canonicalHardwareId,
-        deviceAlias: scan.name,
-        model: eixamFirmwareCatalogModel,
-        paired: true,
-        activated: false,
-        connected: true,
-        firmwareVersion: installed,
-      );
+      return status;
     } on FirmwareUpdateException {
       rethrow;
     } catch (error) {
@@ -1013,6 +1047,57 @@ final class DeviceMigrationCoordinator {
         await bleClient.disconnect(scan.deviceId);
       }
     }
+  }
+
+  // DIS can verify the installed image even while iOS serves the old GATT
+  // table. This proves firmware only; runtime readiness still requires repair.
+  Future<DeviceStatus?> _readVerifiedMigrationStatus(
+    BleScanResult scan, {
+    bool alreadyConnected = false,
+  }) async {
+    final compatible = await bleClient.isEixamCompatible(scan.deviceId);
+    if (!compatible && !_isIosPlatform()) return null;
+    final installed = await bleClient.readFirmwareVersion(scan.deviceId);
+    if (!compatible) {
+      final current = _session;
+      if (current == null ||
+          !current.candidate.isCompatible ||
+          current.candidate.sourceHardwareModel != wisMeshTagHardwareModel ||
+          current.candidate.identityKind !=
+              DeviceMigrationIdentityKind.hardwareMac ||
+          normalizeCanonicalHardwareId(current.candidate.stableIdentity) ==
+              null ||
+          scan.deviceId != current.candidate.deviceId ||
+          !_stronglyMatches(current.candidate, scan) ||
+          !firmwareIdentityMatches(
+            installed,
+            current.targetVersion,
+            policy: current.verificationPolicy,
+          )) {
+        return null;
+      }
+      final firmware = await firmwareUpdates.getActiveMigrationFirmwareUpdate();
+      if (firmware == null ||
+          !firmware.migrationOwned ||
+          !firmware.nativeTransferEngaged ||
+          !firmware.artifactVerified ||
+          firmware.releaseId != current.releaseId ||
+          firmware.targetVersion != current.targetVersion ||
+          !_firmwareSessionMatchesCandidate(firmware, current.candidate)) {
+        return null;
+      }
+    }
+    _verifiedMigration = (device: scan, runtimeMissing: !compatible);
+    return DeviceStatus(
+      deviceId: scan.deviceId,
+      canonicalHardwareId: scan.canonicalHardwareId,
+      deviceAlias: alreadyConnected ? null : scan.name,
+      model: eixamFirmwareCatalogModel,
+      paired: true,
+      activated: false,
+      connected: true,
+      firmwareVersion: installed,
+    );
   }
 
   DeviceStatus _disconnectedStatus(String deviceId) => DeviceStatus(
