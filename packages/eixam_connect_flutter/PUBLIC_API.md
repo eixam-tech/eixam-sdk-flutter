@@ -858,3 +858,35 @@ repair branch never invokes DFU, including after restart or explicit retry.
 against a connected post-migration target whose iOS UUID may have changed. The
 existing canonical-identity validation remains available for other platforms.
 Hosts retire the migration only after successful exact-target acquisition.
+
+### Android location permission upgrade
+
+`AndroidLocationPermissions` provides explicit `getState()`,
+`requestForeground()` and `requestBackground()` operations. It reuses the core
+`LocationPermissionSnapshot` for grant/accuracy truth and adds Android API level,
+request availability, `settingsRequired`, and the OS-localized background option
+label. Construction and reads never prompt. Hosts must declare the permissions
+needed by their actual feature and explain that feature before a background
+request. This helper does not start location collection, tracking, SOS, BLE, or
+an Activity route.
+
+Foreground and background requests are separate operations. Before API 29,
+foreground access also grants background access. API 29 uses the normal runtime
+background permission dialog. API 30+ first attempts the separate official
+runtime request where available; the OS controls its destination. When another
+native request is unavailable, the explicit action opens the resolvable
+`Settings.ACTION_APPLICATION_DETAILS_SETTINGS` fallback. No public Android
+intent guarantees a direct app Location-permission screen. A denial never
+chains another prompt or Settings launch. A new user action is required.
+
+Request results re-read OS permissions. Returning from app details through Back,
+Home/relaunch, or Recents completes with current state. Reads on ordinary app
+resume/restart remain the host's responsibility. No grant is persisted; only
+prompt-attempt history is stored to decide whether another prompt is possible.
+Identical concurrent requests share a result; conflicting operations fail.
+
+Both approximate and precise grants are usable. Foreground-only grants are
+never reported as background/permanent readiness. Android has no reliable
+public API for an ordinary app to identify the one-time-grant choice;
+`temporarilyGranted` is therefore unknown (`null`), and callers must refresh on
+resume/restart. The existing iOS background-location adapter is unchanged.

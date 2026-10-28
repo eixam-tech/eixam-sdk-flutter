@@ -13,6 +13,8 @@ export 'package:eixam_connect_core/src/interfaces/activity_recording_control.dar
 export 'package:eixam_connect_core/src/interfaces/activity_recording_history_control.dart';
 export 'package:eixam_connect_core/src/interfaces/activity_recording_delete_control.dart';
 
+export '../sdk/android_location_permissions.dart';
+
 // Registers the Flutter bootstrap implementation behind the public
 // `EixamConnectSdk.bootstrap(...)` entrypoint when the package is imported.
 // ignore: unused_element
