@@ -4112,6 +4112,27 @@ class EixamConnectSdkImpl
       );
     }
     final result = await coordinator.ensureReady();
+    if (!kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        result.isReady) {
+      final migration = deviceMigrationCoordinator;
+      final active = await migration?.getActiveSession();
+      final nodeId = result.deviceStatus?.nodeId;
+      if (active?.state == DeviceMigrationState.completed && nodeId != null) {
+        var assignmentVerified = false;
+        try {
+          assignmentVerified = await RegisteredDeviceAssignmentVerifier(
+            repository: deviceRegistryRepository,
+          ).verifyAssignment(nodeId: nodeId);
+        } catch (_) {
+          // Keep canonical recovery proof when assignment cannot be verified.
+        }
+        await migration?.completeProvisioning(
+          result,
+          assignmentVerified: assignmentVerified,
+        );
+      }
+    }
     _recoverBleAfterProvisioningRebootFailure(result.failure?.code);
     unawaited(_maybeCheckDeviceCountryConfig('provisioning_settled'));
     return result;

@@ -132,6 +132,67 @@ void main() {
     rediscoveryTimeout: const Duration(milliseconds: 1),
   );
 
+  group('migration proof retained through provisioning', () {
+    for (final ios in [false, true]) {
+      for (final outcome in [
+        'ready',
+        'assignmentUnverified',
+        'readyAssignmentUnverified',
+        'failed',
+        'wrongTarget',
+        'wrongVersion',
+        'wrongHardware',
+        'disconnected',
+      ]) {
+        test(
+          'retires only matching iOS Ready: ios=$ios outcome=$outcome',
+          () async {
+            final store = _MemoryMigrationStore()
+              ..value = _durableSession(DeviceMigrationState.completed)
+                  .copyWith(
+                    migratedDevice: _repairScan(selectedId).toPublic(),
+                    nextAction: DeviceMigrationNextAction.completed,
+                  );
+            final coordinator = build(
+              probe: _FakeProbe(_probe(model: 105)),
+              store: store,
+              ios: ios,
+            );
+            final status = buildDeviceStatus(
+              deviceId: outcome == 'wrongTarget' ? 'control' : selectedId,
+              canonicalHardwareId: outcome == 'wrongHardware'
+                  ? '11:22:33:44:55:66'
+                  : selectedId,
+              connected: outcome != 'disconnected',
+              firmwareVersion: outcome == 'wrongVersion' ? '4.0.0' : '3.0.0',
+            );
+            final result = outcome == 'failed'
+                ? const DeviceReadyResult.failed(
+                    DeviceReadyFailure(
+                      code: DeviceReadyFailureCode.reconnectFailed,
+                      retryable: true,
+                    ),
+                  )
+                : outcome == 'assignmentUnverified'
+                ? DeviceReadyResult.provisionedAssignmentUnverified(status)
+                : DeviceReadyResult.ready(status);
+            await coordinator.completeProvisioning(
+              result,
+              assignmentVerified:
+                  outcome != 'assignmentUnverified' &&
+                  outcome != 'readyAssignmentUnverified',
+            );
+            expect(
+              await coordinator.getActiveSession() == null,
+              ios && outcome == 'ready',
+            );
+            expect(store.value == null, ios && outcome == 'ready');
+          },
+        );
+      }
+    }
+  });
+
   group('verified installation with stale runtime service table', () {
     FirmwareUpdateSession evidence() => FirmwareUpdateSession(
       sessionId: 'installed',
@@ -362,11 +423,108 @@ void main() {
             fromVersion: '2.5.0',
             targetVersion: '3.0.0',
             state: FirmwareUpdateState.completed,
+            migrationOwned: true,
             startedAt: DateTime.utc(2026),
           ),
           migratedDevice: _repairScan(selectedId).toPublic(),
           nextAction: DeviceMigrationNextAction.completed,
         );
+
+    test('pending archived recovery cannot undo a newer retirement', () async {
+      final original = verified();
+      final archive = original.copyWith(
+        firmwareSession: original.firmwareSession!.copyWith(
+          artifactVerified: true,
+          nativeTransferEngaged: true,
+        ),
+      );
+      final gate = Completer<void>();
+      final store = _MemoryMigrationStore()
+        ..archived.add(archive)
+        ..retiredReadGate = gate;
+      final ble = _MigrationBleClient()..connectedIds.add(selectedId);
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        ble: ble,
+        ios: true,
+      );
+      final pending = coordinator.retainBluetoothRepair(selectedId, stale());
+      await pumpEventQueue();
+      await coordinator.retire(original.sessionId);
+      gate.complete();
+      expect(await pending, false);
+      expect(await coordinator.getActiveSession(), isNull);
+      expect(store.value, isNull);
+    });
+
+    for (final scenario in [
+      'valid',
+      'wrongVersion',
+      'wrongTarget',
+      'ambiguous',
+      'unverified',
+      'disconnected',
+      'android',
+      'genericError',
+      'conflictingRuntimeMac',
+      'conflictingAdvertisedIdentity',
+    ]) {
+      test('completed archive recovery is proof-gated: $scenario', () async {
+        final original = verified();
+        final archived = original.copyWith(
+          firmwareSession: original.firmwareSession!.copyWith(
+            artifactVerified: scenario != 'unverified',
+            nativeTransferEngaged: true,
+          ),
+        );
+        final stored = scenario.startsWith('conflicting')
+            ? archived.copyWith(
+                migratedDevice: EixamBleScanResult(
+                  deviceId: selectedId,
+                  name: 'EIXAM_A6DDEEFF',
+                  brandClassification: BleDiscoveredDeviceBrand.eixam,
+                  rssi: -70,
+                  connectable: true,
+                  isEixamDevice: true,
+                  canonicalHardwareId: scenario == 'conflictingRuntimeMac'
+                      ? '11:22:33:44:55:66'
+                      : null,
+                  advertisedEixamIdentity:
+                      scenario == 'conflictingAdvertisedIdentity'
+                      ? 'A6BADBAD'
+                      : null,
+                  discoveredAt: DateTime.utc(2026),
+                ),
+              )
+            : archived;
+        final store = _MemoryMigrationStore()..archived.add(stored);
+        if (scenario == 'ambiguous') store.archived.add(archived);
+        final ble = _MigrationBleClient(
+          firmwareVersion: scenario == 'wrongVersion' ? '4.0.0' : '3.0.0',
+        );
+        if (scenario != 'disconnected') ble.connectedIds.add(selectedId);
+        final coordinator = build(
+          probe: _FakeProbe(_probe(model: 105)),
+          store: store,
+          ble: ble,
+          ios: scenario != 'android',
+        );
+        final retained = await coordinator.retainBluetoothRepair(
+          scenario == 'wrongTarget' ? 'control' : selectedId,
+          scenario == 'genericError' ? StateError('generic') : stale(),
+        );
+        expect(retained, scenario == 'valid');
+        expect(
+          store.value?.state,
+          scenario == 'valid'
+              ? DeviceMigrationState.bluetoothRepairRequired
+              : null,
+        );
+        expect(store.archived.first.state, DeviceMigrationState.completed);
+        expect(ble.connectedTargets, isEmpty);
+      });
+    }
 
     for (final ios in [true, false]) {
       test('verified stale handle requires repair only on iOS: $ios', () async {
@@ -2184,7 +2342,21 @@ final class _FakeMigrationFirmwareService
   }
 }
 
-final class _MemoryMigrationStore implements DeviceMigrationSessionStore {
+final class _MemoryMigrationStore
+    implements
+        DeviceMigrationSessionStore,
+        RetiredDeviceMigrationSessionSource {
+  Completer<void>? retiredReadGate;
+  @override
+  Future<List<DeviceMigrationSession>> loadRetiredForDevice(
+    String deviceId,
+  ) async {
+    await retiredReadGate?.future;
+    return archived
+        .where((s) => s.migratedDevice?.deviceId == deviceId)
+        .toList();
+  }
+
   DeviceMigrationSession? value;
   final archived = <DeviceMigrationSession>[];
 

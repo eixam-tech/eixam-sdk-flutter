@@ -49,6 +49,7 @@ final class DeviceMigrationCoordinator {
       _migrationInProgress || _reconciliationFuture != null;
   ({BleScanResult device, bool runtimeMissing})? _verifiedMigration;
   DeviceMigrationSession? _session;
+  int _sessionRevision = 0;
   Future<void>? _restoreFuture;
   Future<void> _writeTail = Future<void>.value();
   final StreamController<DeviceMigrationSession> _sessionController =
@@ -57,6 +58,38 @@ final class DeviceMigrationCoordinator {
   Future<DeviceMigrationSession?> getActiveSession() async {
     await _restore();
     return _session;
+  }
+
+  /// Retains installed-image proof through the provisioning reboot on iOS.
+  /// Only exact-target Ready (including assignment verification) ends recovery.
+  Future<void> completeProvisioning(
+    DeviceReadyResult result, {
+    required bool assignmentVerified,
+  }) async {
+    if (!_isIosPlatform() || !result.isReady || !assignmentVerified) return;
+    await _restore();
+    final current = _session;
+    final status = result.deviceStatus;
+    if (current == null ||
+        current.state != DeviceMigrationState.completed ||
+        status == null ||
+        !status.connected ||
+        current.migratedDevice?.deviceId != status.deviceId ||
+        (current.candidate.sourceNodeNumber != null &&
+            current.candidate.sourceNodeNumber != status.nodeId) ||
+        !firmwareIdentityMatches(
+          status.firmwareVersion,
+          current.targetVersion,
+          policy: current.verificationPolicy,
+        )) {
+      return;
+    }
+    final hardware = normalizeCanonicalHardwareId(status.canonicalHardwareId);
+    final expected = normalizeCanonicalHardwareId(
+      current.candidate.stableIdentity,
+    );
+    if (hardware != null && expected != null && hardware != expected) return;
+    await retire(current.sessionId);
   }
 
   /// Dismisses a quiescent operation without discarding its recovery evidence.
@@ -69,6 +102,7 @@ final class DeviceMigrationCoordinator {
       );
     }
     _migrationInProgress = true;
+    _sessionRevision++;
     try {
       await _restore();
       await _writeTail;
@@ -902,6 +936,7 @@ final class DeviceMigrationCoordinator {
         reconciliationDeadline: DateTime.now().add(reconciliationTimeout),
       );
     }
+    _sessionRevision++;
     _session = session;
     safeSdkDebugPrint(
       'MIGRATION_SESSION sessionId=${session.sessionId} '
@@ -1209,7 +1244,50 @@ final class DeviceMigrationCoordinator {
   Future<bool> retainBluetoothRepair(String deviceId, Object error) async {
     if (!_isIosPlatform() || !isIosStaleGattError(error)) return false;
     await _restore();
-    final current = _session;
+    final observedSession = _session;
+    final observedRevision = _sessionRevision;
+    var current = observedSession;
+    var recoveredArchive = false;
+    if (current == null &&
+        sessionStore is RetiredDeviceMigrationSessionSource) {
+      final archived =
+          await (sessionStore as RetiredDeviceMigrationSessionSource)
+              .loadRetiredForDevice(deviceId);
+      final eligible = archived
+          .where(
+            (session) =>
+                session.state == DeviceMigrationState.completed &&
+                session.candidate.isCompatible &&
+                session.candidate.sourceHardwareModel ==
+                    wisMeshTagHardwareModel &&
+                session.candidate.identityKind ==
+                    DeviceMigrationIdentityKind.hardwareMac &&
+                normalizeCanonicalHardwareId(
+                      session.candidate.stableIdentity,
+                    ) !=
+                    null &&
+                session.firmwareSession?.state ==
+                    FirmwareUpdateState.completed &&
+                session.firmwareSession!.artifactVerified &&
+                session.firmwareSession!.nativeTransferEngaged &&
+                session.firmwareSession!.migrationOwned &&
+                session.firmwareSession!.releaseId == session.releaseId &&
+                session.firmwareSession!.targetVersion ==
+                    session.targetVersion &&
+                _firmwareSessionMatchesCandidate(
+                  session.firmwareSession!,
+                  session.candidate,
+                ) &&
+                session.migratedDevice?.deviceId == deviceId &&
+                session.expectedEixamAdvertisingName != null &&
+                _archivedRuntimeIdentityMatches(session),
+          )
+          .toList();
+      if (eligible.length == 1) {
+        current = eligible.single;
+        recoveredArchive = true;
+      }
+    }
     if (current == null ||
         !current.candidate.isCompatible ||
         current.candidate.sourceHardwareModel != wisMeshTagHardwareModel ||
@@ -1220,6 +1298,25 @@ final class DeviceMigrationCoordinator {
         (current.state != DeviceMigrationState.completed &&
             current.state != DeviceMigrationState.bluetoothRepairRequired) ||
         !await bleClient.isConnected(deviceId)) {
+      return false;
+    }
+    if (recoveredArchive) {
+      try {
+        final installed = await bleClient.readFirmwareVersion(deviceId);
+        if (!firmwareIdentityMatches(
+          installed,
+          current.targetVersion,
+          policy: current.verificationPolicy,
+        )) {
+          return false;
+        }
+      } catch (_) {
+        return false;
+      }
+    }
+    if (ownsBleOperation ||
+        _sessionRevision != observedRevision ||
+        !identical(_session, observedSession)) {
       return false;
     }
     await _publish(
@@ -1233,6 +1330,21 @@ final class DeviceMigrationCoordinator {
       ),
     );
     return true;
+  }
+
+  bool _archivedRuntimeIdentityMatches(DeviceMigrationSession session) {
+    final device = session.migratedDevice!;
+    final mac = device.canonicalHardwareId;
+    if (mac != null &&
+        mac.trim().isNotEmpty &&
+        normalizeCanonicalHardwareId(mac) !=
+            normalizeCanonicalHardwareId(session.candidate.stableIdentity)) {
+      return false;
+    }
+    final advertised = device.advertisedEixamIdentity;
+    return advertised == null ||
+        advertised.toUpperCase() ==
+            session.expectedEixamAdvertisingName!.toUpperCase();
   }
 
   Future<DeviceMigrationSession> _reconcileBluetoothRepair(

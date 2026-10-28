@@ -120,3 +120,31 @@ Functional regressions reproduce the raw disconnected/silent-connected-refresh
 gap through the real SDK stream and transfer all 20 chunks plus COMMIT only
 with authoritative status. The focused provisioning/stream/assignment suite
 passed 110 tests before immutable physical validation.
+
+## Provisioning-reboot recovery lifetime and RC upgrade
+
+The physical fresh transfer eventually admitted COMMIT, applied radio settings
+and rebooted. Reconnection then failed with a stale GATT handle: provisioning
+changes stock-service availability, so the existing iOS repair can also be
+needed at this reboot. The host had retired migration proof at paired handoff.
+
+The SDK now retires completed iOS migration proof only after matching runtime
+Ready plus explicit current-account assignment readback. The App releases its
+acquisition presentation guard after exact-target paired handoff while retaining
+SDK recovery authority; entering repair reacquires the presentation guard.
+Android handoff and provisioning behavior remain unchanged.
+
+For upgrades from an RC that already retired proof, the SDK can read its own
+canonical retired records. Only one completed inspected model-105/MAC record
+with matching exact peripheral, firmware release/version/hardware and verified
+native transfer evidence is eligible. Conflicting runtime MAC or advertised
+identity, ambiguity, malformed history, generic errors and missing connections
+are rejected. An actual iOS stale-GATT error and a fresh matching DIS read are
+required before publishing the existing repair state. A session revision and
+ownership check prevents delayed reads from replacing newer work. No fixture
+injection, new recovery enum, transfer, unprovision or firmware write occurs.
+
+254 SDK migration/store/provisioning/assignment tests passed, including archive
+identity/ambiguity/ownership rejection and Ready-with-unverified-assignment
+retention. The original retained-proof inter-store crash gap remains outside
+this claim; canonical completed archive recovery is independently guarded.

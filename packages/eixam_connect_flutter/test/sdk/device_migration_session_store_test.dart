@@ -11,6 +11,33 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
 
+  test('retired history is read without activating or rewriting it', () async {
+    final store = SharedPrefsDeviceMigrationSessionStore();
+    final session = _session().copyWith(
+      migratedDevice: EixamBleScanResult(
+        deviceId: 'target',
+        name: 'EIXAM_A6DDEEFF',
+        rssi: -60,
+        connectable: true,
+        isEixamDevice: true,
+        brandClassification: BleDiscoveredDeviceBrand.eixam,
+        discoveredAt: DateTime.utc(2026),
+      ),
+    );
+    await store.archive(session);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(
+      '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.malformed',
+      42,
+    );
+    expect(
+      (await store.loadRetiredForDevice('target')).single.sessionId,
+      session.sessionId,
+    );
+    expect(await store.loadRetiredForDevice('another-target'), isEmpty);
+    expect(await store.load(), isNull);
+  });
+
   test('exact migration identity policy survives restart', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
     final session = _session(

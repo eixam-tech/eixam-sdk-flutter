@@ -107,6 +107,12 @@ class SharedPrefsSdkStore {
     return _prefs!;
   }
 
+  /// Enumerates only a caller's namespace; values remain behind typed readers.
+  Future<List<String>> keysWithPrefix(String prefix) async {
+    final prefs = await _instance;
+    return prefs.getKeys().where((key) => key.startsWith(prefix)).toList();
+  }
+
   /// Persists a JSON-serializable map under [key].
   Future<void> saveJson(String key, Map<String, dynamic> value) async {
     final prefs = await _instance;

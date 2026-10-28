@@ -9,8 +9,14 @@ abstract interface class DeviceMigrationSessionStore {
   Future<void> archive(DeviceMigrationSession session);
 }
 
+abstract interface class RetiredDeviceMigrationSessionSource {
+  Future<List<DeviceMigrationSession>> loadRetiredForDevice(String deviceId);
+}
+
 final class SharedPrefsDeviceMigrationSessionStore
-    implements DeviceMigrationSessionStore {
+    implements
+        DeviceMigrationSessionStore,
+        RetiredDeviceMigrationSessionSource {
   SharedPrefsDeviceMigrationSessionStore({SharedPrefsSdkStore? localStore})
     : _localStore = localStore ?? SharedPrefsSdkStore();
 
@@ -57,6 +63,29 @@ final class SharedPrefsDeviceMigrationSessionStore
     '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.${session.sessionId}',
     _encode(session),
   );
+
+  @override
+  Future<List<DeviceMigrationSession>> loadRetiredForDevice(
+    String deviceId,
+  ) async {
+    final prefix = '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.';
+    final sessions = <DeviceMigrationSession>[];
+    for (final key in await _localStore.keysWithPrefix(prefix)) {
+      try {
+        final json = await _localStore.readJson(key);
+        if (json == null ||
+            json['schemaVersion'] !=
+                DeviceMigrationSession.currentSchemaVersion) {
+          continue;
+        }
+        final session = _decode(json);
+        if (session.migratedDevice?.deviceId == deviceId) sessions.add(session);
+      } catch (_) {
+        // Invalid history is never recovery evidence; do not mutate it.
+      }
+    }
+    return sessions;
+  }
 
   Map<String, dynamic> _encode(DeviceMigrationSession session) =>
       <String, dynamic>{
