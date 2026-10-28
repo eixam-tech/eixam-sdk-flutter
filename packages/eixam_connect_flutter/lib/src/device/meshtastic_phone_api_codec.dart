@@ -8,9 +8,9 @@ final class MeshtasticPhoneApiCodec {
 
   static const int configRequestId = 69420;
 
-  List<int> encodeConfigRequest() => <int>[
+  List<int> encodeConfigRequest({int requestId = configRequestId}) => <int>[
     0x18, // ToRadio.want_config_id, field 3 / varint.
-    ..._encodeVarint(configRequestId),
+    ..._encodeVarint(requestId),
   ];
 
   MeshtasticFromRadioFrame decodeFromRadio(List<int> bytes) {

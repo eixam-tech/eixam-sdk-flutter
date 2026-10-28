@@ -8,6 +8,15 @@ void main() {
     expect(codec.encodeConfigRequest(), <int>[0x18, 0xac, 0x9e, 0x04]);
   });
 
+  test('encodes a per-inspection nonce for stock duplicate filtering', () {
+    expect(codec.encodeConfigRequest(requestId: 123456), [
+      0x18,
+      0xc0,
+      0xc4,
+      0x07,
+    ]);
+  });
+
   test('decodes WISMESH_TAG metadata and firmware version', () {
     final frame = codec.decodeFromRadio(
       _fromRadioMetadata(model: 105, version: '2.5.0'),

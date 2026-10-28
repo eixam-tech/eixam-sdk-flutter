@@ -112,6 +112,19 @@ final class FlutterBlueMeshtasticMetadataProbe
   static final Guid batteryServiceUuid = Guid('180F');
   static final Guid batteryLevelUuid = Guid('2A19');
 
+  // iOS can release one manager while another client retains the physical
+  // link, keeping stock's duplicate-ToRadio filter alive for revalidation.
+  static int _nextIosConfigRequestId =
+      DateTime.now().microsecondsSinceEpoch & 0xffffffff;
+  static int _allocateIosConfigRequestId() {
+    do {
+      _nextIosConfigRequestId = (_nextIosConfigRequestId + 1) & 0xffffffff;
+    } while (_nextIosConfigRequestId == 0 ||
+        _nextIosConfigRequestId == 69420 ||
+        _nextIosConfigRequestId == 69421);
+    return _nextIosConfigRequestId;
+  }
+
   final MeshtasticPhoneApiCodec _codec;
   final MeshtasticInspectionTransport Function(String) _transportFactory;
   final Duration connectionTimeout;
@@ -149,6 +162,10 @@ final class _InspectionOperation {
   final FlutterBlueMeshtasticMetadataProbe probe;
   final String deviceId;
   final Duration metadataTimeout;
+  final bool _isIos = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+  late final int _requestId = _isIos
+      ? FlutterBlueMeshtasticMetadataProbe._allocateIosConfigRequestId()
+      : MeshtasticPhoneApiCodec.configRequestId;
   final Set<Future<void>> _pending = {};
   StreamSubscription<BluetoothBondState>? _bondSubscription;
   Completer<void>? _initialBond;
@@ -162,6 +179,9 @@ final class _InspectionOperation {
   Completer<void>? _pollWake;
   int? _nodeNumber;
   int? _battery;
+  int? _hardwareModel;
+  String? _firmwareVersion;
+  bool _requestStarted = false;
   final Map<int, String> _macs = {};
   MeshtasticProbeResult? _result;
   MeshtasticInspectionException? _metadataError;
@@ -261,6 +281,7 @@ final class _InspectionOperation {
 
   void _consume(List<int> payload) {
     if (_terminal ||
+        (_isIos && !_requestStarted) ||
         payload.isEmpty ||
         _result != null ||
         _metadataError != null) {
@@ -278,18 +299,34 @@ final class _InspectionOperation {
       }
       if (frame.hardwareModel != null) {
         final version = frame.firmwareVersion?.trim();
+        _hardwareModel = frame.hardwareModel;
+        _firmwareVersion = version?.isEmpty == true ? null : version;
+      }
+      if (_hardwareModel != null &&
+          (!_isIos || (_nodeNumber != null && _macs[_nodeNumber] != null))) {
         _result = MeshtasticProbeResult(
-          hardwareModel: frame.hardwareModel!,
-          firmwareVersion: version?.isEmpty == true ? null : version,
+          hardwareModel: _hardwareModel!,
+          firmwareVersion: _firmwareVersion,
           nodeNumber: _nodeNumber,
           hardwareMac: _macs[_nodeNumber],
           batteryPercentage: _battery,
         );
-      } else if (frame.configCompleteId ==
-          MeshtasticPhoneApiCodec.configRequestId) {
+      } else if (frame.configCompleteId == _requestId) {
         _metadataError = const MeshtasticInspectionException(
           DeviceMigrationInspectionFailure.malformedMetadata,
-          FormatException('Device metadata was not provided.'),
+          FormatException(
+            'Required device metadata or identity was not provided.',
+          ),
+        );
+      }
+      if (frame.hardwareModel != null ||
+          frame.nodeNumber != null ||
+          mac != null) {
+        safeSdkDebugPrint(
+          'MIGRATION_INSPECTION_METADATA '
+          'modelPresent=${_hardwareModel != null} '
+          'nodePresent=${_nodeNumber != null} '
+          'ownMacPresent=${_macs[_nodeNumber] != null}',
         );
       }
     } catch (error) {
@@ -457,7 +494,10 @@ final class _InspectionOperation {
               DeviceMigrationInspectionFailure.bondingFailed,
             );
           }
-          return transport.requestMetadata(probe._codec.encodeConfigRequest());
+          _requestStarted = true;
+          return transport.requestMetadata(
+            probe._codec.encodeConfigRequest(requestId: _requestId),
+          );
         },
       );
       final result = await _stage(
