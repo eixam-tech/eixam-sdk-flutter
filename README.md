@@ -4,7 +4,7 @@ Partner-facing Flutter SDK for EIXAM's connected safety platform — SOS,
 device runtime, telemetry, relay ingest, notifications, and Death Man
 Protocol. The native runtime plugin supports Android and iOS.
 
-This monorepo is **SDK-first**: the SDK is the product. The partner app in `../eixam-app` is a host/reference integration.
+This monorepo is **SDK-first**: the SDK is the product. The commercial app and SDK demo are consumers of its public contracts.
 
 ## Packages
 
@@ -16,7 +16,7 @@ This monorepo is **SDK-first**: the SDK is the product. The partner app in `../e
 
 ## Prerequisites
 
-- Flutter on `PATH`; packages require Dart `>=3.4.0 <4.0.0`
+- Flutter on `PATH`; the current workspace/packages require Dart `>=3.8.0 <4.0.0`; check manifests
 - Android SDK or Xcode for the target platform
 - At least one device visible in `flutter devices`
 - Verify with `flutter doctor`
@@ -79,16 +79,19 @@ evidence that a production backend or store release has been deployed.
 ## Quality checks
 
 ```bash
-dart format --set-exit-if-changed .
+dart format --output=none --set-exit-if-changed .
 flutter analyze --no-fatal-infos
-flutter test
+(cd packages/eixam_connect_core && dart test)
+(cd packages/eixam_connect_flutter && flutter test)
 ```
 
 Package-targeted runs are often more deterministic — see `docs/ai_context/VALIDATION_AND_TESTS.md`.
 
 ## Local development with the partner app
 
-The partner app may use `pubspec_overrides.yaml` for workspace iteration:
+Hosts may use ignored `pubspec_overrides.yaml` files for workspace iteration.
+This example assumes the host and SDK are siblings; the commercial app's nested
+checkout needs its own paths (see its local development guide):
 
 ```yaml
 dependency_overrides:
@@ -118,7 +121,7 @@ troubleshooting, use the
 - Documentation index: [docs/README.md](docs/README.md)
 - Integration guide: [docs/SDK_INTEGRATION_GUIDE.md](docs/SDK_INTEGRATION_GUIDE.md)
 - Public API reference: [docs/PUBLIC_API_REFERENCE.md](docs/PUBLIC_API_REFERENCE.md)
-- Engineering contract: [AGENTS.md](AGENTS.md) (also published as [CLAUDE.md](CLAUDE.md))
+- Engineering contract: [AGENTS.md](AGENTS.md) (with a [Claude adapter](CLAUDE.md))
 - AI context index: [docs/ai_context/AI_INDEX.md](docs/ai_context/AI_INDEX.md)
 - Public API surface: [packages/eixam_connect_flutter/PUBLIC_API.md](packages/eixam_connect_flutter/PUBLIC_API.md)
 - SOS orchestration: [packages/eixam_connect_flutter/SOS_ORCHESTRATION.md](packages/eixam_connect_flutter/SOS_ORCHESTRATION.md)

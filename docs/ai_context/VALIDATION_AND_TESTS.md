@@ -6,23 +6,23 @@ Run from the repository root unless noted otherwise.
 
 | Purpose | Command |
 |---|---|
-| Format check | `dart format --set-exit-if-changed .` |
+| Format check | `dart format --output=none --set-exit-if-changed .` |
 | Root analysis | `flutter analyze --no-fatal-infos` |
-| Root test sweep | `flutter test` |
+| Package test coverage | Run both package commands below |
 
 ## Package-Level Commands
 
 | Area | Command |
 |---|---|
-| Core package tests | `dart test packages/eixam_connect_core/test` |
-| Flutter SDK tests | `flutter test packages/eixam_connect_flutter/test` |
+| Core package tests | `(cd packages/eixam_connect_core && dart test)` |
+| Flutter SDK tests | `(cd packages/eixam_connect_flutter && flutter test)` |
 
 ## High-Signal Test Files
 
 | Area | Tests |
 |---|---|
-| Public SDK orchestration | `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart` |
-| BLE contract surface | `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_ble_contract_test.dart` |
+| Public SDK orchestration | `packages/eixam_connect_flutter/test/sdk/sos_lifecycle_matrix_test.dart` |
+| BLE contract surface | `packages/eixam_connect_flutter/test/device/firmware_sos_contract_test.dart` |
 | Auto reconnect | `packages/eixam_connect_flutter/test/ble_auto_reconnect_coordinator_test.dart` |
 | Device runtime/provider | `packages/eixam_connect_flutter/test/device/*` |
 | Core SOS / DMP state | `packages/eixam_connect_core/test/state/*`, `packages/eixam_connect_core/test/usecases/*` |
@@ -33,7 +33,7 @@ Run from the repository root unless noted otherwise.
 - `eixam_connect_core` is a Dart package; targeted `dart test` is often the fastest check there.
 - `eixam_connect_flutter` is a Flutter package; prefer `flutter test` for targeted validation.
 
-## Current Committed-Head Checkpoint
+## Historical committed-head checkpoint
 
 - SDK full suite: **665 tests passed** at
   `edbfd2328f759ee94908d8d72c201a26cd69670e`.
@@ -98,11 +98,15 @@ Run from the repository root unless noted otherwise.
 ### DMP
 
 - Schedule a plan with short timings.
-- Confirm transitions: monitoring -> overdue -> awaitingConfirmation -> escalated -> expired.
+- Confirm transitions: monitoring -> awaitingConfirmation -> overdue -> escalated -> expired.
 - Verify `I'm OK` notification action path.
 - Verify auto-triggered SOS when `autoTriggerSos` is true.
 
 ## Staging and Production Boundaries
+
+The following physical coverage statement is historical checkpoint evidence,
+not a validation run against the current head. For current acceptance use the
+host app QA playbook and physical matrix; record exact revisions and devices.
 
 - Physical/backend validation covered the current app-origin,
   connected-local-device, progress, cancellation/rearm, map/sharing, and
@@ -110,5 +114,5 @@ Run from the repository root unless noted otherwise.
 - The complete extended physical matrix and store-delivered artifact evidence
   remain required; automated and staging results do not close production
   deployment or store-release gates.
-- Root `flutter test` remains the documented repo command, while package-targeted
-  commands remain useful for deterministic failure isolation.
+- Run tests from each owning package. The root manifest contains tooling,
+  not a recursive package test runner; a root sweep is not package coverage.

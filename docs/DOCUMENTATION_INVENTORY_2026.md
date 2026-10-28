@@ -52,3 +52,26 @@ No document was merged, archived, removed, or replaced. New companion guides
 were created because the existing internal architecture and package notes
 could not cleanly serve as a public installation/platform/troubleshooting
 guide or a curated exported API index.
+
+## Engineering navigation consolidation — 2026-10-28
+
+The table above remains the July audit record, including its original dispositions.
+This documentation-only pass uses `AGENTS.md` as the canonical shared entry,
+reduces Claude/Cursor entries to adapters, and routes specialized tasks from
+`docs/README.md`. Historical QA counts remain checkpoint evidence.
+The SDK legacy `ai_context` directory remains topic context, not an agent dependency.
+No runtime, dependency, build or release configuration was changed.
+
+Inspected SDK checkpoint: `f501b86`; consumers: App `a57fa72`, Demo `cf5ac77`.
+The App pins that SDK head; Demo pins `5dd9e883405e48f8a59b463d17f6c55504d03084`.
+These are audit observations, not instructions to change dependency pins.
+Source checks covered public exports/interface/bootstrap, protocol fixtures,
+relay routing/error handling and DMP evaluation/lifecycle tests.
+Corrections: missing test references now point to current focused suites;
+DMP enters awaiting-confirmation before overdue, and no longer names a nonexistent
+controller. Bootstrap examples remain in README/integration documentation
+rather than being repeated in always-loaded instructions.
+The optional `EIXAM_AI_ENGINEERING_STACK.md` was not found in the scoped checkouts;
+no personal skill, framework or vendor workflow was added to shared guidance.
+Unreviewed runtime details and existing `Needs verification` sections remain
+subject to focused source/test/device verification for the next engineering task.
