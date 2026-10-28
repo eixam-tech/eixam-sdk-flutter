@@ -6,6 +6,7 @@ import 'package:eixam_connect_flutter/src/device/ble_client.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/device/meshtastic_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/sdk/tag_pairing_code_correlator.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
@@ -23,6 +24,128 @@ void main() {
   tearDown(() {
     debugDefaultTargetPlatformOverride = null;
     BleDebugRegistry.instance.reset();
+  });
+
+  test(
+    'iOS QR discovers connected stock and still requires inspection',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final target = _SystemDevice('target-uuid', 'Meshtastic_756e');
+      final control = _SystemDevice('control-uuid', 'Meshtastic_1aa8');
+      final client = _buildRealBleClient(
+        systemDevicesProvider: (services) async =>
+            services.single == Guid(MeshtasticBleProtocol.serviceUuid)
+            ? [control, target]
+            : [],
+      );
+      await client.initialize();
+      final found = await client.scan(timeout: Duration.zero);
+      final match = TagPairingCodeCorrelator.find(
+        'N693756E',
+        found.map((r) => r.toPublic()),
+      );
+      expect(match.state, TagPairingCodeMatchState.inspectionRequired);
+      expect(match.candidate?.deviceId, 'target-uuid');
+      expect(match.candidate?.canonicalHardwareId, isNull);
+      expect(
+        found
+            .singleWhere((r) => r.deviceId == 'target-uuid')
+            .advertisedLocalName,
+        isNull,
+      );
+    },
+  );
+
+  test('connected Eixam runtime and unrelated devices are not stock', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final current = _SystemDevice('current', 'Meshtastic_756e');
+    final client = _buildRealBleClient(
+      systemDevicesProvider: (services) async =>
+          services.single == Guid(MeshtasticBleProtocol.serviceUuid)
+          ? [current, _SystemDevice('headphones', 'Headphones')]
+          : [current],
+    );
+    await client.initialize();
+    expect(await client.scan(timeout: Duration.zero), isEmpty);
+  });
+
+  test('Android never queries iOS connected stock discovery', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    var calls = 0;
+    final client = _buildRealBleClient(
+      systemDevicesProvider: (_) async {
+        calls++;
+        return [];
+      },
+    );
+    await client.initialize();
+    expect(await client.scan(timeout: Duration.zero), isEmpty);
+    expect(calls, 0);
+  });
+
+  test('superseded system retrieval cannot restore an old scan', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final entered = Completer<void>();
+    final pending = Completer<List<BluetoothDevice>>();
+    var calls = 0;
+    final client = _buildRealBleClient(
+      systemDevicesProvider: (_) async {
+        if (calls++ == 0) {
+          entered.complete();
+          return pending.future;
+        }
+        return [];
+      },
+    );
+    await client.initialize();
+    final old = client.scan(timeout: Duration.zero);
+    await entered.future;
+    expect(await client.scan(timeout: Duration.zero), isEmpty);
+    pending.complete([_SystemDevice('old', 'Meshtastic_756e')]);
+    expect(await old, isEmpty);
+  });
+
+  test('fresh advertisement wins over a conflicting system name', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+    addTearDown(events.close);
+    final client = _buildRealBleClient(
+      systemDevicesProvider: (_) async => [
+        _SystemDevice('same', 'Meshtastic_756e'),
+      ],
+      scanResultsProvider: () => events.stream,
+      startScan: (_) async => events.add([
+        _nativeScanResult(
+          deviceId: 'same',
+          observedAt: DateTime.now(),
+          name: 'EIXAM_A693756E',
+          services: [Guid(EixamBleProtocol.serviceUuid)],
+        ),
+      ]),
+    );
+    await client.initialize();
+    final result = (await client.scan(timeout: Duration.zero)).single;
+    expect(result.name, 'EIXAM_A693756E');
+    expect(result.brandClassification, BleDiscoveredDeviceBrand.eixam);
+    expect(result.advertisedLocalName, 'EIXAM_A693756E');
+  });
+
+  test('system discovery error preserves fresh advertisements', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+    addTearDown(events.close);
+    final client = _buildRealBleClient(
+      systemDevicesProvider: (_) async => throw StateError('unavailable'),
+      scanResultsProvider: () => events.stream,
+      startScan: (_) async => events.add([
+        _nativeScanResult(deviceId: 'fresh', observedAt: DateTime.now()),
+      ]),
+    );
+    await client.initialize();
+    expect(
+      (await client.scan(timeout: Duration.zero)).single.deviceId,
+      'fresh',
+    );
   });
 
   test(
@@ -361,6 +484,7 @@ RealBleClient _buildRealBleClient({
   bool isScanning = false,
   Stream<List<ScanResult>> Function()? scanResultsProvider,
   NativeBleStartScan? startScan,
+  Future<List<BluetoothDevice>> Function(List<Guid>)? systemDevicesProvider,
 }) {
   return RealBleClient(
     isSupportedProvider: () async => supportedProvider?.call() ?? supported,
@@ -372,7 +496,15 @@ RealBleClient _buildRealBleClient({
         scanResultsProvider ?? () => const Stream<List<ScanResult>>.empty(),
     startScan: startScan ?? (_) async {},
     stopScan: () async {},
+    systemDevicesProvider: systemDevicesProvider ?? (_) async => [],
   );
+}
+
+final class _SystemDevice extends BluetoothDevice {
+  _SystemDevice(super.remoteId, this.savedName) : super.fromId();
+  final String savedName;
+  @override
+  String get platformName => savedName;
 }
 
 ScanResult _nativeScanResult({

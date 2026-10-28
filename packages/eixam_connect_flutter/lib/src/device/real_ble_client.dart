@@ -19,6 +19,7 @@ import 'eixam_ble_command.dart';
 import 'eixam_ble_mesh_port_inference.dart';
 import 'eixam_ble_notification.dart';
 import 'eixam_ble_protocol.dart';
+import 'meshtastic_ble_protocol.dart';
 
 typedef NativeBleStartScan = Future<void> Function(Duration timeout);
 typedef NativeBleStopScan = Future<void> Function();
@@ -51,6 +52,8 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     @visibleForTesting NativeBleStartScan? startScan,
     @visibleForTesting NativeBleStopScan? stopScan,
     @visibleForTesting
+    Future<List<BluetoothDevice>> Function(List<Guid>)? systemDevicesProvider,
+    @visibleForTesting
     Future<List<BluetoothService>> Function(BluetoothDevice)? serviceDiscoverer,
     @visibleForTesting
     Stream<void> Function(BluetoothDevice)? serviceResetProvider,
@@ -76,6 +79,8 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
              androidCheckLocationServices: false,
            )),
        _stopScan = stopScan ?? (() => FlutterBluePlus.stopScan()),
+       _systemDevicesProvider =
+           systemDevicesProvider ?? FlutterBluePlus.systemDevices,
        _serviceDiscoverer = serviceDiscoverer,
        _serviceResetProvider =
            serviceResetProvider ?? ((device) => device.onServicesReset),
@@ -92,6 +97,8 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
   );
 
   final Map<String, BluetoothDevice> _devices = {};
+  final Future<List<BluetoothDevice>> Function(List<Guid>)
+  _systemDevicesProvider;
   final Map<String, List<BluetoothService>> _servicesCache = {};
   final Map<String, int> _serviceGenerations = {};
   StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
@@ -364,6 +371,50 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
       return const <BleScanResult>[];
     }
 
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      try {
+        // A peripheral connected elsewhere in iOS may stop advertising.
+        // Retrieval is discovery only; QR still requires protected MAC/model
+        // verification before acquisition or migration.
+        final stock = await _systemDevicesProvider([
+          Guid(MeshtasticBleProtocol.serviceUuid),
+        ]);
+        final current = await _systemDevicesProvider([eixamServiceUuid]);
+        if (generation != _scanGeneration) return const <BleScanResult>[];
+        final currentIds = current.map((d) => d.remoteId.str).toSet();
+        for (final device in stock) {
+          final id = device.remoteId.str;
+          final name = device.platformName.trim();
+          if (deduped.containsKey(id) ||
+              currentIds.contains(id) ||
+              !RegExp(
+                r'^Meshtastic_[0-9a-f]{4}$',
+                caseSensitive: false,
+              ).hasMatch(name)) {
+            continue;
+          }
+          _devices[id] = device;
+          deduped[id] = BleScanResult(
+            deviceId: id,
+            name: name,
+            rssi: 0,
+            connectable: true,
+            brandClassification: BleDiscoveredDeviceBrand.meshtastic,
+            discoveredAt: DateTime.now(),
+          );
+          BleDebugRegistry.instance.recordEvent(
+            'BLE connected stock candidate discovered; identity unverified',
+          );
+        }
+      } catch (error) {
+        // Unavailable system discovery must not invalidate fresh advertisements.
+        safeSdkDebugPrint(
+          'SDK_DISCOVERY_CONNECTED_STOCK_UNAVAILABLE '
+          'errorType=${error.runtimeType}',
+        );
+      }
+    }
+    if (generation != _scanGeneration) return const <BleScanResult>[];
     final results = deduped.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
     BleDebugRegistry.instance.recordEvent(

@@ -7,6 +7,21 @@ Android acquisition, firmware, backend configuration, the host UI contract, or
 post-migration guided repair. Both SDK hosts receive the fix through the existing
 inspection API; no new host state or integration is required.
 
+## Connected stock discovery
+
+The fresh product run with SDK `d156667` passed two direct inspections but QR
+discovery reported not found. A read-only iOS system-connected snapshot returned
+the same peripheral handle, `Meshtastic_756e`, via the stock PhoneAPI service,
+with an empty advertised name. The SDK had considered advertisements only.
+
+iOS discovery now appends system-connected stock candidates with normal
+`Meshtastic_` plus four-hex-digit names. Existing fresh advertisements win,
+current Eixam-service connections are excluded, and these candidates receive no
+fabricated MAC or advertising identity. The usual protected model/MAC inspection
+must still establish the full QR match. This performs no device connection or
+write. Android never executes this query. System-query failure preserves normal
+advertisements, and cancellation generations still discard late results.
+
 ## Failure evidence
 
 On 2026-10-28, stock `2.7.26.54e0d8d` on QR `N693756E` connected successfully
