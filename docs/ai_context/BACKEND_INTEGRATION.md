@@ -80,8 +80,8 @@
 ## Related Tests
 
 - `packages/eixam_connect_flutter/test/sdk/eixam_bootstrap_resolver_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_ble_contract_test.dart`
+- `packages/eixam_connect_flutter/test/sdk/sos_lifecycle_matrix_test.dart`
+- `packages/eixam_connect_flutter/test/sdk/sdk_mqtt_contract_identity_test.dart`
 - `packages/eixam_connect_flutter/test/data/repositories/in_memory_tracking_repository_test.dart`
 - `packages/eixam_connect_flutter/test/mappers/sos_incident_mapper_test.dart`
 

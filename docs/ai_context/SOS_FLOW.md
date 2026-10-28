@@ -134,8 +134,8 @@ swallowed the new physical cancel and left countdown/backend handoff alive.
 - `packages/eixam_connect_core/test/usecases/cancel_sos_use_case_test.dart`
 - `packages/eixam_connect_core/test/usecases/get_sos_state_use_case_test.dart`
 - `packages/eixam_connect_flutter/test/device_sos_controller_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_ble_contract_test.dart`
+- `packages/eixam_connect_flutter/test/sdk/sos_lifecycle_matrix_test.dart`
+- `packages/eixam_connect_flutter/test/device/firmware_sos_contract_test.dart`
 
 ## Integration source of truth
 

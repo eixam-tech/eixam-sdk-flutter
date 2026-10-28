@@ -24,8 +24,8 @@ State transitions are enforced by `packages/eixam_connect_core/lib/src/state/dea
 1. `scheduleDeathMan(...)` creates a plan.
 2. SDK immediately updates it to `monitoring`.
 3. A 1-second timer in `EixamConnectSdkImpl` evaluates deadlines.
-4. After `expectedReturnAt`, plan moves to `overdue`.
-5. After `expectedReturnAt + gracePeriod`, plan moves to `awaitingConfirmation`.
+4. After `expectedReturnAt`, plan moves to `awaitingConfirmation`.
+5. After `expectedReturnAt + gracePeriod`, plan moves to `overdue`.
 6. After `expectedReturnAt + gracePeriod + checkInWindow`, plan moves to `escalated`.
 7. If `autoTriggerSos` is true, SDK triggers SOS with `triggerSource: death_man_protocol`.
 8. Plan is then set to `expired`.
@@ -47,7 +47,8 @@ State transitions are enforced by `packages/eixam_connect_core/lib/src/state/dea
 
 ## What Happens When Idle
 
-- If there is no active plan, `DeathManController.activePlan` is `null`.
+- If there is no active plan, the repository's `getActiveDeathManPlan()` returns
+  `null`; monitoring and reconciliation run in `EixamConnectSdkImpl`.
 - Terminal states are treated as inactive:
   - `cancelled`
   - `confirmedSafe`
@@ -56,16 +57,19 @@ State transitions are enforced by `packages/eixam_connect_core/lib/src/state/dea
 ## Main Files
 
 - `packages/eixam_connect_flutter/lib/src/sdk/eixam_connect_sdk_impl.dart`
-- `packages/eixam_connect_flutter/lib/src/sdk/death_man_controller.dart`
 - `packages/eixam_connect_flutter/lib/src/data/repositories/in_memory_death_man_repository.dart`
 - `packages/eixam_connect_core/lib/src/state/death_man_state_machine.dart`
 - `packages/eixam_connect_core/lib/src/entities/death_man_plan.dart`
 
 ## Related Tests
 
+The runtime ordering above was cross-checked against `_evaluateDeathManPlan`
+and the lifecycle tests during the documentation audit; those tests were
+inspected, not executed by that audit.
+
 - `packages/eixam_connect_core/test/state/death_man_state_machine_test.dart`
 - `packages/eixam_connect_flutter/test/data/repositories/in_memory_death_man_repository_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
+- `packages/eixam_connect_flutter/test/sdk/death_man_plan_lifecycle_test.dart`
 
 ## Needs Verification
 

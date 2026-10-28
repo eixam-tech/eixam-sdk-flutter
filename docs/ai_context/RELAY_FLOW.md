@@ -79,8 +79,8 @@
 - `packages/eixam_connect_flutter/test/device/eixam_tel_relay_rx_packet_test.dart`
 - `packages/eixam_connect_flutter/test/device/eixam_tel_relay_cluster_packet_test.dart`
 - `packages/eixam_connect_flutter/test/device/eixam_sos_packet_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_impl_test.dart`
-- `packages/eixam_connect_flutter/test/sdk/eixam_connect_sdk_ble_contract_test.dart`
+- `packages/eixam_connect_flutter/test/sdk/remote_relay_sos_backend_handoff_test.dart`
+- `packages/eixam_connect_flutter/test/sdk/ble_operational_runtime_bridge_sos_422_test.dart`
 
 ## Needs Verification
 
