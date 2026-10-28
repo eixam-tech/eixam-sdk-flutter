@@ -697,6 +697,7 @@ final class DeviceProvisioningCoordinator {
             write: (command) => _write(operation, command),
             packets: _packets,
             ackCoordinator: _ackCoordinator,
+            diagnosticLog: diagnosticLog,
             rejectionObservationInterval: softSimRejectionObservationInterval,
             isCancelled: () => operation.cancelled,
             cancelled: operation.whenCancelled,
@@ -810,11 +811,17 @@ final class DeviceProvisioningCoordinator {
         retryable: true,
       );
     } on ProvisioningConnectionEpochInvalidException catch (_) {
+      diagnosticLog?.call(
+        'PROVISIONING_FAILURE_DETAIL cause=connectionEpochInvalid',
+      );
       return _fail(
         DeviceReadyFailureCode.deviceCommunicationInterrupted,
         retryable: true,
       );
     } on SoftSimTransportUncertainException {
+      diagnosticLog?.call(
+        'PROVISIONING_FAILURE_DETAIL cause=uncertainTransportWrite',
+      );
       return _fail(
         DeviceReadyFailureCode.deviceCommunicationInterrupted,
         retryable: true,

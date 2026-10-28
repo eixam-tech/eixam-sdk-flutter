@@ -19,6 +19,7 @@ final class SoftSimProvisioningTransport {
     this.rejectionObservationInterval = const Duration(milliseconds: 250),
     this.isCancelled,
     this.cancelled,
+    this.diagnosticLog,
   }) : _packets = packets;
 
   final Future<void> Function(EixamDeviceCommand command) write;
@@ -30,6 +31,7 @@ final class SoftSimProvisioningTransport {
   final Duration rejectionObservationInterval;
   final bool Function()? isCancelled;
   final Future<void>? cancelled;
+  final void Function(String event)? diagnosticLog;
 
   Future<void> transfer(SoftSimMaterial material) =>
       _transferOnce(material.bytes);
@@ -54,6 +56,11 @@ final class SoftSimProvisioningTransport {
       // The reject subscription deliberately remains active while the ACK
       // waiter is armed, leaving no last-CHUNK -> COMMIT subscription gap.
       rejection.throwIfRejected();
+      diagnosticLog?.call(
+        'PROVISIONING_SOFTSIM_COMMIT_ADMISSION '
+        'epochValid=${ackCoordinator.connectionEpochValid} '
+        'cancelled=${isCancelled?.call() ?? false}',
+      );
       final commitAck = ackCoordinator.run(
         expectedOpcode: 0x24,
         expectedDetail: 0x03,
@@ -81,8 +88,11 @@ final class SoftSimProvisioningTransport {
     if (cancellation == null) {
       await Future.any<void>(<Future<void>>[delay, rejection.signal]);
     } else {
-      await Future.any<void>(
-          <Future<void>>[delay, rejection.signal, cancellation]);
+      await Future.any<void>(<Future<void>>[
+        delay,
+        rejection.signal,
+        cancellation,
+      ]);
     }
     _checkCancellation();
     rejection.throwIfRejected();
