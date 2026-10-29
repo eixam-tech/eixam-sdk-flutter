@@ -125,6 +125,20 @@ final class FlutterBlueMeshtasticMetadataProbe
     return _nextIosConfigRequestId;
   }
 
+  // Android can retain the physical link after this inspector releases GATT.
+  // Stock rejects identical consecutive requests until a real GAP disconnect.
+  static int _nextAndroidConfigRequestId =
+      DateTime.now().microsecondsSinceEpoch & 0xffffffff;
+  static int _allocateAndroidConfigRequestId() {
+    do {
+      _nextAndroidConfigRequestId =
+          (_nextAndroidConfigRequestId + 1) & 0xffffffff;
+    } while (_nextAndroidConfigRequestId == 0 ||
+        _nextAndroidConfigRequestId == 69420 ||
+        _nextAndroidConfigRequestId == 69421);
+    return _nextAndroidConfigRequestId;
+  }
+
   final MeshtasticPhoneApiCodec _codec;
   final MeshtasticInspectionTransport Function(String) _transportFactory;
   final Duration connectionTimeout;
@@ -163,8 +177,12 @@ final class _InspectionOperation {
   final String deviceId;
   final Duration metadataTimeout;
   final bool _isIos = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+  final bool _isAndroid =
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   late final int _requestId = _isIos
       ? FlutterBlueMeshtasticMetadataProbe._allocateIosConfigRequestId()
+      : _isAndroid
+      ? FlutterBlueMeshtasticMetadataProbe._allocateAndroidConfigRequestId()
       : MeshtasticPhoneApiCodec.configRequestId;
   final Set<Future<void>> _pending = {};
   StreamSubscription<BluetoothBondState>? _bondSubscription;
@@ -190,6 +208,7 @@ final class _InspectionOperation {
     'MIGRATION_INSPECTION_STAGE stage=$stage '
     'selectedMarker=${SecurityDiagnosticsRedactor.stableIdentifierMarker(deviceId)} '
     'bondState=${_bondState?.name ?? 'unavailable'} '
+    '${_isAndroid ? 'requestId=$_requestId ' : ''}'
     'failureCode=${failureCode ?? 'none'}',
   );
 
