@@ -114,14 +114,30 @@ void main() {
     },
   );
 
+  test('Android revalidation survives a retained physical link', () async {
+    final t = _Transport()
+      ..dropDuplicateRequests = true
+      ..retainPhysicalLink = true
+      ..configFrames = [_myInfo, _ownNodeInfo, _metadata];
+    final first = await probe(t).inspect(_id);
+    final second = await probe(t).inspect(_id);
+    expect(first.hardwareMac, _id);
+    expect(second.hardwareMac, _id);
+    expect(second.nodeNumber, first.nodeNumber);
+    expect(t.requests, hasLength(2));
+    expect(t.requests[0], isNot(t.requests[1]));
+    expect(t.isConnected, false);
+  });
+
   test(
-    'Android keeps the config-only request and metadata completion',
+    'Android uses fresh requests without changing metadata completion',
     () async {
       final t = _Transport()..dropDuplicateRequests = true;
       expect((await probe(t).inspect(_id)).hardwareModel, 105);
       expect((await probe(t).inspect(_id)).hardwareModel, 105);
-      expect(t.requests.first, [0x18, 0xac, 0x9e, 0x04]);
-      expect(t.requests.last, t.requests.first);
+      expect(t.requests.first.first, 0x18);
+      expect(t.requests.first, isNot([0x18, 0xac, 0x9e, 0x04]));
+      expect(t.requests.last, isNot(t.requests.first));
     },
   );
 

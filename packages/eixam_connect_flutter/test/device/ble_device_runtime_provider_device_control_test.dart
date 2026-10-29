@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
@@ -15,6 +16,100 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/builders/device_status_builder.dart';
 
 void main() {
+  final ownershipSuppressed = throwsA(
+    isA<DeviceException>().having(
+      (error) => error.code,
+      'code',
+      'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+    ),
+  );
+
+  for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    test(
+      '$platform refresh respects its existing ownership contract',
+      () async {
+        debugDefaultTargetPlatformOverride = platform;
+        final client = _RefreshOwnershipBleClient();
+        final provider = BleDeviceRuntimeProvider(bleClient: client);
+        addTearDown(() async {
+          debugDefaultTargetPlatformOverride = null;
+          await provider.dispose();
+          await client.dispose();
+        });
+        await provider.suspendOwnership(reason: 'candidate inspection');
+        final status = buildDeviceStatus(
+          deviceId: MockBleClient.demoDeviceId,
+          paired: true,
+          connected: false,
+        );
+
+        for (final force in [false, true]) {
+          final refresh = provider.refresh(status, forceFirmwareRead: force);
+          if (platform == TargetPlatform.android) {
+            await expectLater(refresh, ownershipSuppressed);
+            expect(client.reads, isEmpty);
+            expect(client.writtenCommands, isEmpty);
+          } else {
+            expect((await refresh).connected, isTrue);
+            expect(
+              client.reads,
+              containsAll(['adapter', 'connection', 'signal']),
+            );
+          }
+        }
+      },
+    );
+  }
+
+  for (final pausedRead in ['adapter', 'connection', 'firmware', 'signal']) {
+    test(
+      'Android refresh stops after ownership changes during $pausedRead',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final client = _RefreshOwnershipBleClient()..pausedRead = pausedRead;
+        final provider = BleDeviceRuntimeProvider(bleClient: client);
+        final published = <DeviceStatus>[];
+        final subscription = provider.watchRuntimeStatus().listen(
+          published.add,
+        );
+        addTearDown(() async {
+          debugDefaultTargetPlatformOverride = null;
+          await subscription.cancel();
+          await provider.dispose();
+          await client.dispose();
+        });
+        final status = buildDeviceStatus(
+          deviceId: MockBleClient.demoDeviceId,
+          paired: true,
+          connected: false,
+        );
+        final rejected = expectLater(
+          provider.refresh(status, forceFirmwareRead: true),
+          ownershipSuppressed,
+        );
+        await client.readStarted.future;
+        await provider.suspendOwnership(reason: 'candidate inspection');
+        await provider.resumeOwnership(reason: 'inspection complete');
+        client.resumeRead.complete();
+        await rejected;
+        await pumpEventQueue();
+
+        final stages = ['adapter', 'connection', 'firmware', 'signal'];
+        expect(client.reads, stages.take(stages.indexOf(pausedRead) + 1));
+        expect(client.writtenCommands, isEmpty);
+        expect(published.where((status) => status.connected), isEmpty);
+
+        // Ownership restoration permits a newly started refresh, while the
+        // preceding operation remains obsolete even after suspension ends.
+        client.pausedRead = null;
+        expect(
+          (await provider.refresh(status, forceFirmwareRead: true)).connected,
+          isTrue,
+        );
+      },
+    );
+  }
+
   for (final missingVersion in <String?>[null, '']) {
     test(
       'forced firmware inspection rejects missing version $missingVersion',
@@ -885,6 +980,37 @@ void main() {
       );
     });
   });
+}
+
+final class _RefreshOwnershipBleClient extends MockBleClient {
+  final reads = <String>[];
+  String? pausedRead;
+  final readStarted = Completer<void>();
+  final resumeRead = Completer<void>();
+
+  Future<T> _read<T>(String stage, T value) async {
+    reads.add(stage);
+    if (pausedRead == stage) {
+      readStarted.complete();
+      await resumeRead.future;
+    }
+    return value;
+  }
+
+  @override
+  Future<BleAdapterState> getAdapterState() =>
+      _read('adapter', BleAdapterState.poweredOn);
+
+  // Model the inspector's connection being visible through global BLE state.
+  @override
+  Future<bool> isConnected(String deviceId) => _read('connection', true);
+
+  @override
+  Future<String?> readFirmwareVersion(String deviceId) =>
+      _read('firmware', '2.7.26');
+
+  @override
+  Future<int?> readSignalQuality(String deviceId) => _read('signal', 3);
 }
 
 class _MissingFirmwareBleClient extends MockBleClient {

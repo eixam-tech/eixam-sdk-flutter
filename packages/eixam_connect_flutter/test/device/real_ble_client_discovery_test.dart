@@ -69,85 +69,107 @@ void main() {
     expect(await client.scan(timeout: Duration.zero), isEmpty);
   });
 
-  test('Android never queries iOS connected stock discovery', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    var calls = 0;
-    final client = _buildRealBleClient(
-      systemDevicesProvider: (_) async {
-        calls++;
-        return [];
-      },
-    );
-    await client.initialize();
-    expect(await client.scan(timeout: Duration.zero), isEmpty);
-    expect(calls, 0);
-  });
+  test(
+    'Android queries connected candidates once without trusting UUID filter',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      var calls = 0;
+      final client = _buildRealBleClient(
+        systemDevicesProvider: (_) async {
+          calls++;
+          return [
+            _SystemDevice('E9:B4:55:93:75:6E', 'Meshtastic_756e'),
+            _SystemDevice('control', 'Meshtastic_1aa8'),
+            _SystemDevice('unrelated', 'Headphones'),
+            _SystemDevice('similar', 'Meshtastic_756e_extra'),
+          ];
+        },
+      );
+      await client.initialize();
+      final found = await client.scan(timeout: Duration.zero);
+      expect(calls, 1);
+      expect(found, hasLength(2));
+      final match = TagPairingCodeCorrelator.find(
+        'N693756E',
+        found.map((r) => r.toPublic()),
+      );
+      expect(match.state, TagPairingCodeMatchState.inspectionRequired);
+      expect(match.candidate?.deviceId, 'E9:B4:55:93:75:6E');
+      expect(match.candidate?.canonicalHardwareId, isNull);
+      final target = found.singleWhere(
+        (r) => r.deviceId == 'E9:B4:55:93:75:6E',
+      );
+      expect(target.advertisedLocalName, isNull);
+      expect(target.advertisedServiceUuids, isEmpty);
+    },
+  );
 
-  test('superseded system retrieval cannot restore an old scan', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    final entered = Completer<void>();
-    final pending = Completer<List<BluetoothDevice>>();
-    var calls = 0;
-    final client = _buildRealBleClient(
-      systemDevicesProvider: (_) async {
-        if (calls++ == 0) {
-          entered.complete();
-          return pending.future;
-        }
-        return [];
-      },
-    );
-    await client.initialize();
-    final old = client.scan(timeout: Duration.zero);
-    await entered.future;
-    expect(await client.scan(timeout: Duration.zero), isEmpty);
-    pending.complete([_SystemDevice('old', 'Meshtastic_756e')]);
-    expect(await old, isEmpty);
-  });
+  for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+    test('superseded system retrieval cannot restore an old scan', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      final entered = Completer<void>();
+      final pending = Completer<List<BluetoothDevice>>();
+      var calls = 0;
+      final client = _buildRealBleClient(
+        systemDevicesProvider: (_) async {
+          if (calls++ == 0) {
+            entered.complete();
+            return pending.future;
+          }
+          return [];
+        },
+      );
+      await client.initialize();
+      final old = client.scan(timeout: Duration.zero);
+      await entered.future;
+      expect(await client.scan(timeout: Duration.zero), isEmpty);
+      pending.complete([_SystemDevice('old', 'Meshtastic_756e')]);
+      expect(await old, isEmpty);
+    });
 
-  test('fresh advertisement wins over a conflicting system name', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    final events = StreamController<List<ScanResult>>.broadcast(sync: true);
-    addTearDown(events.close);
-    final client = _buildRealBleClient(
-      systemDevicesProvider: (_) async => [
-        _SystemDevice('same', 'Meshtastic_756e'),
-      ],
-      scanResultsProvider: () => events.stream,
-      startScan: (_) async => events.add([
-        _nativeScanResult(
-          deviceId: 'same',
-          observedAt: DateTime.now(),
-          name: 'EIXAM_A693756E',
-          services: [Guid(EixamBleProtocol.serviceUuid)],
-        ),
-      ]),
-    );
-    await client.initialize();
-    final result = (await client.scan(timeout: Duration.zero)).single;
-    expect(result.name, 'EIXAM_A693756E');
-    expect(result.brandClassification, BleDiscoveredDeviceBrand.eixam);
-    expect(result.advertisedLocalName, 'EIXAM_A693756E');
-  });
+    test('fresh advertisement wins over a conflicting system name', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+      addTearDown(events.close);
+      final client = _buildRealBleClient(
+        systemDevicesProvider: (_) async => [
+          _SystemDevice('same', 'Meshtastic_756e'),
+        ],
+        scanResultsProvider: () => events.stream,
+        startScan: (_) async => events.add([
+          _nativeScanResult(
+            deviceId: 'same',
+            observedAt: DateTime.now(),
+            name: 'EIXAM_A693756E',
+            services: [Guid(EixamBleProtocol.serviceUuid)],
+          ),
+        ]),
+      );
+      await client.initialize();
+      final result = (await client.scan(timeout: Duration.zero)).single;
+      expect(result.name, 'EIXAM_A693756E');
+      expect(result.brandClassification, BleDiscoveredDeviceBrand.eixam);
+      expect(result.advertisedLocalName, 'EIXAM_A693756E');
+    });
 
-  test('system discovery error preserves fresh advertisements', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-    final events = StreamController<List<ScanResult>>.broadcast(sync: true);
-    addTearDown(events.close);
-    final client = _buildRealBleClient(
-      systemDevicesProvider: (_) async => throw StateError('unavailable'),
-      scanResultsProvider: () => events.stream,
-      startScan: (_) async => events.add([
-        _nativeScanResult(deviceId: 'fresh', observedAt: DateTime.now()),
-      ]),
-    );
-    await client.initialize();
-    expect(
-      (await client.scan(timeout: Duration.zero)).single.deviceId,
-      'fresh',
-    );
-  });
-
+    test('system discovery error preserves fresh advertisements', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+      addTearDown(events.close);
+      final client = _buildRealBleClient(
+        systemDevicesProvider: (_) async => throw StateError('unavailable'),
+        scanResultsProvider: () => events.stream,
+        startScan: (_) async => events.add([
+          _nativeScanResult(deviceId: 'fresh', observedAt: DateTime.now()),
+        ]),
+      );
+      await client.initialize();
+      expect(
+        (await client.scan(timeout: Duration.zero)).single.deviceId,
+        'fresh',
+      );
+    });
+  }
   test(
     'lazy client registry scanner initializes and reaches delegate scan',
     () async {

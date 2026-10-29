@@ -17,7 +17,7 @@ Read [AGENTS.md](../AGENTS.md) first. This is the canonical index; the retained
 | BLE/pairing/reconnect | [Runtime map](ai_context/BLE_AND_DEVICE_RUNTIME.md), [device contract](../packages/eixam_connect_flutter/BLE_DEVICE_CONTRACT.md), [security](security/ble-security-contract.md) |
 | Telemetry/location/relay | [Location ownership](SDK_INTEGRATION_GUIDE.md#location-architecture), [relay](ai_context/RELAY_FLOW.md), [cycle-bound return](LORA_CYCLE_BOUND_RETURN.md) |
 | DMP/notifications/background | [DMP](ai_context/DMP_FLOW.md), [notifications](ai_context/NOTIFICATIONS.md), [OS widgets](ai_context/OS_SOS_WIDGETS.md), platform setup in the integration guide |
-| Firmware/OTA/provisioning | [Public recovery contract](../packages/eixam_connect_flutter/PUBLIC_API.md#firmware-recovery-contract), [provisioning](device-provisioning/DEVICE_PROVISIONING_ARCHITECTURE.md), [iOS stock inspection](device-provisioning/IOS_STOCK_INSPECTION.md) |
+| Firmware/OTA/provisioning | [Public recovery contract](../packages/eixam_connect_flutter/PUBLIC_API.md#firmware-recovery-contract), [provisioning](device-provisioning/DEVICE_PROVISIONING_ARCHITECTURE.md), [Android factory activation](device-provisioning/ANDROID_FACTORY_ACTIVATION.md), [iOS stock inspection](device-provisioning/IOS_STOCK_INSPECTION.md) |
 | Activity recording | [Local engine](ACTIVITY_RECORDING_LOCAL_ENGINE.md), exported optional interfaces and package API notes |
 
 For firmware update implementation inspect
