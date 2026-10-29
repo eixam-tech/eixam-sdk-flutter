@@ -29,6 +29,29 @@ The Android statements in the earlier [iOS inspection report](IOS_STOCK_INSPECTI
 describe its October 28 checkpoint. This Android correction supersedes that
 checkpoint's constant-request-byte behavior.
 
+## Android inspection ownership
+
+A failed bond can leave a passive runtime metadata read in service discovery.
+Previously its transient-disconnect retry could reopen Android GATT after the
+inspection cleanup, outside the normal reconnect authority. The resulting App
+connection also prevented a new stock advertisement from appearing.
+
+Android runtime refresh now rejects reads while ownership is suspended and
+fences each awaited stage with an ownership revision. Passive Android service
+discovery never reconnects; explicit connection recovery remains responsible
+for acquisition. Once explicit candidate inspection has exclusive priority and
+runtime ownership is released, it also awaits disconnection of any selected App
+GATT link not tracked by the runtime. It does not disconnect a system-only link
+or another peripheral.
+
+Discovery can expose an Android system-connected stock-looking peripheral as
+an unverified inspection candidate. Android's native connected-device API does
+not filter by service UUID, so this path accepts only the strict stock name
+shape and excludes a known cached Eixam service tree. It supplies no canonical
+hardware MAC or invented advertisement evidence. Fresh advertisements win;
+full protected own-node identity and model verification are still mandatory.
+The iOS discovery, refresh and passive reconnect behavior are unchanged.
+
 ## Activation phases
 
 | Phase | Owner and behavior | Action |

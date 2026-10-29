@@ -3942,6 +3942,15 @@ class EixamConnectSdkImpl
                         reason: 'explicit_migration_candidate_inspection',
                       );
                 }
+                // A passive metadata read may have opened an App GATT link
+                // without registering it as the runtime's connected device.
+                // Explicit inspection owns this selected target now; release
+                // that App link before the probe acquires its own connection.
+                if (!kIsWeb &&
+                    defaultTargetPlatform == TargetPlatform.android &&
+                    await coordinator.bleClient.isConnected(deviceId)) {
+                  await coordinator.bleClient.disconnect(deviceId);
+                }
                 return await coordinator.inspect(
                   deviceId: deviceId,
                   advertisedName: advertisedName,
