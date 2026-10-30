@@ -154,6 +154,12 @@ class MqttOperationalSosRepository
       <String, _BufferedActuatorUpdate>{};
   final Map<String, DateTime> _handledMqttEvents = <String, DateTime>{};
   bool _disposed = false;
+  int _rehydrationEpoch = 0;
+
+  // Internal SDK lifecycle fence. Does not clear a persisted safety incident.
+  void invalidatePendingRehydration() {
+    _rehydrationEpoch++;
+  }
 
   @visibleForTesting
   String? get debugLastTrustedCorrelationId =>
@@ -206,6 +212,9 @@ class MqttOperationalSosRepository
 
   @override
   Future<void> bindSosRuntimeSessionScope(String scope) async {
+    // A repeated scope binding can replace credentials for the same account.
+    // Its previous authenticated HTTP response must not mutate this runtime.
+    _rehydrationEpoch++;
     final normalizedScope = scope.trim();
     if (normalizedScope.isEmpty) {
       return;
@@ -1330,9 +1339,16 @@ class MqttOperationalSosRepository
   @override
   Stream<SosIncident?> watchCurrentIncident() async* {
     yield _activeIncident;
-    await for (final _ in _stateController.stream) {
-      yield _activeIncident;
-    }
+    // Delegate cancellation even while idle; retain await-for's error-then-done.
+    yield* _stateController.stream.transform(
+      StreamTransformer<SosState, SosIncident?>.fromHandlers(
+        handleData: (_, sink) => sink.add(_activeIncident),
+        handleError: (error, stack, sink) {
+          sink.addError(error, stack);
+          sink.close();
+        },
+      ),
+    );
   }
 
   @override
@@ -1409,9 +1425,17 @@ class MqttOperationalSosRepository
     }
 
     try {
+      final epoch = _rehydrationEpoch;
       final incidentBeforeLookup = _activeIncident;
       final stateBeforeLookup = _stateMachine.current;
       final active = await dataSource.getActiveSos();
+      if (_disposed || epoch != _rehydrationEpoch) {
+        return SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+          resultingState: _stateMachine.current,
+          diagnosticNote: 'E_SOS_REHYDRATION_SUPERSEDED_BY_SESSION_CHANGE',
+        );
+      }
       if (!identical(_activeIncident, incidentBeforeLookup) ||
           _stateMachine.current != stateBeforeLookup) {
         await _persistState();
@@ -1669,6 +1693,7 @@ class MqttOperationalSosRepository
 
   @override
   Future<void> clearSosRuntimeForSessionChange() async {
+    _rehydrationEpoch++;
     _clearPendingMqttLifecycle(reason: 'session_cleared');
     _authenticatedSessionScope = null;
     await _clearPersistedExternalRelayLifecycleContext(
@@ -1684,6 +1709,7 @@ class MqttOperationalSosRepository
 
   Future<void> dispose() async {
     _disposed = true;
+    _rehydrationEpoch++;
     _clearPendingMqttLifecycle(reason: 'repository_disposed');
     await _realtimeSub?.cancel();
     await _stateController.close();

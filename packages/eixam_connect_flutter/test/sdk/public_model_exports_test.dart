@@ -13,9 +13,23 @@ void main() {
       SosProgressState,
       SosProgressStep,
       SosProgressStepType,
+      ActivityRecordingControl,
+      SdkActivityRecording,
+      SdkActivityRoutePoint,
+      SdkActivityRouteSegment,
+      SdkActivityRouteGap,
+      SdkActivityRoutePage,
+      ActivityRecordingPhase,
+      ActivityRecordingInputState,
+      ActivityRecordingRecoveryState,
+      ActivityRecordingRouteQuality,
+      ActivityRecordingGapState,
+      ActivityRecordingGapReason,
+      ActivityRecordingIssue,
+      ActivityRecordingException,
     ];
 
-    expect(publicTypes, hasLength(9));
+    expect(publicTypes, hasLength(23));
     expect(publicTypes.toSet(), hasLength(publicTypes.length));
   });
 }

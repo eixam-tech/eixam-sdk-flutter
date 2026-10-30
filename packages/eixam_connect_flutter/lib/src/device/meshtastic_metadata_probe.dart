@@ -52,8 +52,15 @@ abstract interface class MeshtasticInspectionTransport {
   bool get hasRequiredCharacteristics;
   bool get hasBattery;
   Future<void> connect();
+
+  /// Refresh Android's per-peripheral service cache; a no-op elsewhere.
+  Future<void> refreshGattCache();
   Future<void> discoverServices();
   Future<int?> readBattery();
+
+  /// Establish access to encrypted attributes before subscribing on iOS.
+  /// Must not supply metadata for this inspection's later fresh request.
+  Future<void> prepareSecurity();
   Future<void> enableNotifications();
   Future<void> requestMetadata(List<int> bytes);
   Future<List<int>> readMetadata();
@@ -105,6 +112,33 @@ final class FlutterBlueMeshtasticMetadataProbe
   static final Guid batteryServiceUuid = Guid('180F');
   static final Guid batteryLevelUuid = Guid('2A19');
 
+  // iOS can release one manager while another client retains the physical
+  // link, keeping stock's duplicate-ToRadio filter alive for revalidation.
+  static int _nextIosConfigRequestId =
+      DateTime.now().microsecondsSinceEpoch & 0xffffffff;
+  static int _allocateIosConfigRequestId() {
+    do {
+      _nextIosConfigRequestId = (_nextIosConfigRequestId + 1) & 0xffffffff;
+    } while (_nextIosConfigRequestId == 0 ||
+        _nextIosConfigRequestId == 69420 ||
+        _nextIosConfigRequestId == 69421);
+    return _nextIosConfigRequestId;
+  }
+
+  // Android can retain the physical link after this inspector releases GATT.
+  // Stock rejects identical consecutive requests until a real GAP disconnect.
+  static int _nextAndroidConfigRequestId =
+      DateTime.now().microsecondsSinceEpoch & 0xffffffff;
+  static int _allocateAndroidConfigRequestId() {
+    do {
+      _nextAndroidConfigRequestId =
+          (_nextAndroidConfigRequestId + 1) & 0xffffffff;
+    } while (_nextAndroidConfigRequestId == 0 ||
+        _nextAndroidConfigRequestId == 69420 ||
+        _nextAndroidConfigRequestId == 69421);
+    return _nextAndroidConfigRequestId;
+  }
+
   final MeshtasticPhoneApiCodec _codec;
   final MeshtasticInspectionTransport Function(String) _transportFactory;
   final Duration connectionTimeout;
@@ -142,6 +176,14 @@ final class _InspectionOperation {
   final FlutterBlueMeshtasticMetadataProbe probe;
   final String deviceId;
   final Duration metadataTimeout;
+  final bool _isIos = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+  final bool _isAndroid =
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  late final int _requestId = _isIos
+      ? FlutterBlueMeshtasticMetadataProbe._allocateIosConfigRequestId()
+      : _isAndroid
+      ? FlutterBlueMeshtasticMetadataProbe._allocateAndroidConfigRequestId()
+      : MeshtasticPhoneApiCodec.configRequestId;
   final Set<Future<void>> _pending = {};
   StreamSubscription<BluetoothBondState>? _bondSubscription;
   Completer<void>? _initialBond;
@@ -155,6 +197,9 @@ final class _InspectionOperation {
   Completer<void>? _pollWake;
   int? _nodeNumber;
   int? _battery;
+  int? _hardwareModel;
+  String? _firmwareVersion;
+  bool _requestStarted = false;
   final Map<int, String> _macs = {};
   MeshtasticProbeResult? _result;
   MeshtasticInspectionException? _metadataError;
@@ -163,6 +208,7 @@ final class _InspectionOperation {
     'MIGRATION_INSPECTION_STAGE stage=$stage '
     'selectedMarker=${SecurityDiagnosticsRedactor.stableIdentifierMarker(deviceId)} '
     'bondState=${_bondState?.name ?? 'unavailable'} '
+    '${_isAndroid ? 'requestId=$_requestId ' : ''}'
     'failureCode=${failureCode ?? 'none'}',
   );
 
@@ -192,7 +238,9 @@ final class _InspectionOperation {
       deadline,
       () => expired.completeError(
         MeshtasticInspectionException(
-          stage == 'enablingNotifications'
+          stage == 'establishingSecurity'
+              ? DeviceMigrationInspectionFailure.bondingTimedOut
+              : stage == 'enablingNotifications'
               ? (_sawBonding
                     ? DeviceMigrationInspectionFailure.bondingTimedOut
                     : DeviceMigrationInspectionFailure
@@ -226,7 +274,11 @@ final class _InspectionOperation {
           error.platform == ErrorPlatform.fbp &&
           error.code == FbpErrorCode.timeout.index;
       throw MeshtasticInspectionException(
-        stage == 'enablingNotifications'
+        stage == 'establishingSecurity'
+            ? (nativeTimeout
+                  ? DeviceMigrationInspectionFailure.bondingTimedOut
+                  : DeviceMigrationInspectionFailure.bondingFailed)
+            : stage == 'enablingNotifications'
             ? (nativeTimeout
                   ? (_sawBonding
                         ? DeviceMigrationInspectionFailure.bondingTimedOut
@@ -248,6 +300,7 @@ final class _InspectionOperation {
 
   void _consume(List<int> payload) {
     if (_terminal ||
+        (_isIos && !_requestStarted) ||
         payload.isEmpty ||
         _result != null ||
         _metadataError != null) {
@@ -265,18 +318,34 @@ final class _InspectionOperation {
       }
       if (frame.hardwareModel != null) {
         final version = frame.firmwareVersion?.trim();
+        _hardwareModel = frame.hardwareModel;
+        _firmwareVersion = version?.isEmpty == true ? null : version;
+      }
+      if (_hardwareModel != null &&
+          (!_isIos || (_nodeNumber != null && _macs[_nodeNumber] != null))) {
         _result = MeshtasticProbeResult(
-          hardwareModel: frame.hardwareModel!,
-          firmwareVersion: version?.isEmpty == true ? null : version,
+          hardwareModel: _hardwareModel!,
+          firmwareVersion: _firmwareVersion,
           nodeNumber: _nodeNumber,
           hardwareMac: _macs[_nodeNumber],
           batteryPercentage: _battery,
         );
-      } else if (frame.configCompleteId ==
-          MeshtasticPhoneApiCodec.configRequestId) {
+      } else if (frame.configCompleteId == _requestId) {
         _metadataError = const MeshtasticInspectionException(
           DeviceMigrationInspectionFailure.malformedMetadata,
-          FormatException('Device metadata was not provided.'),
+          FormatException(
+            'Required device metadata or identity was not provided.',
+          ),
+        );
+      }
+      if (frame.hardwareModel != null ||
+          frame.nodeNumber != null ||
+          mac != null) {
+        safeSdkDebugPrint(
+          'MIGRATION_INSPECTION_METADATA '
+          'modelPresent=${_hardwareModel != null} '
+          'nodePresent=${_nodeNumber != null} '
+          'ownMacPresent=${_macs[_nodeNumber] != null}',
         );
       }
     } catch (error) {
@@ -376,7 +445,16 @@ final class _InspectionOperation {
         'discoveringServices',
         probe.serviceTimeout,
         DeviceMigrationInspectionFailure.serviceDiscoveryFailed,
-        transport.discoverServices,
+        () async {
+          await transport.refreshGattCache();
+          // Cancellation may have won while the platform refresh settled.
+          if (_terminal || probe.cancellation?.isCancelled == true) {
+            throw const MeshtasticInspectionException(
+              DeviceMigrationInspectionFailure.cancelled,
+            );
+          }
+          await transport.discoverServices();
+        },
       );
       if (!transport.hasRequiredCharacteristics) {
         throw const MeshtasticInspectionException(
@@ -401,6 +479,12 @@ final class _InspectionOperation {
           _trace('batteryUnavailable');
         }
       }
+      await _stage(
+        'establishingSecurity',
+        probe.notificationTimeout,
+        DeviceMigrationInspectionFailure.bondingFailed,
+        transport.prepareSecurity,
+      );
       _frameSubscription = transport.frames.listen(
         _consume,
         onError: (Object error) {
@@ -429,7 +513,10 @@ final class _InspectionOperation {
               DeviceMigrationInspectionFailure.bondingFailed,
             );
           }
-          return transport.requestMetadata(probe._codec.encodeConfigRequest());
+          _requestStarted = true;
+          return transport.requestMetadata(
+            probe._codec.encodeConfigRequest(requestId: _requestId),
+          );
         },
       );
       final result = await _stage(
@@ -607,7 +694,26 @@ final class _FlutterBlueInspectionTransport
   Future<void> connect() =>
       device.connect(timeout: const Duration(seconds: 10), mtu: null);
   @override
+  Future<void> refreshGattCache() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      // The inspection owns this connection. Match the normal runtime path:
+      // firmware changes can leave Android serving the old service table.
+      await device.clearGattCache();
+      safeSdkDebugPrint('MIGRATION_INSPECTION_GATT cacheRefresh=completed');
+    } catch (_) {
+      // Some Android stacks do not expose refresh. Discovery must still prove
+      // every required characteristic; refresh never grants compatibility.
+      safeSdkDebugPrint('MIGRATION_INSPECTION_GATT cacheRefresh=unavailable');
+    }
+  }
+
+  @override
   Future<void> discoverServices() async {
+    _toRadio = null;
+    _fromRadio = null;
+    _fromNum = null;
+    _battery = null;
     final response = await _native(
       FlutterBluePlusPlatform.instance.onDiscoveredServices.where(
         (p) => p.remoteId == device.remoteId,
@@ -639,12 +745,26 @@ final class _FlutterBlueInspectionTransport
         }
       }
     }
+    safeSdkDebugPrint(
+      'MIGRATION_INSPECTION_GATT '
+      'toRadio=${_toRadio != null} fromRadio=${_fromRadio != null} '
+      'fromNum=${_fromNum != null}',
+    );
   }
 
   @override
   Future<int?> readBattery() async {
     final bytes = await _read(_battery!);
     return bytes.isNotEmpty && bytes.first <= 100 ? bytes.first : null;
+  }
+
+  @override
+  Future<void> prepareSecurity() async {
+    if (kIsWeb || !Platform.isIOS || !_fromRadio!.properties.read) return;
+    // A protected value read lets CoreBluetooth establish encryption before
+    // the CCCD write, which can otherwise fail immediately with ATT error 15.
+    // Discard queued data: identity must come from the fresh config request.
+    await _read(_fromRadio!);
   }
 
   @override

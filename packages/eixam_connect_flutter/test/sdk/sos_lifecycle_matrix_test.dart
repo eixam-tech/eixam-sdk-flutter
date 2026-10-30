@@ -23,6 +23,7 @@ import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:eixam_connect_flutter/src/provisioning/provisioning_command_result.dart';
 import 'package:eixam_connect_flutter/src/sdk/authoritative_sos_lifecycle_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
+import 'package:eixam_connect_flutter/src/sdk/latest_phone_position_sink.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
@@ -1600,6 +1601,399 @@ void main() {
         }
       },
     );
+
+    for (final terminal in [SosState.cancelled, SosState.resolved]) {
+      for (final platform in [
+        ProtectionPlatform.android,
+        ProtectionPlatform.ios,
+      ]) {
+        for (final delivery in [
+          'confirmed',
+          'timeout',
+          'superseded',
+          'wrong_peer',
+          'no_pending',
+        ]) {
+          test(
+            'Flutter terminal receiver survives protection entry ${terminal.name} ${platform.name} $delivery',
+            () async {
+              const deviceId = 'CF:82:00:00:00:01';
+              final releaseWrite = Completer<void>();
+              final writeStarted = Completer<void>();
+              final adapter = _SnapshotProtectionPlatformAdapter(
+                ProtectionPlatformSnapshot(
+                  platform: platform,
+                  backgroundCapabilityReady: true,
+                  bluetoothEnabled: true,
+                ),
+              );
+              final harness = _SdkSosHarness(
+                connectedBle: true,
+                connectedNodeId: 0x1234,
+                connectedDeviceId: deviceId,
+                connectedCanonicalHardwareId: deviceId,
+                protectionPlatformAdapter: adapter,
+              );
+              final opcode = terminal == SosState.cancelled ? 0x04 : 0x07;
+              try {
+                await harness.deviceSosController.attach(
+                  transportId: deviceId,
+                  commandWriter: (command) async {
+                    if (command.opcode == opcode) {
+                      if (!writeStarted.isCompleted) writeStarted.complete();
+                      await releaseWrite.future;
+                    }
+                  },
+                );
+                await harness.sdk.initialize(
+                  const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                );
+                await harness.setSession();
+                if (delivery != 'no_pending') {
+                  await harness.sdk.triggerSosAuthoritatively(
+                    const SosTriggerPayload(triggerSource: 'commercial_app'),
+                  );
+                  await harness.deviceSosController.confirmSos();
+                  harness.deviceSosController.handleIncomingSosPacket(
+                    _deviceOriginActivePacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: 1,
+                      terminal: false,
+                      receiveSequenceDomain: 'entry-terminal',
+                    ),
+                  );
+                  await pumpEventQueue(times: 12);
+                  harness.sosRepository.currentIncident = harness
+                      .sosRepository
+                      .currentIncident
+                      .copyWith(state: terminal, isBackendConfirmed: true);
+                  harness.sosRepository.stateController.add(terminal);
+                  await writeStarted.future.timeout(const Duration(seconds: 3));
+                }
+                final entry = harness.sdk.enterProtectionMode();
+                await pumpEventQueue(times: 16);
+                if (delivery == 'no_pending') {
+                  final result = await entry;
+                  expect(
+                    adapter.startCalls,
+                    1,
+                    reason: result.blockingIssues
+                        .map((issue) => issue.message)
+                        .join(','),
+                  );
+                  return;
+                }
+                expect(
+                  adapter.startCalls,
+                  0,
+                  reason:
+                      'pending Flutter terminal must retain its receiver before native entry',
+                );
+                expect(harness.deviceSosController.hasCommandChannel, isTrue);
+                expect(
+                  _hasDebugMessage(
+                    'SOS_BLE_OWNER_DECISION owner=native_protection action=release_flutter',
+                  ),
+                  isFalse,
+                );
+                if (delivery == 'superseded') {
+                  await harness.sdk.startPreSos(
+                    countdown: const Duration(minutes: 1),
+                  );
+                } else if (delivery == 'wrong_peer') {
+                  harness.deviceRepository.emitStatus(
+                    buildDeviceStatus(
+                      deviceId: 'CF:82:00:00:00:02',
+                      nodeId: 0x5678,
+                      canonicalHardwareId: 'CF:82:00:00:00:02',
+                    ),
+                  );
+                  await pumpEventQueue(times: 8);
+                }
+                releaseWrite.complete();
+                await pumpEventQueue(times: 8);
+                if (delivery == 'confirmed') {
+                  expect(adapter.startCalls, 0);
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    terminal == SosState.cancelled
+                        ? _deviceCancelAckPacket()
+                        : _deviceBackendResolvedPacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: 2,
+                      terminal: true,
+                      receiveSequenceDomain: 'entry-terminal',
+                    ),
+                  );
+                }
+                final result = await entry.timeout(const Duration(seconds: 5));
+                await pumpEventQueue(times: 12);
+                if (delivery == 'superseded' || delivery == 'wrong_peer') {
+                  expect(result.success, isFalse);
+                  expect(adapter.startCalls, 0);
+                } else {
+                  expect(
+                    adapter.startCalls,
+                    1,
+                    reason: result.blockingIssues
+                        .map((issue) => issue.message)
+                        .join(','),
+                  );
+                  expect(
+                    _hasDebugMessage(
+                      'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=${terminal.name}',
+                    ),
+                    delivery == 'confirmed',
+                  );
+                }
+              } finally {
+                if (!releaseWrite.isCompleted) releaseWrite.complete();
+                await harness.dispose();
+                await adapter.dispose();
+              }
+            },
+          );
+        }
+      }
+    }
+
+    for (final terminal in [SosState.resolved, SosState.cancelled]) {
+      final label = terminal == SosState.resolved ? 'RESOLVE' : 'CANCEL';
+      final terminalOpcode = terminal == SosState.resolved ? 0x07 : 0x04;
+      for (final platform in [
+        ProtectionPlatform.android,
+        ProtectionPlatform.ios,
+      ]) {
+        for (final delivery in [
+          'confirmed',
+          'write_failure',
+          'flutter_stays_writable',
+          if (terminal == SosState.cancelled) 'flutter_short_only',
+          'wrong_peer',
+          'superseded',
+        ]) {
+          test(
+            '$label confirmation survives owner change after write ${platform.name} $delivery',
+            () async {
+              const deviceId = 'CF:82:00:00:00:01';
+              final nativeWrite = Completer<void>();
+              final adapter = _SnapshotProtectionPlatformAdapter(
+                ProtectionPlatformSnapshot(
+                  platform: platform,
+                  backgroundCapabilityReady: false,
+                ),
+              );
+              final harness = _SdkSosHarness(
+                connectedBle: true,
+                connectedNodeId: 0x1234,
+                connectedDeviceId: deviceId,
+                connectedCanonicalHardwareId: deviceId,
+                deviceCountdown: const Duration(seconds: 20),
+                protectionPlatformAdapter: adapter,
+              );
+              final commands = <int>[];
+              final terminalCommands = <EixamDeviceCommand>[];
+              Future<void> write(EixamDeviceCommand command) async {
+                commands.add(command.opcode);
+                if (command.opcode == terminalOpcode) {
+                  terminalCommands.add(command);
+                  // The old receiver may detach after GATT accepts a write.
+                  if (delivery != 'flutter_stays_writable' &&
+                      delivery != 'flutter_short_only') {
+                    await harness.deviceSosController.detach();
+                  }
+                }
+              }
+
+              try {
+                await harness.deviceSosController.attach(
+                  transportId: deviceId,
+                  commandWriter: write,
+                );
+                await harness.sdk.initialize(
+                  const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+                );
+                await harness.setSession();
+                await harness.sdk.triggerSosAuthoritatively(
+                  const SosTriggerPayload(triggerSource: 'commercial_app'),
+                );
+                await harness.deviceSosController.confirmSos();
+                harness.deviceSosController.handleIncomingSosPacket(
+                  _deviceOriginActivePacket(),
+                  source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: 1,
+                    terminal: false,
+                    receiveSequenceDomain: 'resolve-owner-handoff',
+                  ),
+                );
+                await pumpEventQueue(times: 12);
+                final original = await harness.sdk.getSosLifecycle();
+                if (delivery == 'flutter_short_only') {
+                  await harness.deviceSosController.attach(
+                    transportId: deviceId,
+                    commandWriter: write,
+                    shortCommandAvailable: true,
+                    longCommandAvailable: false,
+                  );
+                }
+                harness.sosRepository.currentIncident = harness
+                    .sosRepository
+                    .currentIncident
+                    .copyWith(state: terminal, isBackendConfirmed: true);
+                harness.sosRepository.stateController.add(terminal);
+                await pumpEventQueue(times: 30);
+                expect(
+                  commands.where((opcode) => opcode == terminalOpcode),
+                  hasLength(1),
+                );
+                if (delivery == 'flutter_short_only') {
+                  expect(
+                    terminalCommands.single.usesCmdCharacteristic,
+                    isFalse,
+                  );
+                }
+                if (delivery == 'superseded') {
+                  await harness.sdk.triggerSosAuthoritatively(
+                    const SosTriggerPayload(triggerSource: 'commercial_app'),
+                  );
+                }
+                final expectedDevice = delivery == 'wrong_peer'
+                    ? 'CF:82:00:00:00:02'
+                    : deviceId;
+                adapter.snapshot = ProtectionPlatformSnapshot(
+                  platform: platform,
+                  backgroundCapabilityReady: true,
+                  serviceRunning: true,
+                  runtimeActive: true,
+                  runtimeState: ProtectionRuntimeState.active,
+                  coverageLevel: ProtectionCoverageLevel.full,
+                  bleOwner: platform == ProtectionPlatform.android
+                      ? ProtectionBleOwner.androidService
+                      : ProtectionBleOwner.iosPlugin,
+                  serviceBleConnected: true,
+                  serviceBleReady: true,
+                  nativeCommandServiceReady: true,
+                  nativeCommandEa04Ready: true,
+                  nativeCommandIdentityReady: true,
+                  nativeCommandQueueHealthy: true,
+                  nativeCommandReady: true,
+                  protectedDeviceId: expectedDevice,
+                  activeDeviceId: expectedDevice,
+                  bleHardwareId: expectedDevice,
+                );
+                adapter.commandObserver = (request) {
+                  if (request.bytes.first == terminalOpcode) {
+                    if (!nativeWrite.isCompleted) nativeWrite.complete();
+                    if (delivery == 'write_failure') {
+                      throw StateError('native write rejected');
+                    }
+                    scheduleMicrotask(
+                      () => harness.deviceSosController
+                          .handleIncomingSosEventPacket(
+                            terminal == SosState.resolved
+                                ? _deviceBackendResolvedPacket()
+                                : _deviceCancelAckPacket(),
+                            source: DeviceSosTransitionSource.device,
+                            resolutionContext: _physicalResolutionContext(
+                              receiveSequence: 2,
+                              terminal: true,
+                              receiveSequenceDomain: 'resolve-owner-handoff',
+                            ),
+                          ),
+                    );
+                  }
+                };
+                await harness.sdk.rehydrateProtectionState();
+                final canRebind =
+                    delivery == 'confirmed' || delivery == 'write_failure';
+                final expectedNativeRoutes = <bool>[
+                  if (canRebind) true,
+                  if (terminal == SosState.cancelled &&
+                      delivery == 'write_failure')
+                    false,
+                ];
+                if (canRebind) {
+                  await nativeWrite.future.timeout(const Duration(seconds: 5));
+                } else {
+                  await Future<void>.delayed(const Duration(seconds: 4));
+                }
+                await pumpEventQueue(times: 30);
+                expect(
+                  adapter.commands.where(
+                    (request) => request.bytes.first == terminalOpcode,
+                  ),
+                  hasLength(expectedNativeRoutes.length),
+                );
+                expect(
+                  adapter.commands
+                      .where((request) => request.bytes.first == terminalOpcode)
+                      .map((request) => request.forceCmdCharacteristic),
+                  expectedNativeRoutes,
+                );
+                if (delivery == 'confirmed') {
+                  expect(
+                    harness.deviceSosController.currentStatus.state,
+                    terminal == SosState.resolved
+                        ? DeviceSosState.resolved
+                        : DeviceSosState.inactive,
+                  );
+                  expect(
+                    harness
+                        .deviceSosController
+                        .currentStatus
+                        .derivedFromBlePacket,
+                    isTrue,
+                  );
+                  expect(
+                    harness.deviceSosController.currentStatus.lastOpcode,
+                    terminal == SosState.resolved ? 0xE3 : 0xE2,
+                  );
+                  expect(
+                    _hasDebugMessage(
+                      'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACKNOWLEDGED terminal=${terminal.name}',
+                    ),
+                    isTrue,
+                    reason: 'SDK must consume the rebound same-cycle proof',
+                  );
+                }
+                final lifecycle = await harness.sdk.getSosLifecycle();
+                if (delivery == 'superseded') {
+                  expect(
+                    lifecycle.generation,
+                    greaterThan(original.generation),
+                  );
+                } else {
+                  expect(lifecycle.generation, original.generation);
+                  expect(
+                    lifecycle.stage,
+                    terminal == SosState.resolved
+                        ? SosLifecycleStage.resolved
+                        : SosLifecycleStage.cancelled,
+                  );
+                }
+                await harness.sdk.rehydrateProtectionState();
+                await pumpEventQueue(times: 12);
+                expect(
+                  commands.where((opcode) => opcode == terminalOpcode),
+                  hasLength(1),
+                );
+                expect(
+                  adapter.commands.where(
+                    (request) => request.bytes.first == terminalOpcode,
+                  ),
+                  hasLength(expectedNativeRoutes.length),
+                );
+              } finally {
+                await harness.dispose();
+                await adapter.dispose();
+              }
+            },
+          );
+        }
+      }
+    }
 
     for (final peer in ['android_mac', 'ios_uuid']) {
       final platform = peer == 'android_mac'
@@ -10567,6 +10961,20 @@ void main() {
           connectedBle: true,
           deviceCountdown: const Duration(milliseconds: 5),
         );
+        final stages = <SosLifecycleStage>[];
+        final active = Completer<SosLifecycleSnapshot>();
+        final cancelled = Completer<SosLifecycleSnapshot>();
+        final subscription = harness.sdk.sosLifecycleStream.listen((snapshot) {
+          stages.add(snapshot.stage);
+          if (snapshot.stage == SosLifecycleStage.active &&
+              !active.isCompleted) {
+            active.complete(snapshot);
+          }
+          if (snapshot.stage == SosLifecycleStage.cancelled &&
+              !cancelled.isCompleted) {
+            cancelled.complete(snapshot);
+          }
+        });
         try {
           await harness.sdk.initialize(
             const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
@@ -10582,7 +10990,7 @@ void main() {
             _deviceOriginActivePacket(),
             source: DeviceSosTransitionSource.device,
           );
-          await Future<void>.delayed(const Duration(milliseconds: 15));
+          final activated = await active.future;
           expect(
             (await harness.deviceSosController.getStatus()).state,
             DeviceSosState.active,
@@ -10596,15 +11004,25 @@ void main() {
             _devicePostFireCancelPacket(),
             source: DeviceSosTransitionSource.device,
           );
-          await pumpEventQueue(times: 3);
+          final terminal = await cancelled.future;
 
           expect(harness.sosRepository.cancelCallCount, 1);
+          expect(terminal.generation, activated.generation);
+          expect(
+            stages,
+            containsAllInOrder([
+              SosLifecycleStage.activating,
+              SosLifecycleStage.active,
+              SosLifecycleStage.cancelled,
+            ]),
+          );
           expect(
             (await harness.sdk.getSosLifecycle()).stage,
             SosLifecycleStage.cancelled,
           );
           expect(await harness.sdk.getSosState(), SosState.cancelled);
         } finally {
+          await subscription.cancel();
           await harness.dispose();
         }
       },
@@ -15240,6 +15658,262 @@ void main() {
       },
     );
 
+    test(
+      'SOS snapshot cannot wait indefinitely for a phone position',
+      () async {
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final harness = _SdkSosHarness(trackingRepository: tracking);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          tracking.block = true;
+
+          final result = await harness.sdk
+              .triggerSosAuthoritatively(
+                const SosTriggerPayload(triggerSource: 'commercial_app'),
+              )
+              .timeout(const Duration(seconds: 4));
+
+          expect(result.outcome, SosActivationOutcome.activated);
+          expect(harness.sosRepository.triggerCallCount, 1);
+          await harness.sdk.cancelSos();
+          tracking.release.complete(
+            TrackingPosition(
+              latitude: 41.38,
+              longitude: 2.17,
+              timestamp: DateTime.now().toUtc(),
+              source: DeliveryMode.mobile,
+            ),
+          );
+          await pumpEventQueue(times: 8);
+          expect(harness.sosRepository.triggerCallCount, 1);
+          expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
+      'SOS snapshot uses a fresh cache without requesting a phone fix',
+      () async {
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final harness = _SdkSosHarness(trackingRepository: tracking);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          tracking.latestPhonePosition = TrackingPosition(
+            latitude: 41.38,
+            longitude: 2.17,
+            timestamp: DateTime.now().toUtc(),
+            source: DeliveryMode.mobile,
+          );
+          tracking.block = true;
+          final result = await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          expect(result.outcome, SosActivationOutcome.activated);
+          expect(tracking.blocked.isCompleted, isFalse);
+          expect(harness.sosRepository.lastPositionSnapshot?.latitude, 41.38);
+          await harness.sdk.cancelSos();
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('SOS snapshot timeout respects cancellation while waiting', () async {
+      final tracking = _BlockedSosSnapshotTrackingRepository();
+      final harness = _SdkSosHarness(trackingRepository: tracking);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        tracking.block = true;
+        final activation = harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await pumpEventQueue(times: 8);
+        await harness.sdk.cancelSos();
+        await activation.timeout(const Duration(seconds: 4));
+        expect(harness.sosRepository.triggerCallCount, 0);
+        tracking.release.complete(null);
+        await pumpEventQueue(times: 8);
+        expect(harness.sosRepository.triggerCallCount, 0);
+        expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+      } finally {
+        if (!tracking.release.isCompleted) tracking.release.complete(null);
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'detached BLE confirmation cancellation preserves terminal truth',
+      () async {
+        var deviceNow = DateTime.now();
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final harness = _SdkSosHarness(
+          trackingRepository: tracking,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceClock: () => deviceNow,
+        );
+        var sequence = 0;
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              if (command.opcode == 0x06) {
+                scheduleMicrotask(() {
+                  harness.deviceSosController.handleIncomingSosPacket(
+                    _deviceOriginCountdownPacket(),
+                    source: DeviceSosTransitionSource.device,
+                  );
+                });
+              } else if (command.opcode == 0x04) {
+                scheduleMicrotask(() {
+                  harness.deviceSosController.handleIncomingSosEventPacket(
+                    _deviceCancelAckPacket(),
+                    source: DeviceSosTransitionSource.device,
+                    resolutionContext: _physicalResolutionContext(
+                      receiveSequence: ++sequence,
+                      terminal: true,
+                      receiveSequenceDomain: 'detached-ble-confirmation',
+                    ),
+                  );
+                });
+              }
+            },
+            transportId: 'ble-1',
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          final armed = await harness.sdk.getSosLifecycle();
+          tracking.block = true;
+          deviceNow = deviceNow.add(const Duration(seconds: 21));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _minimalAppSosPacket(sosType: 3, packetId: 0),
+            source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: ++sequence,
+              terminal: false,
+              receiveSequenceDomain: 'detached-ble-confirmation',
+            ),
+          );
+          await tracking.blocked.future.timeout(const Duration(seconds: 1));
+          await harness.sdk.cancelSosAuthoritatively();
+          tracking.release.complete(null);
+          await pumpEventQueue(times: 30);
+          final terminal = await harness.sdk.getSosLifecycle();
+          expect(terminal.stage, SosLifecycleStage.cancelled);
+          expect(terminal.generation, armed.generation);
+          expect(harness.sosRepository.triggerCallCount, 0);
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+          await expectLater(
+            harness.sdk.confirmPreSos(const SosTriggerPayload()),
+            throwsA(
+              isA<SosException>().having(
+                (error) => error.code,
+                'code',
+                'E_SOS_PENDING_ACTIVATION_CANCELLED',
+              ),
+            ),
+          );
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+        }
+      },
+    );
+
+    for (final nativeCase in [
+      'active',
+      'cancel',
+      'removed',
+      'cleanup_failure',
+      'snapshot_unavailable',
+    ]) {
+      final cancelWhileWaiting =
+          nativeCase != 'active' && nativeCase != 'snapshot_unavailable';
+      test('native SOS snapshot timeout $nativeCase', () async {
+        final tracking = _BlockedSosSnapshotTrackingRepository();
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          trackingRepository: tracking,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          tracking.block = true;
+          adapter.pendingNativeSosCreate = ProtectionPendingNativeSosCreate(
+            signature: 'snapshot-timeout-native-create',
+            incidentId: 'snapshot-timeout-incident',
+            cycleKey: 'snapshot-timeout-cycle',
+            correlationId: 'snapshot-timeout-correlation',
+            createdAt: DateTime.now().toUtc(),
+            updatedAt: DateTime.now().toUtc(),
+            retryCount: 0,
+            state: 'pending',
+          );
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.nativeBackendSyncQueued,
+              timestamp: DateTime.now().toUtc(),
+              reason: 'create:scheduled_retry',
+            ),
+          );
+          await tracking.blocked.future.timeout(const Duration(seconds: 4));
+          if (cancelWhileWaiting) {
+            adapter.snapshot = const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.android,
+              backgroundCapabilityReady: true,
+              preSosLifecycleState: 'cancelPending',
+            );
+            if (nativeCase == 'removed') adapter.pendingNativeSosCreate = null;
+            adapter.failDrop = nativeCase == 'cleanup_failure';
+          }
+          final deadline = DateTime.now().add(const Duration(seconds: 4));
+          while (harness.sosRepository.triggerCallCount == 0 &&
+              DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+          }
+          expect(
+            harness.sosRepository.triggerCallCount,
+            cancelWhileWaiting ? 0 : 1,
+          );
+          if (!cancelWhileWaiting) await harness.sdk.cancelSos();
+          tracking.release.complete(null);
+          await pumpEventQueue(times: 8);
+          expect(
+            harness.sosRepository.triggerCallCount,
+            cancelWhileWaiting ? 0 : 1,
+          );
+          expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+        } finally {
+          if (!tracking.release.isCompleted) tracking.release.complete(null);
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      });
+    }
+
     test('missing location degrades but does not block app SOS', () async {
       final harness = _SdkSosHarness(hasLocation: false);
       try {
@@ -15347,8 +16021,40 @@ final class _BlockingNextWriteSecureKeyValueStore
   }
 }
 
+final class _BlockedSosSnapshotTrackingRepository extends FakeTrackingRepository
+    implements LatestPhonePositionSink {
+  @override
+  TrackingPosition? latestPhonePosition = TrackingPosition(
+    latitude: 41.38,
+    longitude: 2.17,
+    timestamp: DateTime.now().toUtc().subtract(const Duration(minutes: 3)),
+    source: DeliveryMode.mobile,
+  );
+
+  bool block = false;
+  final blocked = Completer<void>();
+  final release = Completer<TrackingPosition?>();
+
+  @override
+  Future<bool> acceptPhonePosition(
+    TrackingPosition position, {
+    required PhonePositionSource source,
+  }) async {
+    latestPhonePosition = position;
+    return true;
+  }
+
+  @override
+  Future<TrackingPosition?> getCurrentPosition() {
+    if (!block) return super.getCurrentPosition();
+    if (!blocked.isCompleted) blocked.complete();
+    return release.future;
+  }
+}
+
 final class _SdkSosHarness {
   _SdkSosHarness({
+    FakeTrackingRepository? trackingRepository,
     FakeSosRepository? sosRepository,
     SosRepository? sdkSosRepository,
     FakeRealtimeClient? realtimeClient,
@@ -15369,16 +16075,18 @@ final class _SdkSosHarness {
     Stream<BleIncomingEvent> bleIncomingEvents =
         const Stream<BleIncomingEvent>.empty(),
   }) : sosRepository = sosRepository ?? FakeSosRepository(),
-       trackingRepository = FakeTrackingRepository(
-         currentPosition: hasLocation
-             ? TrackingPosition(
-                 latitude: 41.38,
-                 longitude: 2.17,
-                 timestamp: DateTime.utc(2026, 1, 1, 10),
-                 source: DeliveryMode.mobile,
-               )
-             : null,
-       ),
+       trackingRepository =
+           trackingRepository ??
+           FakeTrackingRepository(
+             currentPosition: hasLocation
+                 ? TrackingPosition(
+                     latitude: 41.38,
+                     longitude: 2.17,
+                     timestamp: DateTime.utc(2026, 1, 1, 10),
+                     source: DeliveryMode.mobile,
+                   )
+                 : null,
+           ),
        telemetryRepository = FakeTelemetryRepository(),
        contactsRepository = FakeContactsRepository(),
        deviceRepository = FakeDeviceRepository(
@@ -15416,7 +16124,7 @@ final class _SdkSosHarness {
        ) {
     sdk = EixamConnectSdkImpl(
       sosRepository: sdkSosRepository ?? this.sosRepository,
-      trackingRepository: trackingRepository,
+      trackingRepository: this.trackingRepository,
       telemetryRepository: telemetryRepository,
       contactsRepository: contactsRepository,
       deviceRepository: deviceRepository,
@@ -15801,7 +16509,7 @@ final class _DelayedCancelSosRemoteDataSource
   }
 }
 
-final class _SnapshotProtectionPlatformAdapter extends Fake
+class _SnapshotProtectionPlatformAdapter extends Fake
     implements ProtectionPlatformAdapter {
   _SnapshotProtectionPlatformAdapter(
     this.snapshot, {
@@ -15817,6 +16525,7 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
   final List<String> ensureRuntimeReasons = <String>[];
   int watchPlatformEventsCallCount = 0;
   int stopCalls = 0;
+  int startCalls = 0;
   ProtectionPendingNativeSosCreate? pendingNativeSosCreate;
   final List<String> droppedNativeSosCreateSignatures = <String>[];
   final StreamController<ProtectionPlatformEvent> _events =
@@ -15831,6 +16540,14 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async => snapshot;
+
+  @override
+  Future<ProtectionPlatformStartResult> startProtectionRuntime({
+    required ProtectionPlatformStartRequest request,
+  }) async {
+    startCalls++;
+    return const ProtectionPlatformStartResult(success: true);
+  }
 
   @override
   Future<void> stopProtectionRuntime() async {
@@ -15892,6 +16609,45 @@ final class _SnapshotProtectionPlatformAdapter extends Fake
     pendingNativeSosCreate = null;
     return true;
   }
+}
+
+final class _SnapshotTimeoutProtectionPlatformAdapter
+    extends _SnapshotProtectionPlatformAdapter {
+  _SnapshotTimeoutProtectionPlatformAdapter(super.snapshot);
+
+  bool failDrop = false;
+  bool failSnapshot = false;
+
+  @override
+  Future<ProtectionPlatformSnapshot> getPlatformSnapshot() {
+    if (failSnapshot) throw StateError('native snapshot unavailable');
+    return super.getPlatformSnapshot();
+  }
+
+  @override
+  Future<bool> dropPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) {
+    if (failDrop) throw StateError('native queue cleanup unavailable');
+    return super.dropPendingNativeSosCreate(signature, reason: reason);
+  }
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttPublished(
+    String signature,
+  ) async {}
+
+  @override
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {}
 }
 
 final class _IncidentIdAwareSosRepository extends FakeSosRepository {

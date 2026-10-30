@@ -18,6 +18,7 @@ import '../data/datasources_remote/sdk_contacts_remote_data_source.dart';
 import '../data/datasources_remote/sdk_devices_remote_data_source.dart';
 import '../data/datasources_remote/sdk_firmware_remote_data_source.dart';
 import '../data/datasources_remote/sdk_http_transport.dart';
+import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
 import '../data/repositories/api_contacts_repository.dart';
 import '../data/repositories/api_sdk_device_registry_repository.dart';
 import '../data/repositories/geolocator_tracking_repository.dart';
@@ -34,6 +35,7 @@ import '../device/real_ble_client.dart';
 import '../device/meshtastic_metadata_probe.dart';
 import '../provisioning/strict_device_provisioning_config.dart';
 import 'eixam_connect_sdk_impl.dart';
+import '../data/datasources_local/activity_session_store.dart';
 import 'device_migration_coordinator.dart';
 import 'device_migration_session_store.dart';
 import 'firmware_dfu_transport_factory.dart';
@@ -164,8 +166,13 @@ class ApiSdkFactory {
 
     final deathManRepository = InMemoryDeathManRepository(localStore: store);
 
+    late final DeviceMigrationCoordinator migrationCoordinator;
     final deviceRuntimeProvider = BleDeviceRuntimeProvider(
       bleClient: bleClient,
+      retainMigrationRecovery: (deviceId) =>
+          migrationCoordinator.retainRuntimeRecovery(deviceId),
+      retainBluetoothRepair: (deviceId, error) =>
+          migrationCoordinator.retainBluetoothRepair(deviceId, error),
     );
     final deviceRepository = InMemoryDeviceRepository(
       runtimeProvider: deviceRuntimeProvider,
@@ -218,6 +225,12 @@ class ApiSdkFactory {
                 targetVersion: targetVersion,
               ),
     );
+    migrationCoordinator = DeviceMigrationCoordinator(
+      bleClient: bleClient,
+      metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
+      firmwareUpdates: firmwareUpdateCoordinator,
+      sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
+    );
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
@@ -243,6 +256,8 @@ class ApiSdkFactory {
       identityRemoteDataSource: HttpSdkIdentityRemoteDataSource(
         transport: httpTransport,
       ),
+      activityAvailabilityRemoteDataSource:
+          HttpSdkActivityAvailabilityRemoteDataSource(transport: httpTransport),
       profileRemoteDataSource: profileRemoteDataSource,
       feedbackRemoteDataSource: feedbackRemoteDataSource,
       geoCountryRemoteDataSource: geoCountryRemoteDataSource,
@@ -252,13 +267,9 @@ class ApiSdkFactory {
       provisioningBackendUrl: apiBaseUrl,
       deviceConfigStore: deviceConfigStore,
       firmwareUpdateCoordinator: firmwareUpdateCoordinator,
-      deviceMigrationCoordinator: DeviceMigrationCoordinator(
-        bleClient: bleClient,
-        metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
-        firmwareUpdates: firmwareUpdateCoordinator,
-        sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
-      ),
+      deviceMigrationCoordinator: migrationCoordinator,
       localStore: store,
+      activitySessionStore: SharedPrefsActivitySessionStore(store),
       notificationPolicy: notificationPolicy,
       notificationTexts: notificationTexts,
       permissionDisclosureConfig: permissionDisclosureConfig,

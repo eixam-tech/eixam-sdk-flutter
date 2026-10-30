@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — robust activity recording finalization (AR2C-B)
+
+- Persist immutable finish cutoffs and five-second final catch-up deadlines; resume
+  finalizing recordings locally after process restart.
+- Finish connected, disconnected, partial, busy and timed-out recordings with an
+  immutable committed result; coalesce owned recovery and fence late D3/D1 data.
+- Reconcile ambiguous storage acknowledgements, preserve retained finished routes
+  through schema v4 migration and keep the optional public API unchanged.
+- Physical AR2B-HW1 validation remains deferred; app orchestration belongs to AR3.
+
+## Unreleased — logical activity sessions
+
+- Add optional `ActivitySessionControl` and `SdkActivitySession` without adding
+  required SDK facade members or expanding the sealed SDK error hierarchy.
+- Serialize identity-scoped start/end/restoration with checked persistence,
+  private end tombstones, safe observation, and an in-isolate writer lease.
+- Keep product activity catalogs, partner context, tracking, SOS, and DMP outside
+  the capability. Existing consumers need no source changes to compile.
+
+
 ## Unreleased — cycle-bound LoRa return (2026-10-15)
 
 - Preserve the bound SOS packet reference when enriching a no-fix receipt with last-known position. The stopped D1 exposed this missing copy before WEB ACK; captured-receipt runtime regressions cover SOS/TEL and retained fix age. Physical return validation remains pending.

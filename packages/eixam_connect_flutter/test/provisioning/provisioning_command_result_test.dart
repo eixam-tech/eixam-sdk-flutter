@@ -123,7 +123,13 @@ void main() {
       throwsA(isA<ProvisioningConnectionEpochInvalidException>()),
     );
 
-    coordinator.markDisconnected();
+    // A connected-only observation is not a new connection epoch.
+      coordinator.markConnected();
+      await expectLater(
+        coordinator.run(expectedOpcode: 0x20, write: () async {}),
+        throwsA(isA<ProvisioningConnectionEpochInvalidException>()),
+      );
+      coordinator.markDisconnected();
     coordinator.markConnected();
     final retry = coordinator.run(
       expectedOpcode: 0x20,

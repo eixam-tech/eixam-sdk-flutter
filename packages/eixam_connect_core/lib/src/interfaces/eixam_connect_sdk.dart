@@ -212,8 +212,12 @@ abstract class EixamConnectSdk {
     required DeviceMigrationCandidate candidate,
   });
 
-  /// Returns the durable non-terminal physical-device migration, if any.
+  /// Returns durable recovery or a completed migration awaiting host handoff.
   Future<DeviceMigrationSession?> getActiveDeviceMigration();
+
+  /// Archives recovery evidence and releases ownership once operations settle.
+  /// This never cancels an active transfer or changes the physical device.
+  Future<void> retireDeviceMigration(String sessionId);
 
   /// Watches authoritative migration-domain state, including terminal events.
   Stream<DeviceMigrationSession> watchDeviceMigration();
@@ -567,7 +571,8 @@ extension EixamConnectSdkIncidentProgress on EixamConnectSdk {
   Future<SosIncidentProgress?> getCurrentSosIncidentProgress() async {
     final sdk = this;
     if (sdk is SosIncidentProgressProvider) {
-      return sdk.getCurrentSosIncidentProgress();
+      return (sdk as SosIncidentProgressProvider)
+          .getCurrentSosIncidentProgress();
     }
     return (await getCurrentSosIncident())?.progress;
   }
@@ -575,7 +580,8 @@ extension EixamConnectSdkIncidentProgress on EixamConnectSdk {
   Stream<SosIncidentProgress?> get currentSosIncidentProgressStream {
     final sdk = this;
     if (sdk is SosIncidentProgressProvider) {
-      return sdk.currentSosIncidentProgressStream;
+      return (sdk as SosIncidentProgressProvider)
+          .currentSosIncidentProgressStream;
     }
     return currentSosStateStream.asyncMap(
       (_) async => (await getCurrentSosIncident())?.progress,

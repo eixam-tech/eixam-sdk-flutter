@@ -28,10 +28,51 @@ class DevicePositionBacklogCoordinator {
 
   bool get isActive => _active != null;
 
+  /// Private recording tap before public/transport dedupe. Only this lease may
+  /// be cancelled by its owner; unrelated public transfers are never displaced.
+  Future<DevicePositionBacklogSyncResult> syncRecording({
+    required Object owner,
+    required DateTime since,
+    required DateTime until,
+    required Duration budget,
+    Timer Function(Duration, void Function())? timer,
+    required bool Function(BleIncomingEvent) acceptsEvent,
+    required Future<void> Function(EixamDevicePositionBatch) commit,
+  }) => _sync(
+    since: since,
+    until: until,
+    timeout: budget < const Duration(seconds: 5)
+        ? budget
+        : const Duration(seconds: 5),
+    recordingOwner: owner,
+    acceptsEvent: acceptsEvent,
+    commit: commit,
+    overallBudget: budget,
+    timer: timer,
+  );
+
+  Future<void> cancelRecording(Object owner) async {
+    final session = _active;
+    if (session != null && identical(session.recordingOwner, owner)) {
+      _fail(session, 'recording_cancelled', abortReason: 7);
+    }
+  }
+
   Future<DevicePositionBacklogSyncResult> sync({
     required DateTime since,
     required DateTime? until,
     required Duration timeout,
+  }) => _sync(since: since, until: until, timeout: timeout);
+
+  Future<DevicePositionBacklogSyncResult> _sync({
+    required DateTime since,
+    required DateTime? until,
+    required Duration timeout,
+    Object? recordingOwner,
+    bool Function(BleIncomingEvent)? acceptsEvent,
+    Future<void> Function(EixamDevicePositionBatch)? commit,
+    Duration? overallBudget,
+    Timer Function(Duration, void Function())? timer,
   }) async {
     if (_active != null) {
       throw const DeviceException(
@@ -49,8 +90,12 @@ class DevicePositionBacklogCoordinator {
       throw ArgumentError.value(since, 'since', 'Must fit firmware UTC u32.');
     }
 
-    final overallTimeout = timeout * overallTimeoutFactor;
+    final overallTimeout = overallBudget ?? timeout * overallTimeoutFactor;
     final session = _BacklogSession(
+      timer: timer ?? Timer.new,
+      recordingOwner: recordingOwner,
+      acceptsEvent: acceptsEvent,
+      commit: commit,
       since: since.toUtc(),
       until: until?.toUtc(),
       idleTimeout: timeout,
@@ -59,7 +104,7 @@ class DevicePositionBacklogCoordinator {
     );
     _active = session;
     _armProgressTimeout(session, phase: 'initial_response');
-    session.overallTimer = Timer(
+    session.overallTimer = session.timer(
       overallTimeout,
       () => _timeoutNow(session, phase: 'overall'),
     );
@@ -68,8 +113,10 @@ class DevicePositionBacklogCoordinator {
         ? 'none'
         : '${untilUtc.millisecondsSinceEpoch ~/ 1000}';
     BleDebugRegistry.instance.recordEvent(
-      'POSITION_BACKLOG request sinceUnix=$sinceUnix '
-      'untilUnix=$untilUnix generation=${session.connectionGeneration}',
+      recordingOwner != null
+          ? 'POSITION_BACKLOG recording_request generation=${session.connectionGeneration}'
+          : 'POSITION_BACKLOG request sinceUnix=$sinceUnix '
+                'untilUnix=$untilUnix generation=${session.connectionGeneration}',
     );
     unawaited(_start(session, sinceUnix));
     return session.completer.future;
@@ -91,10 +138,29 @@ class DevicePositionBacklogCoordinator {
     }
   }
 
-  Future<void> handleEvent(BleIncomingEvent event) async {
-    if (event.type != BleIncomingEventType.telPositionBacklog) return;
+  Future<void> handleEvent(BleIncomingEvent event) {
     final session = _active;
-    if (session == null) return;
+    if (session == null ||
+        (session.acceptsEvent != null && !session.acceptsEvent!(event))) {
+      return Future.value();
+    }
+    // Recordings await durable processing before ACK/END. Capture the session
+    // now so queued events can never attach to a later transfer.
+    if (session.recordingOwner == null) return _handleEvent(event, session);
+    final work = session.tail.then((_) => _handleEvent(event, session));
+    session.tail = work.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return work;
+  }
+
+  Future<void> _handleEvent(
+    BleIncomingEvent event,
+    _BacklogSession session,
+  ) async {
+    if (event.type != BleIncomingEventType.telPositionBacklog) return;
+    if (!identical(_active, session)) return;
     if (session.connectionGeneration != _connectionGeneration) {
       BleDebugRegistry.instance.recordEvent(
         'POSITION_BACKLOG stale_generation_ignored',
@@ -155,6 +221,23 @@ class DevicePositionBacklogCoordinator {
       if (!inWindow) {
         if (rejectedUntil) session.rejectedUntilCount++;
       } else {
+        if (session.commit != null) {
+          try {
+            await session.commit!(
+              EixamDevicePositionBatch(
+                samples: packet.batch.samples,
+                receivedAt: packet.batch.receivedAt,
+                source: packet.batch.source,
+                delivery: EixamDevicePositionDelivery.recovered,
+                deviceIdentity: event.canonicalHardwareId,
+              ),
+            );
+          } catch (_) {
+            _fail(session, 'recording_commit_failed', abortReason: 5);
+            return;
+          }
+          if (!identical(_active, session)) return;
+        }
         final normalized = normalizer.normalizeBacklog(event, packet);
         session.duplicateCount += normalized.duplicateCount;
         final batch = normalized.batch;
@@ -206,7 +289,8 @@ class DevicePositionBacklogCoordinator {
     if (packet is EixamPositionBacklogEnd) {
       _recordProgress(session, phase: 'end');
       session.endSentEvents = packet.sentEvents;
-      final valid = packet.status == 0 &&
+      final valid =
+          packet.status == 0 &&
           packet.sentEvents == session.receivedEvents &&
           packet.sentEvents == session.totalEvents &&
           (packet.sentEvents == 0
@@ -277,8 +361,9 @@ class DevicePositionBacklogCoordinator {
     EixamDeviceCommand command,
   ) async {
     if (!identical(_active, session)) return;
-    final remaining =
-        session.overallDeadline.difference(DateTime.now().toUtc());
+    final remaining = session.overallDeadline.difference(
+      DateTime.now().toUtc(),
+    );
     if (remaining <= Duration.zero) throw TimeoutException('deadline');
     await writeCommand(command).timeout(remaining);
     if (!identical(_active, session)) return;
@@ -310,7 +395,8 @@ class DevicePositionBacklogCoordinator {
     final result = DevicePositionBacklogSyncResult(
       completed: completed,
       timedOut: timedOut,
-      partial: !completed &&
+      partial:
+          !completed &&
           (session.recoveredCount > 0 || session.duplicateCount > 0),
       metaTotalEvents: session.totalEvents,
       receivedCount: session.receivedEvents,
@@ -344,12 +430,9 @@ class DevicePositionBacklogCoordinator {
     _armProgressTimeout(session, phase: 'idle_after_$phase');
   }
 
-  void _armProgressTimeout(
-    _BacklogSession session, {
-    required String phase,
-  }) {
+  void _armProgressTimeout(_BacklogSession session, {required String phase}) {
     session.progressTimer?.cancel();
-    session.progressTimer = Timer(
+    session.progressTimer = session.timer(
       session.idleTimeout,
       () => _timeoutNow(session, phase: phase),
     );
@@ -358,6 +441,10 @@ class DevicePositionBacklogCoordinator {
 
 class _BacklogSession {
   _BacklogSession({
+    required this.timer,
+    this.recordingOwner,
+    this.acceptsEvent,
+    this.commit,
     required this.since,
     required this.until,
     required this.idleTimeout,
@@ -365,6 +452,11 @@ class _BacklogSession {
     required this.connectionGeneration,
   });
 
+  final Timer Function(Duration, void Function()) timer;
+  final Object? recordingOwner;
+  final bool Function(BleIncomingEvent)? acceptsEvent;
+  final Future<void> Function(EixamDevicePositionBatch)? commit;
+  Future<void> tail = Future.value();
   final DateTime since;
   final DateTime? until;
   final Duration idleTimeout;

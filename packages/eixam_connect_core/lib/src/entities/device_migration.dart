@@ -84,6 +84,7 @@ enum DeviceMigrationState {
   reconciling,
   recoveryRequired,
   physicalRecoveryRequired,
+  bluetoothRepairRequired,
   completed,
   blocked,
   failed,
@@ -97,6 +98,7 @@ enum DeviceMigrationNextAction {
   retry,
   recover,
   physicalRecovery,
+  repairBluetooth,
   continueMigration,
   completed,
 }
@@ -134,6 +136,7 @@ class DeviceMigrationSession {
     this.reconciliationOutcome,
     this.failureCode,
     this.failureMessage,
+    this.reconciliationDeadline,
   });
 
   static const int currentSchemaVersion = 1;
@@ -156,6 +159,20 @@ class DeviceMigrationSession {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  /// Bounds automatic reconciliation across navigation and process restarts.
+  final DateTime? reconciliationDeadline;
+
+  /// Manufacturing identity captured by the SDK before firmware replacement.
+  /// Transport UUIDs and mesh node numbers are never converted into TAG names.
+  String? get expectedEixamAdvertisingName {
+    if (candidate.identityKind != DeviceMigrationIdentityKind.hardwareMac) {
+      return null;
+    }
+    final mac = candidate.stableIdentity?.replaceAll(':', '').toUpperCase();
+    if (mac == null || !RegExp(r'^[0-9A-F]{12}$').hasMatch(mac)) return null;
+    return 'EIXAM_A6${mac.substring(6)}';
+  }
+
   bool get isTerminal =>
       state == DeviceMigrationState.completed ||
       state == DeviceMigrationState.blocked ||
@@ -172,6 +189,8 @@ class DeviceMigrationSession {
     String? failureCode,
     String? failureMessage,
     DateTime? updatedAt,
+    DateTime? reconciliationDeadline,
+    bool clearFailure = false,
   }) => DeviceMigrationSession(
     sessionId: sessionId,
     schemaVersion: schemaVersion,
@@ -182,14 +201,18 @@ class DeviceMigrationSession {
     verificationPolicy: verificationPolicy,
     migratedDevice: migratedDevice ?? this.migratedDevice,
     state: state ?? this.state,
-    outcome: outcome ?? this.outcome,
+    outcome: outcome ?? (clearFailure ? null : this.outcome),
     reconciliationOutcome: reconciliationOutcome ?? this.reconciliationOutcome,
     nextAction: nextAction ?? this.nextAction,
     canCancel: canCancel ?? this.canCancel,
-    failureCode: failureCode ?? this.failureCode,
-    failureMessage: failureMessage ?? this.failureMessage,
+    failureCode: clearFailure ? failureCode : failureCode ?? this.failureCode,
+    failureMessage: clearFailure
+        ? failureMessage
+        : failureMessage ?? this.failureMessage,
     createdAt: createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
+    reconciliationDeadline:
+        reconciliationDeadline ?? this.reconciliationDeadline,
   );
 }
 

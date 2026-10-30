@@ -13,6 +13,7 @@ public class EixamConnectFlutterPlugin: NSObject, FlutterPlugin {
     plugin.phoneRadioBridge = PhoneRadioBridge.register(with: registrar)
     FirmwareDfuBridge.register(with: registrar)
     SecureStorageBridge.register(with: registrar)
+    ActivityRecordingStorageBridge.register(with: registrar)
     registrar.publish(plugin)
   }
 

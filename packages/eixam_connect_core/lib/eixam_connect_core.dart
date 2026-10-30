@@ -7,6 +7,7 @@ export 'src/config/eixam_custom_endpoints.dart';
 export 'src/config/eixam_bootstrap_config.dart';
 export 'src/entities/device_status.dart';
 export 'src/entities/device_migration.dart';
+export 'src/entities/tag_pairing_code.dart';
 export 'src/entities/device_ready.dart';
 export 'src/entities/device_unprovision.dart';
 export 'src/entities/device_runtime.dart';
@@ -99,3 +100,21 @@ export 'src/state/death_man_state_machine.dart';
 export 'src/usecases/trigger_sos_use_case.dart';
 export 'src/usecases/cancel_sos_use_case.dart';
 export 'src/usecases/get_sos_state_use_case.dart';
+
+export 'src/entities/activity_session.dart';
+export 'src/interfaces/activity_session_control.dart';
+export 'src/errors/activity_session_exception.dart';
+
+export 'src/entities/activity_availability.dart';
+export 'src/interfaces/activity_availability_control.dart';
+export 'src/errors/activity_availability_exception.dart';
+
+export 'src/entities/activity_recording.dart';
+export 'src/entities/activity_recording_route.dart';
+export 'src/enums/activity_recording.dart';
+export 'src/interfaces/activity_recording_control.dart';
+export 'src/errors/activity_recording_exception.dart';
+
+export 'src/interfaces/activity_recording_history_control.dart';
+export 'src/interfaces/activity_recording_delete_control.dart';
+export 'src/entities/activity_recording_history_page.dart';

@@ -53,7 +53,9 @@ dependencies:
       path: packages/eixam_connect_flutter
 ```
 
-For local SDK/app iteration, use an untracked `pubspec_overrides.yaml`:
+For local SDK/app iteration, use an untracked `pubspec_overrides.yaml`.
+The example assumes sibling checkouts; adjust paths to the host layout and
+follow its own setup guide (the commercial app is nested in this workspace):
 
 ```yaml
 dependency_overrides:

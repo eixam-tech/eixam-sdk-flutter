@@ -10,17 +10,22 @@ class SdkSessionStore {
   SdkSessionStore({
     required SharedPrefsSdkStore localStore,
     SecureKeyValueStore? secureStore,
-  })  : _localStore = localStore,
-        _secureStore = secureStore;
+  }) : _localStore = localStore,
+       _secureStore = secureStore;
 
   final SharedPrefsSdkStore _localStore;
   final SecureKeyValueStore? _secureStore;
 
-  Future<void> save(EixamSession session) async {
+  // Private persistence provenance; never inferred from Activity records.
+  String? backend;
+
+  Future<void> save(EixamSession session, {String? backend}) async {
     final payload = session.toJson()..remove('refreshToken');
+    if (backend != null) payload['_sdkBackend'] = backend;
     final secureStore = _secureStore;
     if (secureStore == null) {
       await _localStore.saveJson(SharedPrefsSdkStore.sdkSessionKey, payload);
+      this.backend = backend;
       return;
     }
     final encoded = jsonEncode(payload);
@@ -60,9 +65,11 @@ class SdkSessionStore {
       throw error;
     }
     await _localStore.remove(SharedPrefsSdkStore.sdkSessionKey);
+    this.backend = backend;
   }
 
   Future<EixamSession?> load({bool recoverUnreadableEntry = false}) async {
+    backend = null;
     final secureStore = _secureStore;
     if (secureStore == null) {
       return _decode(
@@ -101,8 +108,9 @@ class SdkSessionStore {
     if (secureRaw != null && secureRaw.isNotEmpty) {
       return _decodeRaw(secureRaw);
     }
-    final legacy =
-        await _localStore.readJson(SharedPrefsSdkStore.sdkSessionKey);
+    final legacy = await _localStore.readJson(
+      SharedPrefsSdkStore.sdkSessionKey,
+    );
     final session = _decode(legacy);
     if (session == null) return null;
     await save(session);
@@ -121,13 +129,18 @@ class SdkSessionStore {
   EixamSession? _decode(Map<String, dynamic>? json) {
     if (json == null) return null;
     try {
-      return EixamSession.fromJson(json);
+      final session = EixamSession.fromJson(json);
+      backend = json['_sdkBackend'] is String
+          ? json['_sdkBackend'] as String
+          : null;
+      return session;
     } catch (_) {
       return null;
     }
   }
 
   Future<void> clear() async {
+    backend = null;
     await _localStore.remove(SharedPrefsSdkStore.sdkSessionKey);
     final secureStore = _secureStore;
     if (secureStore == null) return;

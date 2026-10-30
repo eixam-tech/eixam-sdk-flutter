@@ -19,18 +19,20 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('SDK local user data wipe', () {
-    test('SharedPrefsSdkStore removes all SDK local PII keys idempotently',
-        () async {
-      final store = MemorySharedPrefsSdkStore();
-      _seedLocalUserData(store);
-      store.stringValues['eixam.diagnostics.last_event'] = 'kept';
+    test(
+      'SharedPrefsSdkStore removes all SDK local PII keys idempotently',
+      () async {
+        final store = MemorySharedPrefsSdkStore();
+        _seedLocalUserData(store);
+        store.stringValues['eixam.diagnostics.last_event'] = 'kept';
 
-      await store.clearLocalUserData();
-      await store.clearLocalUserData();
+        await store.clearLocalUserData();
+        await store.clearLocalUserData();
 
-      _expectLocalUserDataRemoved(store);
-      expect(store.stringValues['eixam.diagnostics.last_event'], 'kept');
-    });
+        _expectLocalUserDataRemoved(store);
+        expect(store.stringValues['eixam.diagnostics.last_event'], 'kept');
+      },
+    );
 
     test('clearSession removes SDK local PII keys', () async {
       final harness = _SdkHarness();
@@ -42,41 +44,45 @@ void main() {
       _expectLocalUserDataRemoved(harness.localStore);
     });
 
-    test('deleteUserData clears SDK local PII when remote delete fails',
-        () async {
-      final harness = _SdkHarness(
-        profileRemoteDataSource: _FailingProfileRemoteDataSource(),
-      );
-      addTearDown(harness.dispose);
-      await harness.setSession();
-      _seedLocalUserData(harness.localStore);
+    test(
+      'deleteUserData clears SDK local PII when remote delete fails',
+      () async {
+        final harness = _SdkHarness(
+          profileRemoteDataSource: _FailingProfileRemoteDataSource(),
+        );
+        addTearDown(harness.dispose);
+        await harness.setSession();
+        _seedLocalUserData(harness.localStore);
 
-      await expectLater(
-        harness.sdk.deleteUserData(
-          userHash: ' signed-user ',
-          externalUserId: ' canonical-user ',
-        ),
-        throwsStateError,
-      );
+        await expectLater(
+          harness.sdk.deleteUserData(
+            userHash: ' signed-user ',
+            externalUserId: ' canonical-user ',
+          ),
+          throwsStateError,
+        );
 
-      _expectLocalUserDataRemoved(harness.localStore);
-    });
+        _expectLocalUserDataRemoved(harness.localStore);
+      },
+    );
 
-    test('all SharedPrefsSdkStore eixam keys are covered by local wipe',
-        () async {
-      final source = await File(
-        'lib/src/data/datasources_local/shared_prefs_sdk_store.dart',
-      ).readAsString();
-      final sdkKeyLiterals = RegExp("'(eixam\\.[^']+)'")
-          .allMatches(source)
-          .map((match) => match.group(1)!)
-          .toSet();
+    test(
+      'all SharedPrefsSdkStore eixam keys are covered by local wipe',
+      () async {
+        final source = await File(
+          'lib/src/data/datasources_local/shared_prefs_sdk_store.dart',
+        ).readAsString();
+        final sdkKeyLiterals = RegExp(
+          "'(eixam\\.[^']+)'",
+        ).allMatches(source).map((match) => match.group(1)!).toSet();
 
-      expect(
-        SharedPrefsSdkStore.localUserDataKeys.toSet(),
-        containsAll(sdkKeyLiterals),
-      );
-    });
+        expect(<String>{
+          ...SharedPrefsSdkStore.localUserDataKeys,
+          // Activity cleanup is verified under its writer lease by the SDK.
+          ...SharedPrefsSdkStore.checkedLocalUserDataKeys,
+        }, containsAll(sdkKeyLiterals));
+      },
+    );
   });
 }
 
@@ -96,15 +102,13 @@ void _seedLocalUserData(MemorySharedPrefsSdkStore store) {
     'address': 'Carrer Example 1',
   };
   store.jsonValues[SharedPrefsSdkStore.deviceIdentityMappingsKey] =
-      <String, dynamic>{
-    'hardware-1': 7,
-  };
+      <String, dynamic>{'hardware-1': 7};
   store.jsonValues[SharedPrefsSdkStore.emergencyContactsKey] =
       <String, dynamic>{
-    'contacts': <Map<String, Object?>>[
-      <String, Object?>{'name': 'Pilot', 'phone': '+34600000000'},
-    ],
-  };
+        'contacts': <Map<String, Object?>>[
+          <String, Object?>{'name': 'Pilot', 'phone': '+34600000000'},
+        ],
+      };
   store.boolValues[SharedPrefsSdkStore.osSosWidgetRecentActionsKey] = true;
 }
 
@@ -118,24 +122,24 @@ void _expectLocalUserDataRemoved(MemorySharedPrefsSdkStore store) {
 
 final class _SdkHarness {
   _SdkHarness({SdkProfileRemoteDataSource? profileRemoteDataSource})
-      : sosRepository = FakeSosRepository(),
-        trackingRepository = FakeTrackingRepository(),
-        telemetryRepository = FakeTelemetryRepository(),
-        contactsRepository = FakeContactsRepository(),
-        deviceRepository = FakeDeviceRepository(
-          initialStatus: buildDeviceStatus(
-            connected: false,
-            paired: false,
-            activated: false,
-          ),
+    : sosRepository = FakeSosRepository(),
+      trackingRepository = FakeTrackingRepository(),
+      telemetryRepository = FakeTelemetryRepository(),
+      contactsRepository = FakeContactsRepository(),
+      deviceRepository = FakeDeviceRepository(
+        initialStatus: buildDeviceStatus(
+          connected: false,
+          paired: false,
+          activated: false,
         ),
-        deviceRegistryRepository = FakeSdkDeviceRegistryRepository(),
-        deathManRepository = FakeDeathManRepository(),
-        permissionsRepository = FakePermissionsRepository(),
-        notificationsRepository = FakeNotificationsRepository(),
-        realtimeClient = FakeRealtimeClient(),
-        deviceSosController = DeviceSosController(),
-        localStore = MemorySharedPrefsSdkStore() {
+      ),
+      deviceRegistryRepository = FakeSdkDeviceRegistryRepository(),
+      deathManRepository = FakeDeathManRepository(),
+      permissionsRepository = FakePermissionsRepository(),
+      notificationsRepository = FakeNotificationsRepository(),
+      realtimeClient = FakeRealtimeClient(),
+      deviceSosController = DeviceSosController(),
+      localStore = MemorySharedPrefsSdkStore() {
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
       trackingRepository: trackingRepository,
@@ -149,9 +153,7 @@ final class _SdkHarness {
       realtimeClient: realtimeClient,
       deviceSosController: deviceSosController,
       bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
-      preferredBleDeviceStore: PreferredBleDeviceStore(
-        localStore: localStore,
-      ),
+      preferredBleDeviceStore: PreferredBleDeviceStore(localStore: localStore),
       profileRemoteDataSource: profileRemoteDataSource,
       localStore: localStore,
       protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),

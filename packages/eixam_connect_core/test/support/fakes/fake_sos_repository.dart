@@ -85,9 +85,16 @@ class FakeSosRepository implements SosRepository {
   @override
   Stream<SosIncident?> watchCurrentIncident() async* {
     yield await getCurrentIncident();
-    await for (final _ in _controller.stream) {
-      yield await getCurrentIncident();
-    }
+    yield* _controller.stream
+        .asyncMap((_) => getCurrentIncident())
+        .transform(
+          StreamTransformer<SosIncident?, SosIncident?>.fromHandlers(
+            handleError: (error, stack, sink) {
+              sink.addError(error, stack);
+              sink.close();
+            },
+          ),
+        );
   }
 
   @override

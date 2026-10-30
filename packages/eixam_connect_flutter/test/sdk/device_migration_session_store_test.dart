@@ -11,6 +11,33 @@ void main() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
   });
 
+  test('retired history is read without activating or rewriting it', () async {
+    final store = SharedPrefsDeviceMigrationSessionStore();
+    final session = _session().copyWith(
+      migratedDevice: EixamBleScanResult(
+        deviceId: 'target',
+        name: 'EIXAM_A6DDEEFF',
+        rssi: -60,
+        connectable: true,
+        isEixamDevice: true,
+        brandClassification: BleDiscoveredDeviceBrand.eixam,
+        discoveredAt: DateTime.utc(2026),
+      ),
+    );
+    await store.archive(session);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setInt(
+      '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.malformed',
+      42,
+    );
+    expect(
+      (await store.loadRetiredForDevice('target')).single.sessionId,
+      session.sessionId,
+    );
+    expect(await store.loadRetiredForDevice('another-target'), isEmpty);
+    expect(await store.load(), isNull);
+  });
+
   test('exact migration identity policy survives restart', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
     final session = _session(
@@ -22,6 +49,60 @@ void main() {
       FirmwareVerificationPolicy.exactCandidate,
     );
   });
+
+  test(
+    'failed pre-artifact intent and recovery deadline survive process death',
+    () async {
+      final now = DateTime.now();
+      final initial = _session();
+      final failed = DeviceMigrationSession(
+        sessionId: initial.sessionId,
+        schemaVersion: DeviceMigrationSession.currentSchemaVersion,
+        candidate: initial.candidate,
+        releaseId: '',
+        targetVersion: '',
+        state: DeviceMigrationState.failed,
+        nextAction: DeviceMigrationNextAction.retry,
+        outcome: DeviceMigrationOutcome.failed,
+        failureCode: 'migrationArtifactUnavailable',
+        canCancel: false,
+        createdAt: now,
+        updatedAt: now,
+        reconciliationDeadline: now.add(const Duration(minutes: 3)),
+      );
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      await store.save(failed);
+      final restored = await SharedPrefsDeviceMigrationSessionStore().load();
+      expect(restored?.failureCode, failed.failureCode);
+      expect(restored?.releaseId, isEmpty);
+      expect(restored?.state, DeviceMigrationState.failed);
+      expect(
+        restored?.reconciliationDeadline,
+        failed.reconciliationDeadline?.toUtc(),
+      );
+    },
+  );
+
+  test(
+    'Bluetooth repair state and exact manufacturing identity survive restart',
+    () async {
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      await store.save(
+        _session().copyWith(
+          state: DeviceMigrationState.bluetoothRepairRequired,
+          nextAction: DeviceMigrationNextAction.repairBluetooth,
+          canCancel: false,
+          failureCode: 'bluetoothBondRepairRequired',
+        ),
+      );
+      final restored = await SharedPrefsDeviceMigrationSessionStore().load();
+      expect(restored!.state, DeviceMigrationState.bluetoothRepairRequired);
+      expect(restored.nextAction, DeviceMigrationNextAction.repairBluetooth);
+      expect(restored.expectedEixamAdvertisingName, 'EIXAM_A6DDEEFF');
+      expect(restored.isTerminal, isFalse);
+      expect(restored.canCancel, isFalse);
+    },
+  );
 
   test('no record returns no active migration', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
@@ -105,7 +186,28 @@ void main() {
     );
   });
 
-  test('completed record is stale and removed on restore', () async {
+  test(
+    'archive preserves original recovery evidence after active record is released',
+    () async {
+      final store = SharedPrefsDeviceMigrationSessionStore();
+      final original = _session(
+        state: DeviceMigrationState.failed,
+        nextAction: DeviceMigrationNextAction.retry,
+      );
+      await store.save(original);
+      await store.archive(original);
+      await store.clear();
+      expect(await store.load(), isNull);
+      final prefs = await SharedPreferences.getInstance();
+      final archive = prefs.getString(
+        '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.${original.sessionId}',
+      );
+      expect(archive, contains(original.candidate.deviceId));
+      expect(archive, contains(original.sessionId));
+    },
+  );
+
+  test('completed record remains available for setup handoff', () async {
     final store = SharedPrefsDeviceMigrationSessionStore();
     await store.save(
       _session(
@@ -114,12 +216,12 @@ void main() {
       ),
     );
 
-    expect(await store.load(), isNull);
+    expect((await store.load())?.state, DeviceMigrationState.completed);
     expect(
       (await SharedPreferences.getInstance()).containsKey(
         SharedPrefsSdkStore.deviceMigrationSessionKey,
       ),
-      isFalse,
+      isTrue,
     );
   });
 }

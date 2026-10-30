@@ -6,10 +6,17 @@ abstract interface class DeviceMigrationSessionStore {
   Future<DeviceMigrationSession?> load();
   Future<void> save(DeviceMigrationSession session);
   Future<void> clear();
+  Future<void> archive(DeviceMigrationSession session);
+}
+
+abstract interface class RetiredDeviceMigrationSessionSource {
+  Future<List<DeviceMigrationSession>> loadRetiredForDevice(String deviceId);
 }
 
 final class SharedPrefsDeviceMigrationSessionStore
-    implements DeviceMigrationSessionStore {
+    implements
+        DeviceMigrationSessionStore,
+        RetiredDeviceMigrationSessionSource {
   SharedPrefsDeviceMigrationSessionStore({SharedPrefsSdkStore? localStore})
     : _localStore = localStore ?? SharedPrefsSdkStore();
 
@@ -31,10 +38,6 @@ final class SharedPrefsDeviceMigrationSessionStore
         return null;
       }
       final session = _decode(json);
-      if (session.state == DeviceMigrationState.completed) {
-        await clear();
-        return null;
-      }
       return session;
     } catch (_) {
       await clear();
@@ -53,6 +56,35 @@ final class SharedPrefsDeviceMigrationSessionStore
   @override
   Future<void> clear() {
     return _localStore.remove(SharedPrefsSdkStore.deviceMigrationSessionKey);
+  }
+
+  @override
+  Future<void> archive(DeviceMigrationSession session) => _localStore.saveJson(
+    '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.${session.sessionId}',
+    _encode(session),
+  );
+
+  @override
+  Future<List<DeviceMigrationSession>> loadRetiredForDevice(
+    String deviceId,
+  ) async {
+    final prefix = '${SharedPrefsSdkStore.deviceMigrationSessionKey}.retired.';
+    final sessions = <DeviceMigrationSession>[];
+    for (final key in await _localStore.keysWithPrefix(prefix)) {
+      try {
+        final json = await _localStore.readJson(key);
+        if (json == null ||
+            json['schemaVersion'] !=
+                DeviceMigrationSession.currentSchemaVersion) {
+          continue;
+        }
+        final session = _decode(json);
+        if (session.migratedDevice?.deviceId == deviceId) sessions.add(session);
+      } catch (_) {
+        // Invalid history is never recovery evidence; do not mutate it.
+      }
+    }
+    return sessions;
   }
 
   Map<String, dynamic> _encode(DeviceMigrationSession session) =>
@@ -77,6 +109,9 @@ final class SharedPrefsDeviceMigrationSessionStore
         'failureCode': session.failureCode,
         'createdAt': session.createdAt.toUtc().toIso8601String(),
         'updatedAt': session.updatedAt.toUtc().toIso8601String(),
+        'reconciliationDeadline': session.reconciliationDeadline
+            ?.toUtc()
+            .toIso8601String(),
       };
 
   DeviceMigrationSession _decode(Map<String, dynamic> json) {
@@ -89,16 +124,12 @@ final class SharedPrefsDeviceMigrationSessionStore
       releaseId: _requiredString(
         json,
         'releaseId',
-        allowEmpty:
-            json['firmwareSession'] == null &&
-            json['state'] == DeviceMigrationState.prepared.name,
+        allowEmpty: json['firmwareSession'] == null,
       ),
       targetVersion: _requiredString(
         json,
         'targetVersion',
-        allowEmpty:
-            json['firmwareSession'] == null &&
-            json['state'] == DeviceMigrationState.prepared.name,
+        allowEmpty: json['firmwareSession'] == null,
       ),
       verificationPolicy: json['verificationPolicy'] == null
           ? FirmwareVerificationPolicy.normal
@@ -122,6 +153,9 @@ final class SharedPrefsDeviceMigrationSessionStore
       failureCode: json['failureCode'] as String?,
       createdAt: DateTime.parse(_requiredString(json, 'createdAt')),
       updatedAt: DateTime.parse(_requiredString(json, 'updatedAt')),
+      reconciliationDeadline: json['reconciliationDeadline'] == null
+          ? null
+          : DateTime.parse(json['reconciliationDeadline'] as String),
     );
   }
 
@@ -256,6 +290,7 @@ final class SharedPrefsDeviceMigrationSessionStore
       <String, dynamic>{
         'deviceId': value.deviceId,
         'canonicalHardwareId': value.canonicalHardwareId,
+        'advertisedEixamIdentity': value.advertisedEixamIdentity,
         'name': value.name,
         'rssi': value.rssi,
         'connectable': value.connectable,
@@ -269,6 +304,7 @@ final class SharedPrefsDeviceMigrationSessionStore
       EixamBleScanResult(
         deviceId: _requiredString(json, 'deviceId'),
         canonicalHardwareId: json['canonicalHardwareId'] as String?,
+        advertisedEixamIdentity: json['advertisedEixamIdentity'] as String?,
         name: _requiredString(json, 'name'),
         rssi: json['rssi'] as int,
         connectable: json['connectable'] as bool,

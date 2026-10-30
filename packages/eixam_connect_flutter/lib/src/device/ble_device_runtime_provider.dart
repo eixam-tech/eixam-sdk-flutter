@@ -45,9 +45,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   BleDeviceRuntimeProvider({
     required BleClient bleClient,
     DeviceSosController? deviceSosController,
+    Future<bool> Function(String deviceId)? retainMigrationRecovery,
+    Future<bool> Function(String deviceId, Object error)? retainBluetoothRepair,
     @visibleForTesting bool Function()? isIosPlatform,
   }) : _bleClient = bleClient,
        _deviceSosController = deviceSosController ?? DeviceSosController(),
+       _retainMigrationRecovery = retainMigrationRecovery,
+       _retainBluetoothRepair = retainBluetoothRepair,
        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS) {
     if (bleClient is BleTransportObservationSource) {
       _serviceResetSubscription = (bleClient as BleTransportObservationSource)
@@ -99,6 +103,9 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }
 
   final BleClient _bleClient;
+  final Future<bool> Function(String deviceId)? _retainMigrationRecovery;
+  final Future<bool> Function(String deviceId, Object error)?
+  _retainBluetoothRepair;
   final DeviceSosController _deviceSosController;
   final bool Function() _isIosPlatform;
   final StreamController<BleIncomingEvent> _incomingEventsController =
@@ -129,6 +136,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   final String _sosReceiveSequenceDomain = _nextFlutterSosReceiveDomain();
   final Map<String, DateTime> _recentSosPacketSignatures = <String, DateTime>{};
   bool _ownershipSuspended = false;
+  int _ownershipRevision = 0;
   Completer<DeviceRuntimeStatus>? _pendingRuntimeStatusRequest;
   bool _disposed = false;
   bool _loggedHeartbeatFirmwareSkip = false;
@@ -397,15 +405,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Compatibility result for ${candidate.deviceId}: $compatible',
       );
       if (!compatible) {
+        final recovering =
+            await _retainMigrationRecovery?.call(candidate.deviceId) ?? false;
+        final code = recovering
+            ? 'migrationRuntimeUnavailable'
+            : 'E_DEVICE_INCOMPATIBLE';
         BleDebugRegistry.instance.update(
-          connectionStatus: BleConnectionStatus.incompatible,
-          connectionError: 'E_DEVICE_INCOMPATIBLE',
+          connectionStatus: recovering
+              ? BleConnectionStatus.failed
+              : BleConnectionStatus.incompatible,
+          connectionError: code,
         );
         await _bleClient.disconnect(candidate.deviceId);
-        throw const DeviceException(
-          'E_DEVICE_INCOMPATIBLE',
-          'E_DEVICE_INCOMPATIBLE',
-        );
+        throw DeviceException(code, code);
       }
 
       _connectedDeviceId = candidate.deviceId;
@@ -587,15 +599,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
         'Reconnect compatibility result for $deviceId: $compatible',
       );
       if (!compatible) {
+        final recovering =
+            await _retainMigrationRecovery?.call(deviceId) ?? false;
+        final code = recovering
+            ? 'migrationRuntimeUnavailable'
+            : 'E_DEVICE_INCOMPATIBLE';
         BleDebugRegistry.instance.update(
-          connectionStatus: BleConnectionStatus.incompatible,
-          connectionError: 'E_DEVICE_INCOMPATIBLE',
+          connectionStatus: recovering
+              ? BleConnectionStatus.failed
+              : BleConnectionStatus.incompatible,
+          connectionError: code,
         );
         await _bleClient.disconnect(deviceId);
-        throw const DeviceException(
-          'E_DEVICE_INCOMPATIBLE',
-          'E_DEVICE_INCOMPATIBLE',
-        );
+        throw DeviceException(code, code);
       }
 
       _connectedDeviceId = deviceId;
@@ -995,7 +1011,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       'BLE SOS runtime attached -> hardwareId=$deviceId inetAvailable=${BleDebugRegistry.instance.currentState.inetFound} cmdAvailable=${BleDebugRegistry.instance.currentState.cmdFound}',
     );
 
-    final stream = await _bleClient.subscribeEixamNotifications(deviceId);
+    late final Stream<EixamBleNotification> stream;
+    try {
+      stream = await _bleClient.subscribeEixamNotifications(deviceId);
+    } catch (error) {
+      if (_isIosPlatform() &&
+          await _retainBluetoothRepair?.call(deviceId, error) == true) {
+        throw const DeviceException(
+          'bluetoothBondRepairRequired',
+          'bluetoothBondRepairRequired',
+        );
+      }
+      rethrow;
+    }
     if (_disposed || serviceRevision != _serviceResetRevision) {
       return;
     }
@@ -1123,6 +1151,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<DeviceStatus?> suspendOwnership({required String reason}) async {
     _ownershipSuspended = true;
+    _ownershipRevision++;
     await _notificationSubscription?.cancel();
     _notificationSubscription = null;
     await _connectionStateSubscription?.cancel();
@@ -1155,6 +1184,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   Future<DeviceStatus?> resumeOwnership({required String reason}) async {
     _ownershipSuspended = false;
+    _ownershipRevision++;
     final currentStatus = _lastRuntimeStatus;
     if (currentStatus == null) {
       return null;
@@ -1216,10 +1246,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
   }) async {
     if (!currentStatus.paired) return currentStatus;
 
+    final ownershipRevision = _ownershipRevision;
+    _ensureRefreshOwnership(ownershipRevision);
     final adapterState = await _bleClient.getAdapterState();
+    _ensureRefreshOwnership(ownershipRevision);
     final connected =
         adapterState == BleAdapterState.poweredOn &&
         await _resolveConnection(currentStatus.deviceId);
+    _ensureRefreshOwnership(ownershipRevision);
     final readFirmware = mode != DeviceRefreshMode.heartbeat;
     final readSignalQuality = mode != DeviceRefreshMode.heartbeat;
     final firmwareVersion = connected
@@ -1230,6 +1264,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             mode: mode,
           )
         : currentStatus.firmwareVersion;
+    _ensureRefreshOwnership(ownershipRevision);
     if (forceFirmwareRead &&
         connected &&
         (firmwareVersion == null || firmwareVersion.trim().isEmpty)) {
@@ -1245,12 +1280,14 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
             mode: mode,
           )
         : currentStatus.signalQuality;
+    _ensureRefreshOwnership(ownershipRevision);
     final runtimeStatus = connected && mode != DeviceRefreshMode.heartbeat
         ? await _readRuntimeStatusAfterConnection(
             deviceId: currentStatus.deviceId,
             reason: 'refresh',
           )
         : null;
+    _ensureRefreshOwnership(ownershipRevision);
     final runtimeBatteryState = _batteryStateFromPercent(
       runtimeStatus?.batteryPercent,
     );
@@ -1289,6 +1326,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     );
     _publishRuntimeStatus(nextStatus, reason: 'refresh_completed');
     return nextStatus;
+  }
+
+  void _ensureRefreshOwnership(int revision) {
+    // Another Android GATT client can make the shared connection state look
+    // connected while this runtime has released ownership for inspection.
+    if (!kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android &&
+        (_ownershipSuspended || revision != _ownershipRevision)) {
+      throw const DeviceException(
+        'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+        'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+      );
+    }
   }
 
   Future<String?> _resolveFirmwareForRefresh(
