@@ -137,19 +137,34 @@ void main() {
   });
 
   group('tagAlertDeviceKey', () {
-    DeviceStatus status({String? hw, int? node}) => DeviceStatus(
-      deviceId: 'ble-id',
-      canonicalHardwareId: hw,
-      nodeId: node,
-      paired: true,
-      activated: true,
-      connected: false,
-    );
+    DeviceStatus status({String? hw, int? node, String id = 'ble-id'}) =>
+        DeviceStatus(
+          deviceId: id,
+          canonicalHardwareId: hw,
+          nodeId: node,
+          paired: true,
+          activated: true,
+          connected: false,
+        );
 
-    test('prefers hardware id, then node, then device id', () {
+    test('is the hardware id, else the device id, and never the node id', () {
       expect(tagAlertDeviceKey(status(hw: ' HW-1 ', node: 7)), 'HW-1');
-      expect(tagAlertDeviceKey(status(hw: ' ', node: 7)), 'node:7');
+      expect(tagAlertDeviceKey(status(hw: ' ', node: 7)), 'ble-id');
+      expect(tagAlertDeviceKey(status(node: 7)), 'ble-id');
       expect(tagAlertDeviceKey(status()), 'ble-id');
+    });
+
+    test('does not change when the node id arrives (iOS pair-time hydrate)',
+        () {
+      final before = status(id: 'UUID-1');
+      final after = status(id: 'UUID-1', node: 0x12345678);
+      expect(tagAlertDeviceKey(after), tagAlertDeviceKey(before));
+    });
+
+    test('tagAlertKeyFor matches the status rule', () {
+      expect(tagAlertKeyFor(canonicalHardwareId: 'AA', deviceId: 'x'), 'AA');
+      expect(tagAlertKeyFor(canonicalHardwareId: null, deviceId: 'x'), 'x');
+      expect(tagAlertKeyFor(canonicalHardwareId: '  ', deviceId: 'x'), 'x');
     });
   });
 }

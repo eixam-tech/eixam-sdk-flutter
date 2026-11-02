@@ -5,6 +5,7 @@ import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sd
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
+import 'package:eixam_connect_flutter/src/sdk/device_country_config_controller.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/tag_alerts/tag_alert_notification_ids.dart';
@@ -351,6 +352,79 @@ void main() {
       );
       expect(notifier.calls, contains('cancelAll'));
       expect(localStore.stringValues[SharedPrefsSdkStore.tagAlertsKey], isNull);
+    });
+  });
+
+  group('device key stability (iOS-like: no hardware id)', () {
+    DeviceStatus iosStatus({int? nodeId}) => buildDeviceStatus(
+      deviceId: 'CB-UUID-1',
+      canonicalHardwareId: null,
+      nodeId: nodeId,
+    );
+
+    test(
+      'the key does not change when the pair-time 0x23 arrives late',
+      () async {
+        await start();
+        expect(
+          tagAlertDeviceKey(iosStatus()),
+          tagAlertDeviceKey(iosStatus(nodeId: 42)),
+        );
+        expect(tagAlertDeviceKey(iosStatus(nodeId: 42)), 'CB-UUID-1');
+      },
+    );
+
+    test(
+      'a disabled setting stays disabled across the hydrate timeout',
+      () async {
+        await start();
+        devices.emitStatus(iosStatus());
+        await pumpEventQueue();
+        final disabled = TagAlertSettings(
+          deviceId: tagAlertDeviceKey(iosStatus()),
+          batteryAlerts: false,
+          disconnectAfter: null,
+        );
+        await control().updateTagAlertSettings(disabled);
+        // The first 0x23 times out at pair time; the node id shows up later.
+        devices.emitStatus(iosStatus(nodeId: 42));
+        await pumpEventQueue();
+        final later = await control().getTagAlertSettings(
+          tagAlertDeviceKey(iosStatus(nodeId: 42)),
+        );
+        expect(later, disabled);
+        expect(later.batteryAlerts, isFalse);
+      },
+    );
+
+    test(
+      'unpair cleanup targets the same key before and after the node id',
+      () async {
+        await start();
+        devices.emitStatus(iosStatus(nodeId: 42));
+        await pumpEventQueue();
+        await control().updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'CB-UUID-1', batteryAlerts: false),
+        );
+        notifier.calls.clear();
+        await sdk.unpairDevice();
+        expect(notifier.calls, ['cancelAllForDevice:CB-UUID-1']);
+        expect(
+          await control().getTagAlertSettings('CB-UUID-1'),
+          TagAlertSettings(deviceId: 'CB-UUID-1'),
+        );
+      },
+    );
+
+    test('device country config keeps its own node-aware key', () {
+      expect(
+        DeviceCountryConfigController.deviceKeyFor(iosStatus(nodeId: 42)),
+        'node:42',
+      );
+      expect(
+        DeviceCountryConfigController.deviceKeyFor(iosStatus()),
+        'CB-UUID-1',
+      );
     });
   });
 

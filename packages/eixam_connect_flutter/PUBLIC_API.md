@@ -430,7 +430,7 @@ final sdk = await EixamConnectSdk.bootstrap(EixamBootstrapConfig(
   tagAlertTextResolver: (alert) => ..., // optional: localized text, default adapter only
 ));
 if (sdk is TagAlertsControl) {
-  final key = tagAlertDeviceKey(deviceStatus); // canonical hardware id, else node:<id>, else deviceId
+  final key = tagAlertDeviceKey(deviceStatus); // canonical hardware id (Android MAC), else deviceId (iOS UUID); never the node id
   final settings = await sdk.getTagAlertSettings(key);
   await sdk.updateTagAlertSettings(settings.copyWith(disconnectAfter: const Duration(minutes: 15)));
 }
@@ -446,6 +446,12 @@ if (sdk is TagAlertsControl) {
   the next successful update replaces the bad data. `updateTagAlertSettings`
   throws `TagAlertsException` (`E_TAG_ALERTS_SESSION_REQUIRED`,
   `E_TAG_ALERTS_PERSISTENCE_FAILED`, `E_TAG_ALERTS_UNAVAILABLE`).
+- **The key is stable for a TAG**: `tagAlertDeviceKey(status)` is the canonical
+  hardware id when present, otherwise the transport device id. It never uses the
+  firmware node id, which can arrive after the pair-time `0x23` timeout and
+  would otherwise change the key (and strand the TAG's settings) mid-session on
+  iOS. A completed device migration re-keys the settings, cycle and alerts
+  explicitly.
 - Settings live under `eixam.tag_alerts.v1`, per identity scope and per device.
   They are removed, together with every scheduled and delivered TAG alert, on
   `clearSession`, `clearLocalUserData`, and when the signed user, app or backend

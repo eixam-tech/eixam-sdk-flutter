@@ -482,8 +482,17 @@ class DeviceCountryConfigController {
 
   /// Stable per-device key (canonical hardware id, else node id, else device
   /// id). Shared so callers (e.g. unpair cleanup) target the same record.
-  static String deviceKeyFor(DeviceStatus status) =>
-      tagAlertDeviceKey(status);
+  static String deviceKeyFor(DeviceStatus status) {
+    final hardware = status.canonicalHardwareId?.trim();
+    if (hardware != null && hardware.isNotEmpty) {
+      return hardware;
+    }
+    final node = status.nodeId;
+    if (node != null) {
+      return 'node:$node';
+    }
+    return status.deviceId;
+  }
 
   DeviceCountryConfigStatus _emit(
     DeviceCountryConfigOutcome outcome, {
