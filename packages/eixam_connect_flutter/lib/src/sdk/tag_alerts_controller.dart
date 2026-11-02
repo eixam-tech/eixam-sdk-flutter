@@ -18,12 +18,18 @@ final class TagAlertsController implements TagAlertsControl {
     required this.notifier,
     this.permissions = const UnsupportedTagAlertPermissionGateway(),
     this.notifierTimeout = defaultNotifierTimeout,
-  });
+    DateTime Function()? clock,
+  }) : _clock = clock ?? DateTime.now;
 
   /// Bound for every notifier call made inside the serialized tail, so a hung
   /// platform call can never hold logout, unpair or settings changes.
   static const Duration defaultNotifierTimeout = Duration(seconds: 5);
   final Duration notifierTimeout;
+  final DateTime Function() _clock;
+
+  /// How long a notification-permission check is reused by the disconnect
+  /// lease, so frequent pushes never poll the OS.
+  static const Duration permissionCacheTtl = Duration(seconds: 60);
 
   final TagAlertStore store;
   final TagAlertNotifier notifier;
@@ -47,6 +53,17 @@ final class TagAlertsController implements TagAlertsControl {
   // are retried before every controller operation until they are removed.
   bool _cancelAllPending = false;
   final Set<String> _cancelDevicesPending = <String>{};
+  // Disconnect lease: per-TAG policy state (in memory), the newest link
+  // snapshot per TAG (older ones are superseded, never queued), and the keys
+  // that already have an evaluation waiting in the serialized tail.
+  final Map<String, TagLeaseState> _leases = <String, TagLeaseState>{};
+  final Map<String, TagLinkSnapshot> _latestSnapshots =
+      <String, TagLinkSnapshot>{};
+  final Set<String> _leaseQueued = <String>{};
+  final StreamController<TagAlertRekey> _rekeys =
+      StreamController<TagAlertRekey>.broadcast();
+  bool? _permissionAllowedCache;
+  DateTime? _permissionCheckedAt;
   // The last cold-start restore failed, so the signed-in identity is unknown.
   bool _restoreUnresolved = false;
   bool _used = false;
@@ -75,6 +92,9 @@ final class TagAlertsController implements TagAlertsControl {
       _devices = {};
       _cycles = {};
       _streaks.clear();
+      _leases.clear();
+      _latestSnapshots.clear();
+      _leaseQueued.clear();
     }
     return _serialize(() async {
       _checkAlive();
@@ -157,6 +177,8 @@ final class TagAlertsController implements TagAlertsControl {
   /// Unpair cleanup: cancels the device's scheduled and delivered alerts and
   /// forgets its settings.
   Future<void> onDeviceUnpaired(String deviceKey) {
+    _leases.remove(deviceKey);
+    _latestSnapshots.remove(deviceKey);
     final generation = _generation;
     return _serialize(() async {
       _checkGeneration(generation);
@@ -201,6 +223,8 @@ final class TagAlertsController implements TagAlertsControl {
     if (fromKey.trim().isEmpty || toKey.trim().isEmpty || fromKey == toKey) {
       return Future<void>.value();
     }
+    _leases.remove(fromKey);
+    _latestSnapshots.remove(fromKey);
     final generation = _generation;
     return _serialize(() async {
       _checkGeneration(generation);
@@ -255,6 +279,11 @@ final class TagAlertsController implements TagAlertsControl {
       } finally {
         if (cancelError != null) {
           _publishError(cancelError, cancelStack!);
+        }
+        // The old key's alerts are gone; whoever owns the lease re-arms it
+        // under the new key.
+        if (!_rekeys.isClosed) {
+          _rekeys.add(TagAlertRekey(fromKey, toKey));
         }
       }
     });
@@ -355,15 +384,21 @@ final class TagAlertsController implements TagAlertsControl {
         );
       }
       await _load(generation);
+      final previous = _devices[settings.deviceId];
       final next = Map<String, TagAlertSettings>.of(_devices)
         ..[settings.deviceId] = settings;
       await _write(next, _cycles);
       _checkGeneration(generation);
       _devices = next;
       _publishAll();
+      if (previous?.disconnectAfter != settings.disconnectAfter) {
+        // A new delay re-arms the lease from scratch under the new value.
+        _leases.remove(settings.deviceId);
+      }
       // Hygiene only: a disabled feature must not leave an alert behind. The
       // policies (future blocks) own every other scheduling decision.
       await _cancelDisabled(settings);
+      _reevaluateLease(settings.deviceId);
     });
   }
 
@@ -483,8 +518,119 @@ final class TagAlertsController implements TagAlertsControl {
       permissions.state();
 
   @override
-  Future<TagAlertPermissionState> requestTagAlertPermission() =>
-      permissions.request();
+  Future<TagAlertPermissionState> requestTagAlertPermission() async {
+    final state = await permissions.request();
+    _permissionCheckedAt = null;
+    for (final key in _latestSnapshots.keys.toList()) {
+      _reevaluateLease(key);
+    }
+    return state;
+  }
+
+  /// Feeds the newest link state of a TAG to the disconnect policy.
+  ///
+  /// Snapshots are state-based and the newest replaces any older one that has
+  /// not run yet, so a burst of ticks costs one evaluation. The policy
+  /// throttles platform pushes, and every notifier call runs inside the
+  /// serialized tail with the same timeout and cleanup retry as the rest.
+  /// Failures are reported to the settings streams, never thrown.
+  Future<void> onLinkSnapshot(TagLinkSnapshot snapshot) {
+    final key = snapshot.deviceKey;
+    _latestSnapshots[key] = snapshot;
+    if (!_leaseQueued.add(key)) return Future<void>.value();
+    final generation = _generation;
+    return _serialize(() async {
+      _leaseQueued.remove(key);
+      final latest = _latestSnapshots[key];
+      if (latest == null) return;
+      await _applyLease(generation, latest);
+    });
+  }
+
+  /// Fires when [rekeyDevice] moved a TAG's state after a device migration.
+  Stream<TagAlertRekey> get rekeyEvents => _rekeys.stream;
+
+  void _reevaluateLease(String key) {
+    final latest = _latestSnapshots[key];
+    if (latest == null) return;
+    unawaited(onLinkSnapshot(latest).catchError((Object _) {}));
+  }
+
+  Future<void> _applyLease(int generation, TagLinkSnapshot snapshot) async {
+    await _prepare(generation);
+    if (_identity == null) return;
+    await _load(generation);
+    final key = snapshot.deviceKey;
+    final after = _settingsFor(key).disconnectAfter;
+    final allowed = after == null || await _notificationsAllowed();
+    final decision = TagDisconnectAlertPolicy.evaluate(
+      snapshot: snapshot,
+      state: _leases[key] ?? TagLeaseState.none,
+      disconnectAfter: after,
+      permissionAllowed: allowed,
+    );
+    _checkGeneration(generation);
+    for (final action in decision.actions) {
+      try {
+        await _runLeaseAction(snapshot, action);
+      } catch (error, stack) {
+        // Keep the previous state: the next snapshot retries the same step.
+        _publishError(error, stack);
+        return;
+      }
+    }
+    _leases[key] = decision.state;
+  }
+
+  Future<void> _runLeaseAction(
+    TagLinkSnapshot snapshot,
+    TagDisconnectAction action,
+  ) async {
+    final key = snapshot.deviceKey;
+    switch (action) {
+      case TagDisconnectNoAction():
+        return;
+      case TagDisconnectCancel(:final kinds):
+        for (final kind in kinds) {
+          await _notify(() => notifier.cancel(key, kind));
+        }
+      case TagDisconnectSchedule():
+        if (action.clearDelivered) {
+          await _notify(() => notifier.cancel(key, action.kind));
+        }
+        final alert = action.kind == TagAlertKind.bluetoothOff
+            ? TagAlert(
+                kind: TagAlertKind.bluetoothOff,
+                deviceId: key,
+                deviceAlias: snapshot.deviceAlias,
+              )
+            : TagAlert(
+                kind: TagAlertKind.tagDisconnected,
+                deviceId: key,
+                deviceAlias: snapshot.deviceAlias,
+                elapsed: action.elapsed,
+                lastTagPosition: snapshot.lastTagPosition,
+              );
+        await _notify(() => notifier.schedule(alert, action.at));
+    }
+  }
+
+  /// Cached for [permissionCacheTtl]. Only an explicit blocking state (denied,
+  /// permanently denied, not asked yet) keeps the lease disarmed.
+  Future<bool> _notificationsAllowed() async {
+    final now = _clock();
+    final checkedAt = _permissionCheckedAt;
+    final cached = _permissionAllowedCache;
+    if (checkedAt != null &&
+        cached != null &&
+        now.difference(checkedAt) < permissionCacheTtl) {
+      return cached;
+    }
+    final allowed = await _canDeliverNotifications();
+    _permissionAllowedCache = allowed;
+    _permissionCheckedAt = now;
+    return allowed;
+  }
 
   Future<void> _cancelDisabled(TagAlertSettings settings) async {
     try {
@@ -626,6 +772,8 @@ final class TagAlertsController implements TagAlertsControl {
     _devices = {};
     _cycles = {};
     _streaks.clear();
+    _leases.clear();
+    _latestSnapshots.clear();
     _loaded = false;
     _restoreFailure = null;
     if (cancelError != null) {
@@ -727,6 +875,7 @@ final class TagAlertsController implements TagAlertsControl {
         unawaited(watcher.controller.close());
       }
       _watchers.clear();
+      unawaited(_rekeys.close());
     }
   }
 
@@ -779,4 +928,12 @@ final class _Observation {
   final TagAlertSettings? settings;
   final Object? error;
   final StackTrace? stack;
+}
+
+/// A TAG's alert state moved from [from] to [to] (device migration).
+final class TagAlertRekey {
+  const TagAlertRekey(this.from, this.to);
+
+  final String from;
+  final String to;
 }

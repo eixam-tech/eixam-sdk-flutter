@@ -79,6 +79,9 @@ final class MemoryTagAlertStore implements TagAlertStore {
 final class RecordingTagAlertNotifier implements TagAlertNotifier {
   final List<String> calls = <String>[];
   final List<TagAlert> shown = <TagAlert>[];
+  final List<({TagAlert alert, DateTime at})> scheduled = [];
+  bool failSchedule = false;
+  bool hangSchedule = false;
   bool failCancelAll = false;
   bool failCancel = false;
   bool hangCancel = false;
@@ -96,8 +99,12 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   }
 
   @override
-  Future<void> schedule(TagAlert alert, DateTime at) async =>
-      calls.add('schedule:${alert.deviceId}:${alert.kind.name}');
+  Future<void> schedule(TagAlert alert, DateTime at) async {
+    calls.add('schedule:${alert.deviceId}:${alert.kind.name}');
+    scheduled.add((alert: alert, at: at));
+    if (hangSchedule) await Completer<void>().future;
+    if (failSchedule) throw StateError('schedule failed');
+  }
 
   @override
   Future<void> cancel(String deviceId, TagAlertKind kind) async {
