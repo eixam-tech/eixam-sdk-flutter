@@ -11,6 +11,10 @@
   during SOS, firmware update, provisioning and migration). No polling, no new
   BLE command, no native change. Alerts need live TAG data: a stationary TAG or a
   backgrounded app produces none.
+- Review fixes: the resume probe now waits for SOS rehydration, re-checks its gate right before the send and sends only when the command path is already ready (it can no longer start a reconnect or rebind); delivery is at-least-once (show first, mark afterwards) and is not consumed while notification permission is blocked; device-scoped readings must match the current device id; the freshness window scales with the TEL interval (`max(3 min, 1.5 x interval)`, cap 30 min).
+- Known pre-existing issue, not changed: a newly paired TAG can keep the previous TAG's `nodeId` when the pair-time `0x23` misses (`ble_device_runtime_provider.dart:449,644,1303`).
+- Battery alerts continue during an SOS (own channel, no SOS interaction).
+
 
 ## Unreleased — TAG alerts foundation
 

@@ -499,21 +499,61 @@ the same bands); the SDK never presents an exact percentage.
 - The already-alerted state is persisted per device (same `eixam.tag_alerts.v1`
   blob), so restarts and reconnects do not repeat an alert.
 - **Live data only.** Readings come from `0xD3` live batches (newest sample,
-  device timestamp within 2 min ahead / 3 min behind receipt; without a
-  plausible timestamp there is no reading), classic 12-byte TEL of the connected
-  TAG, and `0x23 GET_DEVICE_STATUS` replies (a percentage of 0 or `0xFF` is
-  ignored). Backlog (`0xD1`), neighbor relays (`0xD2`), SOS packets and any
-  stored `DeviceStatus` are never readings. The freshness window is provisional
-  and needs physical tuning.
-- **On connect and on foreground resume** the SDK uses `0x23` once (resume: at
-  most once per 10 minutes per device, only after a real return from the
-  background, never while SOS, a firmware update, provisioning or a device
-  migration is running, and never starting a reconnect). There is no polling.
+  device timestamp within 2 min ahead of receipt and `max(3 min, 1.5 x the TEL
+  interval)` behind it, capped at 30 min; the interval is learned from the last
+  `0x23` reply; without a plausible timestamp there is no reading), classic
+  12-byte TEL of the connected TAG, and `0x23 GET_DEVICE_STATUS` replies (a
+  percentage of 0 or `0xFF` is ignored). Every device-scoped reading must come
+  from the device the current status describes (`event.deviceId ==
+  status.deviceId`; a known `nodeId` must match too). Backlog (`0xD1`), neighbor
+  relays (`0xD2`), SOS packets and any stored `DeviceStatus` are never readings.
+  The freshness window is provisional and needs physical tuning.
+- **Delivery is at-least-once.** The alert is shown first and the "already
+  alerted" mark is persisted afterwards. If it cannot be shown (notifier error,
+  5 s timeout, plugin not yet initialised under host-managed notifications) it
+  is not marked and the next confirmed reading retries; a failed write after a
+  successful show may repeat the alert, never lose it. While notification
+  permission is denied, permanently denied or not asked yet, the threshold is
+  not marked, so granting permission later while still low alerts on the next
+  live reading. (The permission check uses the OS notification permission even
+  when the host supplies its own notifier.)
+- **SOS.** Battery alerts continue during an SOS; they use their own channel and
+  never touch SOS UI, ids or flows. (The planned disconnect alert will be
+  suppressed during SOS.)
+- **On connect and on foreground resume** the SDK uses `0x23` once. The resume
+  probe runs at most once per 10 minutes per device, only after a real return
+  from the background, and only **after SOS rehydration has completed** (if SOS
+  state cannot be confirmed within 10 s it stays silent). The gate (SOS,
+  pre-SOS, firmware update, provisioning, device migration) is checked after
+  that wait and again immediately before the send. It sends only when the
+  command path is **already** ready (`hasCommandCapableBleRuntime`, or the native
+  owner reports ready); otherwise it does nothing. It never goes through the
+  generic runtime-status helper, so it can never start a reconnect, a rebind or a
+  rediscovery. There is no polling and no new command.
 - **Limits, by design.** Alerts work while the app receives live TAG data. A
   stationary TAG sends no `0xD3`, so no new reading arrives; a backgrounded app
   receives nothing from the TAG (native Protection Mode does not forward battery
   data to Dart); an alert can therefore be late or never come. This is not a
   guaranteed safety feature and does not replace checking the device.
+
+### Known issues and residual risks
+
+- **Stale `nodeId` after re-pairing a different TAG (pre-existing, not changed
+  here).** `ble_device_runtime_provider.dart:449`, `:644` and `:1303` use
+  `nodeId: runtimeStatus?.nodeId` and `DeviceStatus.copyWith` keeps the old
+  value when it is null, so if the pair-time `0x23` misses (2 s timeout,
+  `:1484`) a newly paired TAG can carry the previous TAG's node id until the next
+  reply. This also affects the country-config key. TAG alerts are protected by
+  the device-id check and by not using the node id in the key; switching TAGs is
+  rare. Pick it up separately.
+- A TAG without a battery (or reading 0) cannot be told apart from an empty one
+  on the 2-bit TEL path; two-reading confirmation is the only guard.
+- A redelivered older `0xD3` batch inside the freshness window can count as a
+  reading.
+- The settings and cycle key is `tagAlertDeviceKey(status)`; a host that stores
+  settings under another id will not have its unpair cleanup applied.
+- Notification permission is read from the OS even when a host notifier is
+  supplied.
 
 ### Notification delivery (`TagAlertNotifier`)
 
