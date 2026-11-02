@@ -4863,10 +4863,8 @@ class EixamConnectSdkImpl
         _bleAutoReconnectCoordinator.setAppForeground(true);
         final sosRehydration = _rehydrateSosStateOnAppResume();
         unawaited(sosRehydration);
-        if (_appBackgrounded) {
-          _appBackgrounded = false;
-          _pushTagLinkSnapshot();
-        }
+        _appBackgrounded = false;
+        _pushTagLinkSnapshot();
         if (_isProtectionPlatformOwningBle) {
           unawaited(_protectionModeController.rehydrate());
           unawaited(
@@ -5938,8 +5936,18 @@ class EixamConnectSdkImpl
     _tagRebootExpectedUntil = _clock().add(hold ?? _tagRebootHold);
   }
 
+  /// True when the app is in the background. The binding is consulted too:
+  /// an app relaunched in the background (iOS state restoration) may never get
+  /// a `paused` callback, and the lease must not stay armed there.
+  bool get _isAppInBackground {
+    if (_appBackgrounded) return true;
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached;
+  }
+
   bool get _tagLeaseDisarmedInBackground =>
-      _appBackgrounded &&
+      _isAppInBackground &&
       (tagLeaseDisarmsInBackground ??
           defaultTargetPlatform == TargetPlatform.iOS);
 

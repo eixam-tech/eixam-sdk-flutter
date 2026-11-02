@@ -319,6 +319,39 @@ void main() {
       expect(notifier.scheduled.last.at, clock.add(_five));
     });
 
+    test(
+      'an app relaunched in the background never arms the lease (iOS)',
+      () async {
+        await sdk.dispose();
+        for (final dispose in disposables) {
+          await dispose();
+        }
+        // No lifecycle callback reached the SDK: only the binding knows.
+        final binding = TestWidgetsFlutterBinding.instance;
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        addTearDown(
+          () =>
+              binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed),
+        );
+        devices = FakeDeviceRepository(initialStatus: tag(connected: false));
+        sdk = build(disarmInBackground: true);
+        await sdk.initialize(
+          const EixamSdkConfig(
+            apiBaseUrl: 'https://sdk.test',
+            deferRuntimeStartup: true,
+          ),
+        );
+        await sdk.setSession(sessionA, deferRuntimeWork: true);
+        notifier.calls.clear();
+        await emit(tag());
+        expect(schedules(), isEmpty);
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await pumpEventQueue();
+        await foreground();
+        expect(schedules(), hasLength(1));
+      },
+    );
+
     test('Android keeps the lease armed in the background', () async {
       await sdk.dispose();
       for (final dispose in disposables) {
