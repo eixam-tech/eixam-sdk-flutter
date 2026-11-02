@@ -55,6 +55,8 @@ final class _SpyRepository extends InMemoryDeviceRepository {
   _SpyRepository({required super.runtimeProvider, required super.localStore})
     : super(heartbeatInterval: const Duration(hours: 1));
 
+  // Closed in the test tearDown.
+  // ignore: close_sinks
   final StreamController<DeviceStatus> statuses =
       StreamController<DeviceStatus>.broadcast();
   DeviceStatus status = buildDeviceStatus(
