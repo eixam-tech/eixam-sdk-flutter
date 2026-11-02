@@ -298,6 +298,86 @@ void main() {
     );
   });
 
+  group('slot id cache (lease fast path)', () {
+    test(
+      'the first push costs three platform calls, later pushes one',
+      () async {
+        var calls = 0;
+        const channel = MethodChannel(
+          'dexterous.com/flutter/local_notifications',
+        );
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(channel, (call) {
+          calls++;
+          return center.handle(call);
+        });
+        await notifier.schedule(disconnected('tag-1'), inMinutes(5));
+        expect(calls, 3, reason: 'pending + active listing + zonedSchedule');
+        calls = 0;
+        for (var i = 1; i <= 20; i++) {
+          await notifier.schedule(disconnected('tag-1'), inMinutes(5 + i));
+        }
+        expect(calls, 20, reason: 'one zonedSchedule per push');
+        expect(center.pending, hasLength(1));
+      },
+    );
+
+    test('a cancel drops the cache; the next push resolves again', () async {
+      await notifier.schedule(disconnected('tag-1'), inMinutes(5));
+      final id = center.pending.keys.single;
+      await notifier.cancel('tag-1', TagAlertKind.tagDisconnected);
+      expect(center.pending, isEmpty);
+      await notifier.schedule(disconnected('tag-1'), inMinutes(5));
+      expect(center.pending.keys.single, id);
+    });
+
+    test('a cached id is never taken by another slot', () async {
+      final byCandidate = <int, String>{};
+      String? first;
+      String? second;
+      for (var i = 0; i < 200000 && second == null; i++) {
+        final key = 'device-$i';
+        final id = TagAlertNotificationIds.candidate(
+          key,
+          TagAlertKind.tagDisconnected,
+        );
+        final other = byCandidate[id];
+        if (other != null) {
+          first = other;
+          second = key;
+        } else {
+          byCandidate[id] = key;
+        }
+      }
+      expect(second, isNotNull);
+      await notifier.schedule(disconnected(first!), inMinutes(5));
+      final firstId = center.pending.keys.single;
+      // The first slot's alert fired and was dismissed: nothing is pending.
+      center.pending.clear();
+      await notifier.schedule(disconnected(second!), inMinutes(5));
+      expect(center.pending.keys.single, isNot(firstId));
+      // The first slot's fast push must not overwrite the second slot's alert.
+      await notifier.schedule(disconnected(first), inMinutes(9));
+      expect(center.pending, hasLength(2));
+      expect(center.pending.containsKey(firstId), isTrue);
+    });
+
+    test(
+      'cancelAll and cancelAllForDevice clear only what they remove',
+      () async {
+        await notifier.schedule(disconnected('tag-1'), inMinutes(5));
+        await notifier.schedule(disconnected('tag-2'), inMinutes(5));
+        await notifier.cancelAllForDevice('tag-1');
+        expect(center.pending, hasLength(1));
+        await notifier.schedule(disconnected('tag-2'), inMinutes(9));
+        expect(center.pending, hasLength(1));
+        await notifier.cancelAll();
+        expect(center.pending, isEmpty);
+      },
+    );
+  });
+
   group('show', () {
     test('delivers one alert per slot and clears a pending twin', () async {
       await notifier.schedule(battery('tag-1'), inMinutes(5));

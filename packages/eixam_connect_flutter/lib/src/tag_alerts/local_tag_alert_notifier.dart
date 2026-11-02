@@ -35,6 +35,12 @@ final class LocalTagAlertNotifier implements TagAlertNotifier {
   final DateTime Function() _clock;
   Future<void> _tail = Future<void>.value();
 
+  /// Ids this instance already resolved for a slot. A push for a cached slot
+  /// costs one platform call (`zonedSchedule`, which replaces the pending alert
+  /// with the same id) instead of three. Other slots avoid cached ids when they
+  /// allocate, so a cached id cannot be taken from under its slot.
+  final Map<TagAlertSlot, int> _slotIds = <TagAlertSlot, int>{};
+
   static const String channelName = 'TAG alerts';
   static const String channelDescription =
       'Battery and connection notices for your TAG';
@@ -43,8 +49,7 @@ final class LocalTagAlertNotifier implements TagAlertNotifier {
   Future<void> show(TagAlert alert) => _serialize(() async {
     await _ensureInitialized();
     final slot = TagAlertSlot(alert.deviceId, alert.kind);
-    final inventory = await _inventory();
-    final id = _resolveId(slot, inventory);
+    final id = await _idFor(slot);
     // A pending alarm with the same id would otherwise still fire later.
     await _plugin.cancel(id: id);
     await _plugin.show(
@@ -60,8 +65,7 @@ final class LocalTagAlertNotifier implements TagAlertNotifier {
   Future<void> schedule(TagAlert alert, DateTime at) => _serialize(() async {
     await _ensureInitialized();
     final slot = TagAlertSlot(alert.deviceId, alert.kind);
-    final inventory = await _inventory();
-    final id = _resolveId(slot, inventory);
+    final id = await _idFor(slot);
     if (!at.isAfter(_clock().add(const Duration(seconds: 1)))) {
       // The moment already passed (for example the app was suspended): the
       // condition holds, so tell the user now instead of dropping the alert.
@@ -100,6 +104,7 @@ final class LocalTagAlertNotifier implements TagAlertNotifier {
 
   Future<void> _cancelWhere(bool Function(TagAlertSlot slot) test) =>
       _serialize(() async {
+        _slotIds.removeWhere((slot, _) => test(slot));
         final inventory = await _inventory();
         for (final entry in inventory.owners.entries) {
           if (test(entry.value)) {
@@ -169,15 +174,28 @@ final class LocalTagAlertNotifier implements TagAlertNotifier {
     return _Inventory(owners, foreign);
   }
 
+  Future<int> _idFor(TagAlertSlot slot) async {
+    final cached = _slotIds[slot];
+    if (cached != null) return cached;
+    final id = _resolveId(slot, await _inventory());
+    _slotIds[slot] = id;
+    return id;
+  }
+
   int _resolveId(TagAlertSlot slot, _Inventory inventory) {
     // Reuse the slot's existing id so a reschedule replaces in place.
     for (final entry in inventory.owners.entries) {
       if (entry.value == slot) return entry.key;
     }
+    final reservedByOthers = <int>{
+      for (final entry in _slotIds.entries)
+        if (entry.key != slot) entry.value,
+    };
     var id = TagAlertNotificationIds.candidate(slot.deviceKey, slot.kind);
     for (var i = 0; i < TagAlertNotificationIds.rangeSize; i++) {
       if (!inventory.owners.containsKey(id) &&
-          !inventory.foreign.contains(id)) {
+          !inventory.foreign.contains(id) &&
+          !reservedByOthers.contains(id)) {
         return id;
       }
       id = TagAlertNotificationIds.next(id);
