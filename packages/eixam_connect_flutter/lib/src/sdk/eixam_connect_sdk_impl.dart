@@ -55,6 +55,10 @@ import '../activity/activity_recording_source_identity.dart';
 import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_database.dart';
 import 'activity_availability_controller.dart';
+import 'tag_alerts_controller.dart';
+import '../data/datasources_local/tag_alert_store.dart';
+import '../tag_alerts/tag_alert_notification_ids.dart';
+import '../tag_alerts/tag_alert_permission_gateway.dart';
 import '../data/datasources_local/activity_availability_store.dart';
 import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
 import '../data/datasources_local/activity_session_store.dart';
@@ -229,6 +233,7 @@ class EixamConnectSdkImpl
         BackgroundLocationControl,
         ActivitySessionControl,
         ActivityAvailabilityControl,
+        TagAlertsControl,
         ActivityRecordingControl,
         ActivityRecordingHistoryControl,
         ActivityRecordingDeleteControl,
@@ -272,6 +277,9 @@ class EixamConnectSdkImpl
     SharedPrefsSdkStore? localStore,
     ActivitySessionStore? activitySessionStore,
     ActivityAvailabilityStore? activityAvailabilityStore,
+    TagAlertStore? tagAlertStore,
+    TagAlertNotifier? tagAlertNotifier,
+    TagAlertPermissionGateway? tagAlertPermissions,
     ActivityRecordingStore? activityRecordingStore,
     SdkActivityAvailabilityRemoteDataSource?
     activityAvailabilityRemoteDataSource,
@@ -307,6 +315,12 @@ class EixamConnectSdkImpl
           SharedPrefsActivityAvailabilityStore(_localStore),
       remote: activityAvailabilityRemoteDataSource,
       clock: _clock,
+    );
+    _tagAlerts = TagAlertsController(
+      store: tagAlertStore ?? SharedPrefsTagAlertStore(_localStore),
+      notifier: tagAlertNotifier ?? const _NoopTagAlertNotifier(),
+      permissions:
+          tagAlertPermissions ?? const UnsupportedTagAlertPermissionGateway(),
     );
     _devicePositionBacklogCoordinator = DevicePositionBacklogCoordinator(
       writeCommand: backlogCommandWriter ?? _writePositionBacklogCommand,
@@ -629,6 +643,7 @@ class EixamConnectSdkImpl
   late final ActivitySessionController _activitySessions;
   late final ActivityRecordingController _activityRecordings;
   late final ActivityAvailabilityController _activityAvailability;
+  late final TagAlertsController _tagAlerts;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -981,7 +996,16 @@ class EixamConnectSdkImpl
       preserveLocalState: preserveLocalState,
     );
     late final Future<T> identityWork;
+    late final Future<T> tagAlertWork;
     final availabilityWork = _activityAvailability.withIdentityChange(
+      () => tagAlertWork,
+      currentSession: currentSession,
+      backend: backend,
+      restoreExisting: restoreExisting,
+      clearData: clearData,
+      preserveLocalState: preserveLocalState,
+    );
+    tagAlertWork = _tagAlerts.withIdentityChange(
       () => identityWork,
       currentSession: currentSession,
       backend: backend,
@@ -1000,6 +1024,7 @@ class EixamConnectSdkImpl
     // Availability may be waiting for a prior checked storage write. Handle an
     // early rejection now, while preserving it for the awaited public result.
     identityWork.ignore();
+    tagAlertWork.ignore();
     activityWork = availabilityWork;
     activityWork.ignore();
     return recordingWork;
@@ -4652,6 +4677,14 @@ class EixamConnectSdkImpl
       await deviceConfigStore?.clear(
         DeviceCountryConfigController.deviceKeyFor(unpairedStatus),
       );
+      try {
+        await _tagAlerts.onDeviceUnpaired(tagAlertDeviceKey(unpairedStatus));
+      } catch (error) {
+        // Unpair must complete; the failure is surfaced to watchers.
+        BleDebugRegistry.instance.recordEvent(
+          'TAG alert cleanup after unpair failed: ${error.runtimeType}',
+        );
+      }
     }
     _lastDeviceStatus = await deviceRepository.getDeviceStatus();
     _publishPublicDeviceStatus(
@@ -7281,6 +7314,12 @@ class EixamConnectSdkImpl
       'Notification action tapped -> action=$actionId payload=${invocation.payload ?? '-'} launchedApp=${invocation.launchedApp}',
     );
 
+    if (TagAlertPayload.isTagAlert(invocation.payload)) {
+      // TAG alerts are informational. Never route them into SOS/BLE
+      // navigation; the OS opens the app and the host decides what to show.
+      return;
+    }
+
     final deathManPayload = _DeathManNotificationPayload.tryParse(
       invocation.payload,
     );
@@ -7492,6 +7531,26 @@ class EixamConnectSdkImpl
     final normalized = nodeId & 0xFFFFFFFF;
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
+
+  @override
+  Future<TagAlertSettings> getTagAlertSettings(String deviceId) =>
+      _tagAlerts.getTagAlertSettings(deviceId);
+
+  @override
+  Stream<TagAlertSettings> watchTagAlertSettings(String deviceId) =>
+      _tagAlerts.watchTagAlertSettings(deviceId);
+
+  @override
+  Future<void> updateTagAlertSettings(TagAlertSettings settings) =>
+      _tagAlerts.updateTagAlertSettings(settings);
+
+  @override
+  Future<TagAlertPermissionState> getTagAlertPermissionState() =>
+      _tagAlerts.getTagAlertPermissionState();
+
+  @override
+  Future<TagAlertPermissionState> requestTagAlertPermission() =>
+      _tagAlerts.requestTagAlertPermission();
 
   @override
   Future<SdkActivityAvailability?> getCachedActivityAvailability() =>
@@ -27187,6 +27246,11 @@ class EixamConnectSdkImpl
       availabilityDisposalError = error;
       availabilityDisposalStack = stack;
     }
+    try {
+      await _tagAlerts.dispose();
+    } catch (_) {
+      // Optional TAG alert cleanup must never skip the runtime teardown.
+    }
     await activityDisposal;
     try {
       await recordingDisposal;
@@ -28299,4 +28363,21 @@ class _DeathManNotificationPayload {
     }
     return _DeathManNotificationPayload(planId);
   }
+}
+
+/// Used when no [TagAlertNotifier] is injected (direct construction in tests
+/// and internal setups). The bootstrap factory always injects a real one.
+final class _NoopTagAlertNotifier implements TagAlertNotifier {
+  const _NoopTagAlertNotifier();
+
+  @override
+  Future<void> show(TagAlert alert) async {}
+  @override
+  Future<void> schedule(TagAlert alert, DateTime at) async {}
+  @override
+  Future<void> cancel(String deviceId, TagAlertKind kind) async {}
+  @override
+  Future<void> cancelAllForDevice(String deviceId) async {}
+  @override
+  Future<void> cancelAll() async {}
 }
