@@ -573,6 +573,12 @@ keeps working offline and resyncs on reconnect.
   `drop + X` (and `bluetoothOff` likewise), with every usual suppression (SOS,
   manual, firmware update, provisioning reboot, migration, "never", permission).
   A backgrounded app with a connected TAG and no events schedules nothing.
+  A drop observed in the background is scheduled **without waiting on anything
+  else** (the iOS wake window is about 10 s): it uses the last known
+  notification-permission state (unknown counts as allowed; scheduling while
+  permission is really missing is harmless, the OS drops it) and defers cleanup
+  retries until after the schedule. The permission answer is refreshed
+  afterwards without blocking, and the alert is re-evaluated if it changed.
 - **How a background drop reaches Dart.** iOS with `bluetooth-central`: the
   central manager that owns the connection (the native Protection bridge when
   armed, otherwise flutter_blue_plus) is woken on `didDisconnectPeripheral`; the
@@ -585,7 +591,8 @@ keeps working offline and resyncs on reconnect.
   task removed the alert waits until the app starts again. Both are
   documented-behavior assumptions that need device validation.
 - **Debug logs.** In debug builds the SDK prints `[TAG_LEASE]` lines (link
-  state with lifecycle, drop cause, schedule/cancel with kind and fire time).
+  state with lifecycle, drop cause, schedule/cancel with kind and fire time, and
+  `dropToScheduleMs`, the time from the observed drop to the schedule being done).
   They contain no device ids (a short digest `key#xxxxxx` instead), aliases or
   coordinates.
 - **Cost.** A push is one platform call (the notifier caches the slot id), runs
