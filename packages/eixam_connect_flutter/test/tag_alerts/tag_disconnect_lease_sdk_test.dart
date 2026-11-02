@@ -6,9 +6,12 @@ import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
+import 'package:flutter/foundation.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
+import 'package:eixam_connect_flutter/src/tag_alerts/tag_lease_log.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -30,10 +33,12 @@ void main() {
   late FakeDeviceRepository devices;
   late StreamController<BleIncomingEvent> incoming;
   late EixamConnectSdkImpl sdk;
+  late DeviceSosController sosController;
   late DateTime clock;
   final disposables = <Future<void> Function()>[];
 
   EixamConnectSdkImpl build({bool? disarmInBackground}) {
+    sosController = DeviceSosController();
     final sos = FakeSosRepository();
     final tracking = FakeTrackingRepository();
     final contacts = FakeContactsRepository();
@@ -67,7 +72,7 @@ void main() {
       ),
       notificationsRepository: FakeNotificationsRepository(),
       realtimeClient: realtime,
-      deviceSosController: DeviceSosController(),
+      deviceSosController: sosController,
       bleIncomingEvents: incoming.stream,
       preferredBleDeviceStore: PreferredBleDeviceStore(localStore: localStore),
       localStore: localStore,
@@ -273,14 +278,20 @@ void main() {
     });
   });
 
-  group('background', () {
-    test('iOS: the lease is dropped on pause and re-armed on resume', () async {
+  group('background (lease off by default on every platform)', () {
+    Future<void> restart({
+      bool? disarm,
+      TargetPlatform? platform,
+      required DeviceStatus first,
+    }) async {
       await sdk.dispose();
       for (final dispose in disposables) {
         await dispose();
       }
-      devices = FakeDeviceRepository(initialStatus: tag(connected: false));
-      sdk = build(disarmInBackground: true);
+      debugDefaultTargetPlatformOverride = platform;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      devices = FakeDeviceRepository(initialStatus: first);
+      sdk = build(disarmInBackground: disarm);
       await sdk.initialize(
         const EixamSdkConfig(
           apiBaseUrl: 'https://sdk.test',
@@ -288,77 +299,160 @@ void main() {
         ),
       );
       await sdk.setSession(sessionA, deferRuntimeWork: true);
-      await emit(tag());
       notifier.calls.clear();
-      await background();
-      expect(notifier.calls, contains('cancel:$_hardware:tagDisconnected'));
-      notifier.calls.clear();
-      clock = clock.add(const Duration(minutes: 20));
-      await foreground();
-      expect(schedules(), hasLength(1));
-    });
+    }
 
-    test('a disconnect woken in the background still arms exactly', () async {
-      await sdk.dispose();
-      for (final dispose in disposables) {
-        await dispose();
-      }
-      devices = FakeDeviceRepository(initialStatus: tag(connected: false));
-      sdk = build(disarmInBackground: true);
-      await sdk.initialize(
-        const EixamSdkConfig(
-          apiBaseUrl: 'https://sdk.test',
-          deferRuntimeStartup: true,
-        ),
-      );
-      await sdk.setSession(sessionA, deferRuntimeWork: true);
+    for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+      group('$platform', () {
+        test('the lease is dropped on pause and re-armed on resume', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          notifier.calls.clear();
+          await background();
+          expect(notifier.calls, contains('cancel:$_hardware:tagDisconnected'));
+          notifier.calls.clear();
+          clock = clock.add(const Duration(minutes: 20));
+          await foreground();
+          expect(schedules(), hasLength(1));
+        });
+
+        test('backgrounded + connected + no events => nothing scheduled, '
+            'no false alert', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          await background();
+          notifier.calls.clear();
+          for (var i = 0; i < 20; i++) {
+            clock = clock.add(const Duration(minutes: 3));
+            await background(); // every wake-up is another snapshot
+          }
+          expect(schedules(), isEmpty);
+          expect(notifier.scheduled.where((e) => e.at.isAfter(clock)), isEmpty);
+        });
+
+        test('backgrounded + observed unexpected drop => drop + X', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          await background();
+          clock = clock.add(const Duration(minutes: 2));
+          await emit(tag(connected: false));
+          expect(notifier.scheduled.last.at, clock.add(_five));
+          expect(
+            notifier.scheduled.last.alert.kind,
+            TagAlertKind.tagDisconnected,
+          );
+        });
+
+        test('backgrounded + Bluetooth off => the bluetoothOff kind', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          await background();
+          BleDebugRegistry.instance.update(
+            adapterState: BleAdapterState.poweredOff,
+          );
+          clock = clock.add(const Duration(minutes: 1));
+          await emit(tag(connected: false));
+          expect(notifier.scheduled.last.alert.kind, TagAlertKind.bluetoothOff);
+          expect(notifier.scheduled.last.at, clock.add(_five));
+        });
+
+        test('backgrounded + SOS active + drop => nothing', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          await background();
+          sosController.handleIncomingSosPacket(
+            _activeSosPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          await pumpEventQueue();
+          expect(
+            sosController.currentStatus.state,
+            isNot(DeviceSosState.inactive),
+          );
+          notifier.calls.clear();
+          clock = clock.add(const Duration(minutes: 1));
+          await emit(tag(connected: false));
+          expect(schedules(), isEmpty);
+        });
+
+        test('backgrounded + no notification permission => nothing', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          await background();
+          permissions.next = TagAlertPermissionState.denied;
+          clock = clock.add(const Duration(minutes: 2)); // past the cache TTL
+          notifier.calls.clear();
+          await emit(tag(connected: false));
+          expect(schedules(), isEmpty);
+        });
+
+        test('backgrounded + "never" => nothing', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await sdk.updateTagAlertSettings(
+            TagAlertSettings(deviceId: _hardware, disconnectAfter: null),
+          );
+          await emit(tag());
+          await background();
+          notifier.calls.clear();
+          clock = clock.add(const Duration(minutes: 1));
+          await emit(tag(connected: false));
+          expect(schedules(), isEmpty);
+        });
+
+        test('backgrounded + manual disconnect/unpair => nothing', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag());
+          await background();
+          notifier.calls.clear();
+          await sdk.unpairDevice();
+          await emit(tag(connected: false, paired: false));
+          expect(schedules(), isEmpty);
+        });
+      });
+    }
+
+    test('a reconnect while backgrounded removes the pending alert', () async {
+      await restart(first: tag(connected: false));
       await emit(tag());
       await background();
-      clock = clock.add(const Duration(minutes: 2));
+      clock = clock.add(const Duration(minutes: 1));
       await emit(tag(connected: false));
-      expect(notifier.scheduled.last.at, clock.add(_five));
+      notifier.calls.clear();
+      clock = clock.add(const Duration(minutes: 2));
+      await emit(tag());
+      expect(notifier.calls, contains('cancel:$_hardware:tagDisconnected'));
+      expect(schedules(), isEmpty, reason: 'still backgrounded: no new lease');
     });
 
     test(
-      'an app relaunched in the background never arms the lease (iOS)',
+      'a host may opt out with tagLeaseDisarmsInBackground = false',
       () async {
-        await sdk.dispose();
-        for (final dispose in disposables) {
-          await dispose();
-        }
-        // No lifecycle callback reached the SDK: only the binding knows.
-        final binding = TestWidgetsFlutterBinding.instance;
-        binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-        addTearDown(
-          () =>
-              binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed),
+        await restart(
+          disarm: false,
+          platform: TargetPlatform.android,
+          first: tag(connected: false),
         );
-        devices = FakeDeviceRepository(initialStatus: tag(connected: false));
-        sdk = build(disarmInBackground: true);
-        await sdk.initialize(
-          const EixamSdkConfig(
-            apiBaseUrl: 'https://sdk.test',
-            deferRuntimeStartup: true,
-          ),
-        );
-        await sdk.setSession(sessionA, deferRuntimeWork: true);
-        notifier.calls.clear();
         await emit(tag());
-        expect(schedules(), isEmpty);
-        binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-        await pumpEventQueue();
-        await foreground();
-        expect(schedules(), hasLength(1));
+        notifier.calls.clear();
+        await background();
+        expect(notifier.calls.where((c) => c.startsWith('cancel')), isEmpty);
       },
     );
 
-    test('Android keeps the lease armed in the background', () async {
+    test('an app relaunched in the background never arms the lease', () async {
       await sdk.dispose();
       for (final dispose in disposables) {
         await dispose();
       }
+      // No lifecycle callback reached the SDK: only the binding knows.
+      final binding = TestWidgetsFlutterBinding.instance;
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      addTearDown(
+        () => binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed),
+      );
       devices = FakeDeviceRepository(initialStatus: tag(connected: false));
-      sdk = build(disarmInBackground: false);
+      sdk = build();
       await sdk.initialize(
         const EixamSdkConfig(
           apiBaseUrl: 'https://sdk.test',
@@ -366,10 +460,100 @@ void main() {
         ),
       );
       await sdk.setSession(sessionA, deferRuntimeWork: true);
-      await emit(tag());
       notifier.calls.clear();
-      await background();
-      expect(notifier.calls.where((c) => c.startsWith('cancel')), isEmpty);
+      await emit(tag());
+      expect(schedules(), isEmpty);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await pumpEventQueue();
+      await foreground();
+      expect(schedules(), hasLength(1));
+    });
+  });
+
+  test('a drop seen on a path other than the repository stream still arms '
+      '(native-owned status is published the same way)', () async {
+    await sdk.dispose();
+    for (final dispose in disposables) {
+      await dispose();
+    }
+    final silent = _SilentRefreshRepository(initialStatus: tag());
+    devices = silent;
+    sdk = build();
+    await sdk.initialize(
+      const EixamSdkConfig(
+        apiBaseUrl: 'https://sdk.test',
+        deferRuntimeStartup: true,
+      ),
+    );
+    await sdk.setSession(sessionA, deferRuntimeWork: true);
+    await emit(tag());
+    notifier.calls.clear();
+    clock = clock.add(const Duration(seconds: 100));
+    // The repository stream says nothing; a refresh publishes the new state.
+    silent.refreshResult = tag(connected: false);
+    await sdk.refreshDeviceStatus();
+    await pumpEventQueue();
+    expect(notifier.scheduled.last.at, clock.add(_five));
+  });
+
+  group('debug logs for device tests', () {
+    final collected = <String>[];
+    setUp(() {
+      collected.clear();
+      TagLeaseLog.debugSink = collected.add;
+    });
+    tearDown(() => TagLeaseLog.debugSink = null);
+    List<String> leaseLogs() => List<String>.of(collected);
+
+    test('link, drop cause, schedule and cancel are logged without '
+        'identifiers or coordinates', () async {
+      await emit(tag());
+      final sampleAt = clock.subtract(const Duration(seconds: 5));
+      incoming.add(
+        liveBatchEvent(clock, [
+          (timestamp: unixOf(sampleAt), wire: telWire(level: 3)),
+        ]),
+      );
+      await pumpEventQueue();
+      clock = clock.add(const Duration(seconds: 100));
+      await emit(tag(connected: false));
+      clock = clock.add(const Duration(minutes: 7));
+      await emit(tag());
+      final logs = leaseLogs();
+      expect(logs.any((l) => l.contains('link connected=true')), isTrue);
+      expect(logs.any((l) => l.contains('lifecycle=')), isTrue);
+      expect(
+        logs.any((l) => l.contains('drop observed cause=unexpected')),
+        isTrue,
+      );
+      expect(
+        logs.any(
+          (l) =>
+              l.contains('schedule key#') &&
+              l.contains('kind=tagDisconnected') &&
+              l.contains('fire=2026-11-02T') &&
+              l.contains('in='),
+        ),
+        isTrue,
+      );
+      expect(logs.any((l) => l.contains('cancel key#')), isTrue);
+      final joined = logs.join('\n');
+      expect(joined, isNot(contains(_hardware)));
+      expect(joined, isNot(contains('Demo Beacon')));
+      expect(joined, isNot(contains('Roger')));
+      expect(logs.every((l) => l.startsWith('[TAG_LEASE] ')), isTrue);
+      // None of it goes to the shared diagnostics ring buffer.
+      expect(
+        BleDebugRegistry.instance.currentState.events.any(
+          (e) => e.message.contains('TAG_LEASE'),
+        ),
+        isFalse,
+      );
+      final withoutTimes = joined.replaceAll(
+        RegExp(r'\d{4}-\d{2}-\d{2}T[\d:.]+Z'),
+        '<time>',
+      );
+      expect(withoutTimes, isNot(matches(RegExp(r'\d+\.\d{3,}'))));
     });
   });
 
@@ -410,4 +594,28 @@ void main() {
     await emit(tag());
     expect(schedules(), isEmpty);
   });
+}
+
+/// A FakeDeviceRepository whose refresh reports a state the stream never did.
+final class _SilentRefreshRepository extends FakeDeviceRepository {
+  _SilentRefreshRepository({required super.initialStatus});
+
+  DeviceStatus? refreshResult;
+
+  @override
+  Future<DeviceStatus> refreshDeviceStatus() async =>
+      refreshResult ?? await getDeviceStatus();
+}
+
+EixamSosPacket _activeSosPacket() {
+  const flagsWord = 0x8000;
+  return EixamSosPacket.tryParse(<int>[
+    0x34,
+    0x12,
+    0x00,
+    0x00,
+    flagsWord & 0xFF,
+    (flagsWord >> 8) & 0xFF,
+    0x00,
+  ])!;
 }

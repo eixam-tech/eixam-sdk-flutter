@@ -19,13 +19,16 @@ final class TagAlertsController implements TagAlertsControl {
     this.permissions = const UnsupportedTagAlertPermissionGateway(),
     this.notifierTimeout = defaultNotifierTimeout,
     DateTime Function()? clock,
-  }) : _clock = clock ?? DateTime.now;
+    void Function(String message)? log,
+  }) : _clock = clock ?? DateTime.now,
+       _log = log;
 
   /// Bound for every notifier call made inside the serialized tail, so a hung
   /// platform call can never hold logout, unpair or settings changes.
   static const Duration defaultNotifierTimeout = Duration(seconds: 5);
   final Duration notifierTimeout;
   final DateTime Function() _clock;
+  final void Function(String message)? _log;
 
   /// How long a notification-permission check is reused by the disconnect
   /// lease, so frequent pushes never poll the OS.
@@ -570,11 +573,21 @@ final class TagAlertsController implements TagAlertsControl {
       permissionAllowed: allowed,
     );
     _checkGeneration(generation);
+    final previous = _leases[key] ?? TagLeaseState.none;
+    if (decision.actions.isNotEmpty || decision.state.phase != previous.phase) {
+      _leaseLog(
+        'snapshot ${_logKey(key)} connected=${snapshot.connected} '
+        'cause=${snapshot.cause.name} background=${snapshot.backgroundDisarm} '
+        'sos=${snapshot.sosActive} phase=${previous.phase.name}'
+        '->${decision.state.phase.name} actions=${decision.actions.length}',
+      );
+    }
     for (final action in decision.actions) {
       try {
         await _runLeaseAction(snapshot, action);
       } catch (error, stack) {
         // Keep the previous state: the next snapshot retries the same step.
+        _leaseLog('action_failed ${_logKey(key)} error=${error.runtimeType}');
         _publishError(error, stack);
         return;
       }
@@ -591,11 +604,25 @@ final class TagAlertsController implements TagAlertsControl {
       case TagDisconnectNoAction():
         return;
       case TagDisconnectCancel(:final kinds):
+        _leaseLog(
+          'cancel ${_logKey(key)} kinds=${kinds.map((k) => k.name).join(',')}',
+        );
         for (final kind in kinds) {
           await _notify(() => notifier.cancel(key, kind));
         }
       case TagDisconnectSchedule():
+        _leaseLog(
+          'schedule ${_logKey(key)} kind=${action.kind.name} '
+          // Not named `...At`: the diagnostics redactor hides those values.
+          'fire=${action.at.toUtc().toIso8601String()} '
+          'in=${action.at.difference(_clock()).inSeconds}s '
+          'clearDelivered=${action.clearDelivered}',
+        );
         if (action.clearDelivered) {
+          _leaseLog(
+            'cancel ${_logKey(key)} kinds=${action.kind.name} '
+            'reason=clear_delivered',
+          );
           await _notify(() => notifier.cancel(key, action.kind));
         }
         final alert = action.kind == TagAlertKind.bluetoothOff
@@ -614,6 +641,12 @@ final class TagAlertsController implements TagAlertsControl {
         await _notify(() => notifier.schedule(alert, action.at));
     }
   }
+
+  void _leaseLog(String message) => _log?.call(message);
+
+  /// A short stable digest instead of the device identifier.
+  static String _logKey(String key) =>
+      'key#${sha256.convert(utf8.encode(key)).toString().substring(0, 6)}';
 
   /// Cached for [permissionCacheTtl]. Only an explicit blocking state (denied,
   /// permanently denied, not asked yet) keeps the lease disarmed.

@@ -356,6 +356,172 @@ void main() {
     });
   });
 
+  group('background disarms only the lease, never arm-at-disconnect', () {
+    TagLinkSnapshot downInBackground(
+      DateTime since, {
+      TagDisconnectCause cause = TagDisconnectCause.unexpected,
+      DateTime? hold,
+      bool sos = false,
+      bool paired = true,
+    }) => TagLinkSnapshot(
+      deviceKey: 'tag-1',
+      observedAt: since,
+      paired: paired,
+      connected: false,
+      disconnectedSince: since,
+      cause: cause,
+      holdUntil: hold,
+      sosActive: sos,
+      backgroundDisarm: true,
+    );
+
+    test(
+      'backgrounded + observed unexpected drop => scheduled at drop + X',
+      () {
+        for (final start in [
+          TagLeaseState.none,
+          const TagLeaseState(phase: TagLeasePhase.leased, fireAt: null),
+        ]) {
+          final sim = _Sim()..state = start;
+          final since = _t0.add(const Duration(minutes: 3));
+          final d = sim.feed(downInBackground(since));
+          expect(onlySchedule(d).kind, TagAlertKind.tagDisconnected);
+          expect(onlySchedule(d).at, since.add(_five));
+          expect(d.state.phase, TagLeasePhase.pending);
+        }
+      },
+    );
+
+    test('backgrounded + connected + no events => nothing scheduled', () {
+      final sim = _Sim();
+      for (var s = 0; s <= 3600; s += 30) {
+        final d = sim.feed(up(_t0.add(Duration(seconds: s)), background: true));
+        expect(d.actions.whereType<TagDisconnectSchedule>(), isEmpty);
+      }
+      expect(sim.log, isEmpty, reason: 'not even a cancel from a clean state');
+      expect(sim.state.phase, TagLeasePhase.disarmed);
+    });
+
+    test('backgrounded + connected after being armed => only cancels', () {
+      final sim = _Sim()..feed(up(_t0));
+      final d = sim.feed(
+        up(_t0.add(const Duration(seconds: 30)), background: true),
+      );
+      expect(d.actions.whereType<TagDisconnectSchedule>(), isEmpty);
+      expect(cancelled(d), isNotEmpty);
+    });
+
+    test('backgrounded + SOS active + drop => nothing', () {
+      final sim = _Sim()..feed(up(_t0));
+      final since = _t0.add(const Duration(minutes: 1));
+      final d = sim.feed(downInBackground(since, sos: true));
+      expect(d.actions.whereType<TagDisconnectSchedule>(), isEmpty);
+      expect(d.state.phase, TagLeasePhase.disarmed);
+    });
+
+    test('backgrounded + Bluetooth off => bluetoothOff kind at since + X', () {
+      final sim = _Sim()..feed(up(_t0));
+      final since = _t0.add(const Duration(minutes: 1));
+      final d = sim.feed(
+        downInBackground(since, cause: TagDisconnectCause.bluetoothOff),
+      );
+      expect(onlySchedule(d).kind, TagAlertKind.bluetoothOff);
+      expect(onlySchedule(d).at, since.add(_five));
+    });
+
+    test('every usual suppression still applies in the background', () {
+      final since = _t0.add(const Duration(minutes: 1));
+      final manual = _Sim()..feed(up(_t0));
+      expect(
+        manual
+            .feed(downInBackground(since, cause: TagDisconnectCause.manual))
+            .actions
+            .whereType<TagDisconnectSchedule>(),
+        isEmpty,
+      );
+      final held = _Sim()..feed(up(_t0));
+      expect(
+        held
+            .feed(
+              downInBackground(
+                since,
+                cause: TagDisconnectCause.expected,
+                hold: since.add(const Duration(minutes: 2)),
+              ),
+            )
+            .actions
+            .whereType<TagDisconnectSchedule>(),
+        isEmpty,
+      );
+      final never = _Sim()..feed(up(_t0));
+      never.after = null;
+      expect(
+        never
+            .feed(downInBackground(since))
+            .actions
+            .whereType<TagDisconnectSchedule>(),
+        isEmpty,
+      );
+      final noPermission = _Sim()..feed(up(_t0));
+      noPermission.permission = false;
+      expect(
+        noPermission
+            .feed(downInBackground(since))
+            .actions
+            .whereType<TagDisconnectSchedule>(),
+        isEmpty,
+      );
+      final unpaired = _Sim()..feed(up(_t0));
+      expect(
+        unpaired
+            .feed(downInBackground(since, paired: false))
+            .actions
+            .whereType<TagDisconnectSchedule>(),
+        isEmpty,
+      );
+    });
+
+    test(
+      'an expected drop in the background alerts once the hold has ended',
+      () {
+        final sim = _Sim()..feed(up(_t0));
+        final since = _t0.add(const Duration(minutes: 1));
+        final hold = since.add(const Duration(seconds: 90));
+        sim.feed(
+          downInBackground(
+            since,
+            cause: TagDisconnectCause.expected,
+            hold: hold,
+          ),
+        );
+        final d = sim.feed(
+          TagLinkSnapshot(
+            deviceKey: 'tag-1',
+            observedAt: hold.add(const Duration(seconds: 30)),
+            paired: true,
+            connected: false,
+            disconnectedSince: since,
+            cause: TagDisconnectCause.expected,
+            holdUntil: hold,
+            backgroundDisarm: true,
+          ),
+        );
+        expect(onlySchedule(d).at, hold.add(_five));
+      },
+    );
+
+    test('a reconnect while backgrounded removes the pending alert', () {
+      final sim = _Sim()..feed(up(_t0));
+      final since = _t0.add(const Duration(minutes: 1));
+      sim.feed(downInBackground(since));
+      final d = sim.feed(
+        up(since.add(const Duration(minutes: 2)), background: true),
+      );
+      expect(cancelled(d), contains(TagAlertKind.tagDisconnected));
+      expect(d.actions.whereType<TagDisconnectSchedule>(), isEmpty);
+    });
+  });
+
   group('Bluetooth off', () {
     test(
       'raises the bluetoothOff kind at since + X and replaces the lease',

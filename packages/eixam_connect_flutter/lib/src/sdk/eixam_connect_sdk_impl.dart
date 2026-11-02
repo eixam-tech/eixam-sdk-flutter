@@ -62,7 +62,9 @@ import '../data/datasources_local/tag_alert_store.dart';
 import '../tag_alerts/tag_alert_notification_ids.dart';
 import '../tag_alerts/tag_alert_permission_gateway.dart';
 import '../tag_alerts/tag_battery_probe.dart';
+import '../tag_alerts/tag_drop_time.dart';
 import '../tag_alerts/tag_last_position_extractor.dart';
+import '../tag_alerts/tag_lease_log.dart';
 import '../tag_alerts/tag_battery_probe_gate.dart';
 import '../tag_alerts/tag_battery_reading_extractor.dart';
 import '../data/datasources_local/activity_availability_store.dart';
@@ -325,6 +327,8 @@ class EixamConnectSdkImpl
       clock: _clock,
     );
     _tagAlerts = TagAlertsController(
+      log: TagLeaseLog.write,
+      clock: _clock,
       store: tagAlertStore ?? SharedPrefsTagAlertStore(_localStore),
       notifier: tagAlertNotifier ?? const _NoopTagAlertNotifier(),
       permissions:
@@ -664,11 +668,12 @@ class EixamConnectSdkImpl
 
   // --- TAG disconnect lease inputs (see TagDisconnectAlertPolicy) ---
   bool? _tagLinkWasConnected;
+  String? _tagLinkSignature;
+  DateTime? _tagLastConnectedAt;
   DateTime? _tagDropSince;
   TagDisconnectCause _tagDropCause = TagDisconnectCause.unexpected;
   DateTime? _tagExpectedHoldUntil;
   DateTime? _tagRebootExpectedUntil;
-  bool _appBackgrounded = false;
   TagAlertPosition? _tagLastPosition;
   Timer? _tagLeaseTicker;
   StreamSubscription<TagAlertRekey>? _tagRekeySub;
@@ -678,8 +683,8 @@ class EixamConnectSdkImpl
   static const Duration _tagFlowHold = Duration(seconds: 60);
 
   /// Whether the disconnect lease is dropped while the app is in the
-  /// background. Null means "on iOS": a suspended iOS app cannot push the
-  /// lease, so it must not stay armed.
+  /// background. Null means yes, on every platform: a suspended app cannot push
+  /// the lease. Only the periodic push is affected, never arm-at-disconnect.
   final bool? tagLeaseDisarmsInBackground;
   final Future<void> Function()? disposeCallback;
 
@@ -1297,7 +1302,6 @@ class EixamConnectSdkImpl
         unawaited(_devicePositionBacklogCoordinator.disconnected());
         _tagBatteryEpoch++;
       }
-      _observeTagLink(promotedStatus);
       _syncNearbyTextLink(
         connected: _lastPublicDeviceStatus?.connected == true,
       );
@@ -4863,7 +4867,6 @@ class EixamConnectSdkImpl
         _bleAutoReconnectCoordinator.setAppForeground(true);
         final sosRehydration = _rehydrateSosStateOnAppResume();
         unawaited(sosRehydration);
-        _appBackgrounded = false;
         _pushTagLinkSnapshot();
         if (_isProtectionPlatformOwningBle) {
           unawaited(_protectionModeController.rehydrate());
@@ -4906,7 +4909,6 @@ class EixamConnectSdkImpl
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
         _tagBatteryProbeArmed = true;
-        _appBackgrounded = true;
         _pushTagLinkSnapshot();
         _bleAutoReconnectCoordinator.setAppForeground(false);
         _scheduleForegroundSosReconciliationIfNeeded();
@@ -5919,15 +5921,50 @@ class EixamConnectSdkImpl
     final was = _tagLinkWasConnected;
     _tagLinkWasConnected = status.connected;
     if (status.connected) {
+      _tagLastConnectedAt = _clock();
       _tagDropSince = null;
       _tagExpectedHoldUntil = null;
     } else if (was == true) {
-      // First observation of this drop by this run of the app.
-      _tagDropSince = _clock();
+      // First observation of this drop by this run of the app. A drop seen by
+      // the native owner and delivered later keeps its native timestamp, so the
+      // deadline is drop + X, not delivery + X.
+      final native = _isProtectionPlatformOwningBle;
+      _tagDropSince = native ? _nativeDropTimeOrNow() : _clock();
       _tagDropCause = _classifyTagDrop();
+      _tagLeaseLog(
+        'drop observed cause=${_tagDropCause.name} '
+        'source=${native ? 'native' : 'flutter'} '
+        'lifecycle=${_appLifecycleState.name}',
+      );
     }
+    final signature =
+        '${tagAlertDeviceKey(status)}|${status.paired}|${status.connected}|'
+        '${_appLifecycleState.name}';
+    if (signature == _tagLinkSignature) return;
+    _tagLinkSignature = signature;
+    _tagLeaseLog(
+      'link connected=${status.connected} paired=${status.paired} '
+      'lifecycle=${_appLifecycleState.name} '
+      'leaseDisarmedInBackground=$_tagLeaseDisarmedInBackground',
+    );
     _pushTagLinkSnapshot();
   }
+
+  DateTime _nativeDropTimeOrNow() {
+    final protection = _protectionModeController.currentStatus;
+    return TagDropTime.resolve(
+      now: _clock(),
+      nativeEventIsDisconnect:
+          protection.lastPlatformEvent ==
+          ProtectionPlatformEventType.deviceDisconnected.name,
+      nativeEventAt: protection.lastPlatformEventAt,
+      lastSeenConnectedAt: _tagLastConnectedAt,
+    );
+  }
+
+  /// Debug-level, no identifiers: read it from logcat or the Xcode console in
+  /// debug builds. Kept out of the shared diagnostics ring buffer on purpose.
+  void _tagLeaseLog(String message) => TagLeaseLog.write(message);
 
   /// Test seam for the provisioning reboot flag (see
   /// `_rebootDeviceAndAwaitExpectedDisconnect`).
@@ -5936,20 +5973,12 @@ class EixamConnectSdkImpl
     _tagRebootExpectedUntil = _clock().add(hold ?? _tagRebootHold);
   }
 
-  /// True when the app is in the background. The binding is consulted too:
-  /// an app relaunched in the background (iOS state restoration) may never get
-  /// a `paused` callback, and the lease must not stay armed there.
-  bool get _isAppInBackground {
-    if (_appBackgrounded) return true;
-    final state = WidgetsBinding.instance.lifecycleState;
-    return state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached;
-  }
-
+  /// The lease is the periodic push; it cannot be kept alive while the app is
+  /// suspended or its timers stall, so it is dropped in the background on both
+  /// platforms. This never affects arm-at-disconnect: a drop that Dart observes
+  /// while backgrounded still schedules the alert at drop + X.
   bool get _tagLeaseDisarmedInBackground =>
-      _isAppInBackground &&
-      (tagLeaseDisarmsInBackground ??
-          defaultTargetPlatform == TargetPlatform.iOS);
+      _isAppBackgrounded && (tagLeaseDisarmsInBackground ?? true);
 
   TagDisconnectCause _classifyTagDrop() {
     if (_manualDisconnectRequested ||
@@ -22835,6 +22864,10 @@ class EixamConnectSdkImpl
     final publicStatus = _toPublicDeviceStatus(rawStatus, reason: reason);
     final previous = _lastPublicDeviceStatus;
     _lastPublicDeviceStatus = publicStatus;
+    // Every path that changes the visible link lands here (the repository
+    // stream and the native Protection status stream), so a drop observed by
+    // the native owner reaches the disconnect policy too.
+    _observeTagLink(publicStatus);
     unawaited(
       _activityRecordings
           .inputDisconnected(
