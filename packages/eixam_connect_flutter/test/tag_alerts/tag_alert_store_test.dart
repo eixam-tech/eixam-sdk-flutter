@@ -33,6 +33,45 @@ void main() {
     expect(decoded.devices, record.devices);
   });
 
+  test('cycles round-trip in the same v1 blob and are optional', () {
+    final record = TagAlertRecord(
+      ownerScope: 'scope',
+      devices: {'tag-1': TagAlertSettings(deviceId: 'tag-1')},
+      cycles: {
+        'tag-1': const TagBatteryCycle(firedBelow30: true),
+        'tag-2': const TagBatteryCycle(firedBelow30: true, firedBelow10: true),
+      },
+    );
+    final decoded = TagAlertRecord.decode(record.encode());
+    expect(decoded.cycles, record.cycles);
+    final json = jsonDecode(record.encode()) as Map<String, Object?>;
+    expect(json['v'], 1);
+    // Without cycles the field is absent and an old blob still decodes.
+    final plain = TagAlertRecord(ownerScope: 's', devices: const {});
+    expect((jsonDecode(plain.encode()) as Map).containsKey('cycles'), isFalse);
+    expect(TagAlertRecord.decode(plain.encode()).cycles, isEmpty);
+  });
+
+  test('malformed cycles are rejected as a whole', () {
+    final good =
+        jsonDecode(TagAlertRecord(ownerScope: 's', devices: const {}).encode())
+            as Map<String, Object?>;
+    for (final cycles in <Object?>[
+      'x',
+      [1],
+      {'tag-1': 'x'},
+      {
+        'tag-1': {'v': 2, 'firedBelow30': true, 'firedBelow10': false},
+      },
+    ]) {
+      expect(
+        () => TagAlertRecord.decode(jsonEncode({...good, 'cycles': cycles})),
+        throwsFormatException,
+        reason: '$cycles',
+      );
+    }
+  });
+
   test('record persists only settings and an opaque scope', () {
     final record = TagAlertRecord(
       ownerScope: 'scope',

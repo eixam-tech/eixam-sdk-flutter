@@ -33,7 +33,11 @@ final class SharedPrefsTagAlertStore implements TagAlertStore {
 /// Versioned envelope: one blob with every device's settings, owned by one
 /// identity scope.
 final class TagAlertRecord {
-  const TagAlertRecord({required this.ownerScope, required this.devices});
+  const TagAlertRecord({
+    required this.ownerScope,
+    required this.devices,
+    this.cycles = const <String, TagBatteryCycle>{},
+  });
 
   /// Throws [FormatException] for anything malformed, unsupported or newer.
   factory TagAlertRecord.decode(String raw) {
@@ -54,14 +58,28 @@ final class TagAlertRecord {
       }
       devices[entry.key] = settings;
     }
+    final cycles = <String, TagBatteryCycle>{};
+    final rawCycles = json['cycles'];
+    if (rawCycles != null) {
+      if (rawCycles is! Map<String, Object?>) {
+        throw const FormatException('Unsupported TAG battery cycles.');
+      }
+      for (final entry in rawCycles.entries) {
+        cycles[entry.key] = TagBatteryCycle.fromJson(entry.value);
+      }
+    }
     return TagAlertRecord(
       ownerScope: json['ownerScope'] as String,
       devices: Map<String, TagAlertSettings>.unmodifiable(devices),
+      cycles: Map<String, TagBatteryCycle>.unmodifiable(cycles),
     );
   }
 
   final String ownerScope;
   final Map<String, TagAlertSettings> devices;
+
+  /// Per-device low-battery cycle (which thresholds already alerted).
+  final Map<String, TagBatteryCycle> cycles;
 
   String encode() => jsonEncode(<String, Object?>{
     'v': TagAlertSettings.schemaVersion,
@@ -69,5 +87,9 @@ final class TagAlertRecord {
     'devices': <String, Object?>{
       for (final entry in devices.entries) entry.key: entry.value.toJson(),
     },
+    if (cycles.isNotEmpty)
+      'cycles': <String, Object?>{
+        for (final entry in cycles.entries) entry.key: entry.value.toJson(),
+      },
   });
 }

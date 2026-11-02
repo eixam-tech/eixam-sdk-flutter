@@ -34,6 +34,9 @@ final class TagAlertsController implements TagAlertsControl {
   EixamSession? _identity;
   String? _scope;
   Map<String, TagAlertSettings> _devices = {};
+  Map<String, TagBatteryCycle> _cycles = {};
+  // Confirmation streaks are transient and per identity; never persisted.
+  final Map<String, TagBatteryStreak> _streaks = {};
   // Sticky until the next successful write or clear, so late watchers learn
   // that the stored data was unreadable and defaults are in effect.
   _Failure? _restoreFailure;
@@ -70,6 +73,8 @@ final class TagAlertsController implements TagAlertsControl {
       _observationGeneration++;
       _loaded = false;
       _devices = {};
+      _cycles = {};
+      _streaks.clear();
     }
     return _serialize(() async {
       _checkAlive();
@@ -168,12 +173,16 @@ final class TagAlertsController implements TagAlertsControl {
       try {
         await _prepare(generation, retryCleanup: false);
         await _load(generation);
-        if (_devices.containsKey(deviceKey)) {
-          final next = Map<String, TagAlertSettings>.of(_devices)
+        _streaks.remove(deviceKey);
+        if (_devices.containsKey(deviceKey) || _cycles.containsKey(deviceKey)) {
+          final nextDevices = Map<String, TagAlertSettings>.of(_devices)
             ..remove(deviceKey);
-          await _write(next);
+          final nextCycles = Map<String, TagBatteryCycle>.of(_cycles)
+            ..remove(deviceKey);
+          await _write(nextDevices, nextCycles);
           _checkGeneration(generation);
-          _devices = next;
+          _devices = nextDevices;
+          _cycles = nextCycles;
           _publishAll();
         }
       } finally {
@@ -209,21 +218,39 @@ final class TagAlertsController implements TagAlertsControl {
         await _prepare(generation, retryCleanup: false);
         if (_identity == null) return;
         await _load(generation);
+        _streaks.remove(fromKey);
         final moved = _devices[fromKey];
-        if (moved == null) return;
-        final next = Map<String, TagAlertSettings>.of(_devices)
+        final movedCycle = _cycles[fromKey];
+        if (moved == null && movedCycle == null) return;
+        final nextDevices = Map<String, TagAlertSettings>.of(_devices)
           ..remove(fromKey);
-        next.putIfAbsent(
-          toKey,
-          () => TagAlertSettings(
-            deviceId: toKey,
-            batteryAlerts: moved.batteryAlerts,
-            disconnectAfter: moved.disconnectAfter,
-          ),
-        );
-        await _write(next);
+        if (moved != null) {
+          nextDevices.putIfAbsent(
+            toKey,
+            () => TagAlertSettings(
+              deviceId: toKey,
+              batteryAlerts: moved.batteryAlerts,
+              disconnectAfter: moved.disconnectAfter,
+            ),
+          );
+        }
+        final nextCycles = Map<String, TagBatteryCycle>.of(_cycles)
+          ..remove(fromKey);
+        if (movedCycle != null) {
+          // Union of both: a threshold that already alerted for either
+          // identity must not alert again for the same physical TAG.
+          final existing = nextCycles[toKey];
+          nextCycles[toKey] = TagBatteryCycle(
+            firedBelow30:
+                movedCycle.firedBelow30 || (existing?.firedBelow30 ?? false),
+            firedBelow10:
+                movedCycle.firedBelow10 || (existing?.firedBelow10 ?? false),
+          );
+        }
+        await _write(nextDevices, nextCycles);
         _checkGeneration(generation);
-        _devices = next;
+        _devices = nextDevices;
+        _cycles = nextCycles;
         _publishAll();
       } finally {
         if (cancelError != null) {
@@ -330,13 +357,74 @@ final class TagAlertsController implements TagAlertsControl {
       await _load(generation);
       final next = Map<String, TagAlertSettings>.of(_devices)
         ..[settings.deviceId] = settings;
-      await _write(next);
+      await _write(next, _cycles);
       _checkGeneration(generation);
       _devices = next;
       _publishAll();
       // Hygiene only: a disabled feature must not leave an alert behind. The
       // policies (future blocks) own every other scheduling decision.
       await _cancelDisabled(settings);
+    });
+  }
+
+  /// Feeds one live battery reading of [deviceKey] to the low-battery policy.
+  ///
+  /// [epoch] identifies the connection the reading arrived on; confirmation
+  /// never spans epochs. Readings are ignored without a session. The cycle is
+  /// persisted only when it changes. A notifier failure is reported to the
+  /// settings streams and never thrown, so BLE handling is never affected.
+  Future<void> onBatteryReading({
+    required String deviceKey,
+    required TagBatteryBand band,
+    required String sourceKey,
+    required int epoch,
+    String? deviceAlias,
+  }) {
+    final generation = _generation;
+    return _serialize(() async {
+      await _prepare(generation);
+      if (_identity == null) return;
+      await _load(generation);
+      final cycle = _cycles[deviceKey] ?? TagBatteryCycle.none;
+      final decision = TagBatteryAlertPolicy.evaluate(
+        band: band,
+        sourceKey: sourceKey,
+        epoch: epoch,
+        cycle: cycle,
+        streak: _streaks[deviceKey],
+        alertsEnabled: _settingsFor(deviceKey).batteryAlerts,
+      );
+      _streaks[deviceKey] = decision.streak;
+      if (decision.cycle != cycle) {
+        final nextCycles = Map<String, TagBatteryCycle>.of(_cycles);
+        if (decision.cycle.isNone) {
+          nextCycles.remove(deviceKey);
+        } else {
+          nextCycles[deviceKey] = decision.cycle;
+        }
+        // Persist before notifying: if this fails nothing was shown and the
+        // next confirmed reading decides again.
+        await _write(_devices, nextCycles);
+        _checkGeneration(generation);
+        _cycles = nextCycles;
+      }
+      final threshold = decision.threshold;
+      try {
+        if (threshold != null) {
+          await notifier.show(
+            TagAlert(
+              kind: TagAlertKind.batteryLow,
+              deviceId: deviceKey,
+              deviceAlias: deviceAlias,
+              batteryThreshold: threshold,
+            ),
+          );
+        } else if (decision.clearDeliveredAlert) {
+          await notifier.cancel(deviceKey, TagAlertKind.batteryLow);
+        }
+      } catch (error, stack) {
+        _publishError(error, stack);
+      }
     });
   }
 
@@ -418,6 +506,7 @@ final class TagAlertsController implements TagAlertsControl {
     if (_loaded) return;
     if (_identity == null) {
       _devices = {};
+      _cycles = {};
       _loaded = true;
       return;
     }
@@ -434,6 +523,7 @@ final class TagAlertsController implements TagAlertsControl {
     _checkGeneration(generation);
     if (restoreError != null) {
       _devices = {};
+      _cycles = {};
       _loaded = true;
       const failure = TagAlertsException(
         'E_TAG_ALERTS_RESTORE_FAILED',
@@ -451,13 +541,18 @@ final class TagAlertsController implements TagAlertsControl {
     }
     _restoreFailure = null;
     _devices = record == null ? {} : Map.of(record.devices);
+    _cycles = record == null ? {} : Map.of(record.cycles);
     _loaded = true;
   }
 
-  Future<void> _write(Map<String, TagAlertSettings> devices) async {
+  Future<void> _write(
+    Map<String, TagAlertSettings> devices,
+    Map<String, TagBatteryCycle> cycles,
+  ) async {
     final record = TagAlertRecord(
       ownerScope: _scope!,
       devices: Map<String, TagAlertSettings>.unmodifiable(devices),
+      cycles: Map<String, TagBatteryCycle>.unmodifiable(cycles),
     );
     await _persist(record.encode());
     _restoreFailure = null;
@@ -479,6 +574,8 @@ final class TagAlertsController implements TagAlertsControl {
     await _persist(null);
     _pendingClear = false;
     _devices = {};
+    _cycles = {};
+    _streaks.clear();
     _loaded = false;
     _restoreFailure = null;
     if (cancelError != null) {

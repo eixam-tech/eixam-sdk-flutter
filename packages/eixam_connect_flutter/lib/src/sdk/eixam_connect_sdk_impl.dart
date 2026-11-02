@@ -59,6 +59,8 @@ import 'tag_alerts_controller.dart';
 import '../data/datasources_local/tag_alert_store.dart';
 import '../tag_alerts/tag_alert_notification_ids.dart';
 import '../tag_alerts/tag_alert_permission_gateway.dart';
+import '../tag_alerts/tag_battery_probe_gate.dart';
+import '../tag_alerts/tag_battery_reading_extractor.dart';
 import '../data/datasources_local/activity_availability_store.dart';
 import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
 import '../data/datasources_local/activity_session_store.dart';
@@ -277,6 +279,7 @@ class EixamConnectSdkImpl
     SharedPrefsSdkStore? localStore,
     ActivitySessionStore? activitySessionStore,
     ActivityAvailabilityStore? activityAvailabilityStore,
+    @visibleForTesting this.tagBatteryProbeRequest,
     TagAlertStore? tagAlertStore,
     TagAlertNotifier? tagAlertNotifier,
     TagAlertPermissionGateway? tagAlertPermissions,
@@ -644,6 +647,16 @@ class EixamConnectSdkImpl
   late final ActivityRecordingController _activityRecordings;
   late final ActivityAvailabilityController _activityAvailability;
   late final TagAlertsController _tagAlerts;
+
+  /// Test seam for the foreground battery probe; defaults to the public
+  /// [getDeviceRuntimeStatus].
+  final Future<DeviceRuntimeStatus> Function()? tagBatteryProbeRequest;
+  // Low-battery confirmation never spans a disconnect: the epoch advances each
+  // time the TAG link drops, so readings of one connection share an epoch.
+  int _tagBatteryEpoch = 0;
+  bool _tagBatteryProbeArmed = false;
+  final Map<String, DateTime> _tagBatteryProbeAt = <String, DateTime>{};
+  static const Duration _tagBatteryProbeMinInterval = Duration(minutes: 10);
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -1257,6 +1270,7 @@ class EixamConnectSdkImpl
       _emitOperationalDiagnostics();
       if (!promotedStatus.connected) {
         unawaited(_devicePositionBacklogCoordinator.disconnected());
+        _tagBatteryEpoch++;
       }
       _syncNearbyTextLink(
         connected: _lastPublicDeviceStatus?.connected == true,
@@ -1549,6 +1563,7 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
+        _ingestTagBatteryFromEvent(event);
         if (event.type == BleIncomingEventType.telPositionBacklog) {
           unawaited(_devicePositionBacklogCoordinator.handleEvent(event));
           return;
@@ -4826,6 +4841,12 @@ class EixamConnectSdkImpl
           );
         }
         unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
+        // Only a real return from the background (paused/detached), never
+        // inactive/hidden focus changes such as permission dialogs.
+        if (!wasResumed && _tagBatteryProbeArmed) {
+          _tagBatteryProbeArmed = false;
+          unawaited(_probeTagBatteryOnResume());
+        }
         unawaited(
           _flushNativeBackgroundTelemetryQueue(reason: 'app_foreground_resume'),
         );
@@ -4849,6 +4870,7 @@ class EixamConnectSdkImpl
         break;
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:
+        _tagBatteryProbeArmed = true;
         _bleAutoReconnectCoordinator.setAppForeground(false);
         _scheduleForegroundSosReconciliationIfNeeded();
         break;
@@ -5837,6 +5859,97 @@ class EixamConnectSdkImpl
   /// per device so routine app switching cannot cause repeated backend/device
   /// reads. This never writes or reboots; a mismatch waits for host/user
   /// confirmation.
+  DeviceStatus? get _tagBatteryStatus =>
+      _lastPublicDeviceStatus ?? _lastDeviceStatus;
+
+  /// Feeds live TAG traffic to the low-battery policy. It only observes: any
+  /// failure is contained so BLE, SOS and position handling are never affected.
+  void _ingestTagBatteryFromEvent(BleIncomingEvent event) {
+    try {
+      final status = _tagBatteryStatus;
+      final reading = TagBatteryReadingExtractor.fromEvent(
+        event,
+        status: status,
+      );
+      if (reading == null || status == null) return;
+      _submitTagBatteryReading(reading, status);
+    } catch (_) {
+      // Observation only.
+    }
+  }
+
+  void _submitTagBatteryReading(
+    TagBatteryReading reading,
+    DeviceStatus status,
+  ) {
+    unawaited(
+      _tagAlerts
+          .onBatteryReading(
+            deviceKey: tagAlertDeviceKey(status),
+            deviceAlias: status.deviceAlias,
+            band: reading.band,
+            sourceKey: reading.sourceKey,
+            epoch: _tagBatteryEpoch,
+          )
+          .catchError((Object _) {
+            /* Identity changed or storage unavailable: nothing to alert. */
+          }),
+    );
+  }
+
+  /// SOS, firmware update, provisioning and migration own the TAG link; the
+  /// battery probe must never add traffic to them.
+  bool get _isTagBatteryProbeBlocked => TagBatteryProbeGate.isBlocked(
+    provisioningBusy: _deviceProvisioningCoordinator?.isBusy == true,
+    firmwareUpdateActive: firmwareUpdateCoordinator?.hasActiveSession == true,
+    migrationOwnsBle: deviceMigrationCoordinator?.ownsBleOperation == true,
+    preSosActive: _hasActivePreSosSession,
+    sosStage: _sosLifecycle.current.stage,
+    deviceSosState: deviceSosController.currentStatus.state,
+  );
+
+  /// One `0x23 GET_DEVICE_STATUS` when the app returns to the foreground with
+  /// the TAG connected, at most once per 10 minutes per device. No polling and
+  /// no new command: it reuses [getDeviceRuntimeStatus].
+  Future<void> _probeTagBatteryOnResume() async {
+    try {
+      final status = _tagBatteryStatus;
+      if (_disposed ||
+          _session == null ||
+          status == null ||
+          !status.connected ||
+          !status.paired ||
+          _isTagBatteryProbeBlocked) {
+        return;
+      }
+      final key = tagAlertDeviceKey(status);
+      final now = _clock();
+      final last = _tagBatteryProbeAt[key];
+      if (last != null && now.difference(last) < _tagBatteryProbeMinInterval) {
+        return;
+      }
+      final request = tagBatteryProbeRequest;
+      // Never start a reconnect or a rebind for a battery reading: only an
+      // already-ready command path is used.
+      if (request == null && !_isDeviceCountryConfigCommandPathReady()) {
+        return;
+      }
+      // Recorded before the request: a failure also waits out the interval.
+      _tagBatteryProbeAt[key] = now;
+      final runtime = await (request ?? getDeviceRuntimeStatus)();
+      final latest = _tagBatteryStatus;
+      final reading = TagBatteryReadingExtractor.fromRuntimeStatus(
+        runtime,
+        status: latest,
+      );
+      if (reading != null && latest != null) {
+        _submitTagBatteryReading(reading, latest);
+      }
+    } catch (_) {
+      // Best effort; the reply is also seen as an incoming event.
+    }
+  }
+
   Future<void> _maybeCheckDeviceCountryConfig(
     String trigger, {
     int? connectionEpoch,

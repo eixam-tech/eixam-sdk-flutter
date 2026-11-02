@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
@@ -9,9 +11,11 @@ import 'package:eixam_connect_flutter/src/sdk/device_country_config_controller.d
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/tag_alerts/tag_alert_notification_ids.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
+import 'tag_battery_test_support.dart';
 import '../support/fakes/memory_shared_prefs_sdk_store.dart';
 import '../support/fakes/sdk_contract_fakes.dart';
 import 'tag_alert_test_support.dart';
@@ -28,6 +32,10 @@ void main() {
   late FakeDeviceRepository devices;
   late FakePermissionsRepository permissionsRepository;
   late EixamConnectSdkImpl sdk;
+  late StreamController<BleIncomingEvent> incoming;
+  late DateTime clock;
+  var probeCalls = 0;
+  int probePercent = 20;
   final trackers = <Future<void> Function()>[];
 
   EixamConnectSdkImpl build({SdkSessionStore? sessionStore}) {
@@ -58,7 +66,12 @@ void main() {
       notificationsRepository: notifications,
       realtimeClient: realtimeClient,
       deviceSosController: DeviceSosController(),
-      bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+      bleIncomingEvents: incoming.stream,
+      clock: () => clock,
+      tagBatteryProbeRequest: () async {
+        probeCalls++;
+        return runtimeStatus(percent: probePercent, receivedAt: clock);
+      },
       preferredBleDeviceStore: PreferredBleDeviceStore(localStore: localStore),
       localStore: localStore,
       sessionStore: sessionStore,
@@ -81,6 +94,10 @@ void main() {
   }
 
   setUp(() {
+    incoming = StreamController<BleIncomingEvent>.broadcast();
+    clock = DateTime.utc(2026, 11, 2, 12);
+    probeCalls = 0;
+    probePercent = 20;
     localStore = MemorySharedPrefsSdkStore();
     notifier = RecordingTagAlertNotifier();
     permissions = CountingPermissionGateway();
@@ -104,6 +121,7 @@ void main() {
 
   tearDown(() async {
     await sdk.dispose();
+    await incoming.close();
     for (final dispose in trackers) {
       await dispose();
     }
@@ -444,6 +462,259 @@ void main() {
         'CB-UUID-1',
       );
     });
+  });
+
+  group('low-battery alerts from live TAG data', () {
+    Future<void> connectTag({bool connected = true}) async {
+      devices.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-id',
+          canonicalHardwareId: _tagHardware,
+          nodeId: tagNodeId,
+          connected: connected,
+        ),
+      );
+      await pumpEventQueue();
+    }
+
+    Future<void> deliver(BleIncomingEvent event) async {
+      incoming.add(event);
+      await pumpEventQueue();
+    }
+
+    var counter = 0;
+
+    /// A live D3 whose newest sample is [secondsAgo] old.
+    BleIncomingEvent d3(int level, {int secondsAgo = 5}) {
+      final at = clock.subtract(Duration(seconds: secondsAgo));
+      return liveBatchEvent(clock, [
+        (
+          timestamp: unixOf(at),
+          wire: telWire(level: level, packetId: (counter++) % 16),
+        ),
+      ]);
+    }
+
+    Iterable<String> shown() =>
+        notifier.calls.where((c) => c.startsWith('show:'));
+
+    setUp(() async {
+      counter = 0;
+      await start();
+      await connectTag();
+      notifier.calls.clear();
+    });
+
+    test('two live batches in the same band show one alert', () async {
+      await deliver(d3(1));
+      expect(shown(), isEmpty);
+      await deliver(d3(1, secondsAgo: 1));
+      expect(shown(), ['show:$_tagHardware:batteryLow']);
+      expect(
+        notifier.shown.single.batteryThreshold,
+        TagAlertBatteryThreshold.below30,
+      );
+      await deliver(d3(1, secondsAgo: 2));
+      expect(shown(), hasLength(1));
+    });
+
+    test('stale (late-flushed) batches never alert', () async {
+      await deliver(d3(0, secondsAgo: 60 * 20));
+      await deliver(d3(0, secondsAgo: 60 * 19));
+      await deliver(d3(0, secondsAgo: 60 * 18));
+      expect(shown(), isEmpty);
+    });
+
+    test('backlog, relay and SOS traffic are never readings', () async {
+      for (final type in [
+        BleIncomingEventType.telPositionBacklog,
+        BleIncomingEventType.telRelayRx,
+        BleIncomingEventType.sosMeshPacket,
+        BleIncomingEventType.clusterHeartbeat,
+      ]) {
+        await deliver(eventOfType(type, clock));
+        await deliver(eventOfType(type, clock));
+      }
+      expect(shown(), isEmpty);
+    });
+
+    test('another TAG\'s telemetry is never attributed to this TAG', () async {
+      await deliver(classicTelEvent(clock, telWire(level: 0, nodeId: 99)));
+      await deliver(
+        classicTelEvent(clock, telWire(level: 0, nodeId: 99, packetId: 2)),
+      );
+      expect(shown(), isEmpty);
+    });
+
+    test('a disconnect between readings restarts confirmation', () async {
+      await deliver(d3(1));
+      await connectTag(connected: false);
+      await connectTag();
+      await deliver(d3(1, secondsAgo: 1));
+      expect(shown(), isEmpty);
+      await deliver(d3(1, secondsAgo: 2));
+      expect(shown(), hasLength(1));
+    });
+
+    test('a connect-time 0x23 counts toward confirmation', () async {
+      await deliver(runtimeStatusEvent(clock, percent: 25));
+      expect(shown(), isEmpty);
+      await deliver(d3(1));
+      expect(shown(), hasLength(1));
+    });
+
+    test('nothing is evaluated without a connected TAG', () async {
+      await connectTag(connected: false);
+      await deliver(d3(0));
+      await deliver(d3(0, secondsAgo: 1));
+      expect(shown(), isEmpty);
+    });
+
+    test('the SDK does not alert after logout', () async {
+      await sdk.clearSession();
+      notifier.calls.clear();
+      await deliver(d3(0));
+      await deliver(d3(0, secondsAgo: 1));
+      expect(shown(), isEmpty);
+    });
+
+    test('battery alerts never touch SOS flows', () async {
+      await deliver(d3(0));
+      await deliver(d3(0, secondsAgo: 1));
+      expect(shown(), hasLength(1));
+      expect(
+        await sdk.consumePendingBleNotificationNavigationRequest(),
+        isNull,
+      );
+      expect(notifications.notifications, isEmpty);
+    });
+  });
+
+  group('foreground battery probe', () {
+    Future<void> resume() async {
+      sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
+      sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await pumpEventQueue();
+    }
+
+    Future<void> connectTag() async {
+      devices.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-id',
+          canonicalHardwareId: _tagHardware,
+          nodeId: tagNodeId,
+        ),
+      );
+      await pumpEventQueue();
+    }
+
+    setUp(() async {
+      await start();
+      await connectTag();
+      notifier.calls.clear();
+    });
+
+    test(
+      'requests 0x23 once on resume and treats it as a live reading',
+      () async {
+        await resume();
+        expect(probeCalls, 1);
+        // One probe reading + one live batch = two confirmed readings.
+        incoming.add(
+          liveBatchEvent(clock, [
+            (
+              timestamp: unixOf(clock.subtract(const Duration(seconds: 3))),
+              wire: telWire(level: 1),
+            ),
+          ]),
+        );
+        await pumpEventQueue();
+        expect(
+          notifier.calls.where((c) => c.startsWith('show:')),
+          hasLength(1),
+        );
+      },
+    );
+
+    test('at most once per 10 minutes per device, no polling', () async {
+      await resume();
+      clock = clock.add(const Duration(minutes: 9, seconds: 59));
+      await resume();
+      expect(probeCalls, 1);
+      clock = clock.add(const Duration(seconds: 2));
+      await resume();
+      expect(probeCalls, 2);
+    });
+
+    test('a failed probe still waits out the interval', () async {
+      await sdk.dispose();
+      probeCalls = 0;
+      // Rebuild with a failing request.
+      localStore = MemorySharedPrefsSdkStore();
+      sdk = EixamConnectSdkImpl(
+        sosRepository: FakeSosRepository(),
+        trackingRepository: FakeTrackingRepository(),
+        telemetryRepository: FakeTelemetryRepository(),
+        contactsRepository: FakeContactsRepository(),
+        deviceRepository: devices,
+        deviceRegistryRepository: FakeSdkDeviceRegistryRepository(),
+        deathManRepository: FakeDeathManRepository(),
+        permissionsRepository: permissionsRepository,
+        notificationsRepository: notifications,
+        realtimeClient: FakeRealtimeClient(),
+        deviceSosController: DeviceSosController(),
+        bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
+        preferredBleDeviceStore: PreferredBleDeviceStore(
+          localStore: localStore,
+        ),
+        localStore: localStore,
+        clock: () => clock,
+        tagBatteryProbeRequest: () async {
+          probeCalls++;
+          throw StateError('E_DEVICE_STATUS_TIMEOUT');
+        },
+        tagAlertNotifier: notifier,
+        protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),
+        backgroundTelemetryPlatformAdapter:
+            const NoopBackgroundTelemetryPlatformAdapter(),
+      );
+      await start();
+      await connectTag();
+      await resume();
+      await resume();
+      expect(probeCalls, 1);
+    });
+
+    test('is skipped without a connected TAG or without a session', () async {
+      devices.emitStatus(
+        buildDeviceStatus(
+          deviceId: 'ble-id',
+          canonicalHardwareId: _tagHardware,
+          connected: false,
+        ),
+      );
+      await pumpEventQueue();
+      await resume();
+      expect(probeCalls, 0);
+      await connectTag();
+      await sdk.clearSession();
+      await resume();
+      expect(probeCalls, 0);
+    });
+
+    test(
+      'inactive/hidden focus changes never probe; a real background return does',
+      () async {
+        sdk.didChangeAppLifecycleState(AppLifecycleState.inactive);
+        sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        sdk.didChangeAppLifecycleState(AppLifecycleState.hidden);
+        sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+        await pumpEventQueue();
+        expect(probeCalls, 0);
+        await resume();
+        expect(probeCalls, 1);
+      },
+    );
   });
 
   group('notification taps', () {
