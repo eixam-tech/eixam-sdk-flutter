@@ -33,7 +33,11 @@ typedef LiveRecord = ({int timestamp, List<int> wire});
 
 int unixOf(DateTime time) => time.millisecondsSinceEpoch ~/ 1000;
 
-BleIncomingEvent liveBatchEvent(DateTime receivedAt, List<LiveRecord> records) {
+BleIncomingEvent liveBatchEvent(
+  DateTime receivedAt,
+  List<LiveRecord> records, {
+  String deviceId = 'ble-id',
+}) {
   final payload = <int>[0xD3, records.length];
   for (final record in records) {
     payload.addAll(<int>[
@@ -49,7 +53,7 @@ BleIncomingEvent liveBatchEvent(DateTime receivedAt, List<LiveRecord> records) {
     receivedAt: receivedAt,
   )!;
   return BleIncomingEvent(
-    deviceId: 'ble-id',
+    deviceId: deviceId,
     type: BleIncomingEventType.telLivePositionBatch,
     channel: EixamBleChannel.tel,
     payload: payload,
@@ -60,23 +64,27 @@ BleIncomingEvent liveBatchEvent(DateTime receivedAt, List<LiveRecord> records) {
   );
 }
 
-BleIncomingEvent classicTelEvent(DateTime receivedAt, List<int> wire) =>
-    BleIncomingEvent(
-      deviceId: 'ble-id',
-      type: BleIncomingEventType.telPosition,
-      channel: EixamBleChannel.tel,
-      payload: wire,
-      payloadHex: EixamBleProtocol.hex(wire),
-      source: DeviceSosTransitionSource.device,
-      receivedAt: receivedAt,
-      telPacket: EixamTelPacket.tryParse(wire),
-    );
+BleIncomingEvent classicTelEvent(
+  DateTime receivedAt,
+  List<int> wire, {
+  String deviceId = 'ble-id',
+}) => BleIncomingEvent(
+  deviceId: deviceId,
+  type: BleIncomingEventType.telPosition,
+  channel: EixamBleChannel.tel,
+  payload: wire,
+  payloadHex: EixamBleProtocol.hex(wire),
+  source: DeviceSosTransitionSource.device,
+  receivedAt: receivedAt,
+  telPacket: EixamTelPacket.tryParse(wire),
+);
 
 DeviceRuntimeStatus runtimeStatus({
   int nodeId = tagNodeId,
   int? percent = 50,
   DateTime? receivedAt,
   bool omitReceivedAt = false,
+  int telIntervalSeconds = 120,
 }) => DeviceRuntimeStatus(
   region: 1,
   modemPreset: 1,
@@ -88,7 +96,7 @@ DeviceRuntimeStatus runtimeStatus({
   positionConfirmed: true,
   nodeId: nodeId,
   batteryPercent: percent,
-  telIntervalSeconds: 120,
+  telIntervalSeconds: telIntervalSeconds,
   receivedAt: omitReceivedAt
       ? null
       : (receivedAt ?? DateTime.utc(2026, 11, 2, 12)),
@@ -98,8 +106,10 @@ BleIncomingEvent runtimeStatusEvent(
   DateTime receivedAt, {
   int nodeId = tagNodeId,
   int? percent = 50,
+  int telIntervalSeconds = 120,
+  String deviceId = 'ble-id',
 }) => BleIncomingEvent(
-  deviceId: 'ble-id',
+  deviceId: deviceId,
   type: BleIncomingEventType.deviceRuntimeStatus,
   channel: EixamBleChannel.tel,
   payload: const <int>[],
@@ -111,6 +121,7 @@ BleIncomingEvent runtimeStatusEvent(
       nodeId: nodeId,
       percent: percent,
       receivedAt: receivedAt,
+      telIntervalSeconds: telIntervalSeconds,
     ),
   ),
 );

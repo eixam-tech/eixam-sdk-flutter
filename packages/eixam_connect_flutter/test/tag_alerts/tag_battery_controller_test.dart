@@ -358,6 +358,43 @@ void main() {
     });
   });
 
+  group('device re-key keeps the battery cycle', () {
+    test(
+      'the cycle follows the TAG: no duplicate alert under the new key',
+      () async {
+        await twice(_b30, device: 'old');
+        expect(notifier.shown, hasLength(1));
+        await controller.rekeyDevice('old', 'new');
+        notifier.shown.clear();
+        epoch++;
+        await twice(_b30, device: 'new');
+        expect(notifier.shown, isEmpty);
+        final stored = jsonDecode(store.raw!) as Map<String, Object?>;
+        expect((stored['cycles']! as Map).keys, ['new']);
+      },
+    );
+
+    test(
+      'a threshold that alerted for either identity stays alerted',
+      () async {
+        await twice(_b30, device: 'old');
+        await twice(_b10, device: 'new');
+        await controller.rekeyDevice('old', 'new');
+        final stored = jsonDecode(store.raw!) as Map<String, Object?>;
+        final cycle = (stored['cycles']! as Map)['new']! as Map;
+        expect(cycle['firedBelow30'], isTrue);
+        expect(cycle['firedBelow10'], isTrue);
+      },
+    );
+
+    test('confirmation streaks do not leak across the re-key', () async {
+      await read(_b30, device: 'old');
+      await controller.rekeyDevice('old', 'new');
+      await read(_b30, device: 'new');
+      expect(notifier.shown, isEmpty);
+    });
+  });
+
   group('cleanup', () {
     test(
       'logout wipes the cycle and streak; the next login alerts afresh',

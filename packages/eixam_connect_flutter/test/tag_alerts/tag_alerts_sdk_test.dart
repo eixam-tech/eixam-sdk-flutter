@@ -591,6 +591,138 @@ void main() {
     });
   });
 
+  group('key stability and device scoping for battery readings', () {
+    DeviceStatus ios({int? nodeId}) => buildDeviceStatus(
+      deviceId: 'ble-id',
+      canonicalHardwareId: null,
+      nodeId: nodeId,
+    );
+
+    setUp(() async {
+      permissions.next = TagAlertPermissionState.granted;
+      await start();
+      notifier.calls.clear();
+    });
+
+    test(
+      'no duplicate alert when the node id arrives mid-confirmation',
+      () async {
+        devices.emitStatus(ios());
+        await pumpEventQueue();
+        // Reading 1: the connect-time 0x23, before the node id is known.
+        incoming.add(runtimeStatusEvent(clock, percent: 20));
+        await pumpEventQueue();
+        devices.emitStatus(ios(nodeId: tagNodeId));
+        await pumpEventQueue();
+        // Reading 2: a live batch after the node id arrived.
+        incoming.add(
+          liveBatchEvent(clock, [
+            (
+              timestamp: unixOf(clock.subtract(const Duration(seconds: 4))),
+              wire: telWire(level: 1),
+            ),
+          ]),
+        );
+        await pumpEventQueue();
+        final shown = notifier.calls.where((c) => c.startsWith('show:'));
+        expect(shown, ['show:ble-id:batteryLow']);
+        // Further readings under the same key never repeat it.
+        incoming.add(
+          liveBatchEvent(clock, [
+            (
+              timestamp: unixOf(clock.subtract(const Duration(seconds: 2))),
+              wire: telWire(level: 1, packetId: 5),
+            ),
+          ]),
+        );
+        await pumpEventQueue();
+        expect(
+          notifier.calls.where((c) => c.startsWith('show:')),
+          hasLength(1),
+        );
+      },
+    );
+
+    test(
+      'a setting disabled before the node id arrived still applies',
+      () async {
+        devices.emitStatus(ios());
+        await pumpEventQueue();
+        await control().updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'ble-id', batteryAlerts: false),
+        );
+        devices.emitStatus(ios(nodeId: tagNodeId));
+        await pumpEventQueue();
+        for (var i = 0; i < 3; i++) {
+          incoming.add(
+            liveBatchEvent(clock, [
+              (
+                timestamp: unixOf(clock.subtract(Duration(seconds: 4 - i))),
+                wire: telWire(level: 0, packetId: i),
+              ),
+            ]),
+          );
+          await pumpEventQueue();
+        }
+        expect(notifier.calls.where((c) => c.startsWith('show:')), isEmpty);
+      },
+    );
+
+    test(
+      'a reply from another device id is never credited to this TAG',
+      () async {
+        devices.emitStatus(ios(nodeId: tagNodeId));
+        await pumpEventQueue();
+        for (var i = 0; i < 3; i++) {
+          incoming.add(
+            runtimeStatusEvent(
+              clock.add(Duration(seconds: i)),
+              percent: 5,
+              deviceId: 'some-other-tag',
+            ),
+          );
+          await pumpEventQueue();
+        }
+        expect(notifier.calls.where((c) => c.startsWith('show:')), isEmpty);
+      },
+    );
+
+    test(
+      'the TEL interval learned from 0x23 widens the freshness window',
+      () async {
+        devices.emitStatus(ios(nodeId: tagNodeId));
+        await pumpEventQueue();
+        BleIncomingEvent late(int secondsAgo, int packetId) =>
+            liveBatchEvent(clock, [
+              (
+                timestamp: unixOf(
+                  clock.subtract(Duration(seconds: secondsAgo)),
+                ),
+                wire: telWire(level: 1, packetId: packetId),
+              ),
+            ]);
+        // Default window (3 min): a 6-minute-old newest sample is not live.
+        incoming.add(late(360, 1));
+        incoming.add(late(350, 2));
+        await pumpEventQueue();
+        expect(notifier.calls.where((c) => c.startsWith('show:')), isEmpty);
+        // A 5-minute TEL interval is learned from the 0x23 reply...
+        incoming.add(
+          runtimeStatusEvent(clock, percent: 55, telIntervalSeconds: 300),
+        );
+        await pumpEventQueue();
+        // ...so the same age is live now (window 7.5 min).
+        incoming.add(late(360, 3));
+        incoming.add(late(350, 4));
+        await pumpEventQueue();
+        expect(
+          notifier.calls.where((c) => c.startsWith('show:')),
+          hasLength(1),
+        );
+      },
+    );
+  });
+
   group('foreground battery probe', () {
     Future<void> resume() async {
       sdk.didChangeAppLifecycleState(AppLifecycleState.paused);

@@ -196,6 +196,87 @@ void main() {
     });
   });
 
+  group('M5: events must come from the device the status describes', () {
+    test('every reading source rejects another device id', () {
+      final at = now.subtract(const Duration(seconds: 5));
+      expect(
+        extract(liveBatchEvent(now, [record(at, 1)], deviceId: 'other-device')),
+        isNull,
+      );
+      expect(
+        extract(
+          classicTelEvent(now, telWire(level: 1), deviceId: 'other-device'),
+        ),
+        isNull,
+      );
+      expect(
+        extract(runtimeStatusEvent(now, percent: 20, deviceId: 'other-device')),
+        isNull,
+      );
+      // Same device: accepted.
+      expect(extract(runtimeStatusEvent(now, percent: 20)), isNotNull);
+    });
+
+    test(
+      'a reply from a TAG being paired is never attributed to the old one',
+      () {
+        // Status still describes the previous TAG with no known node.
+        final previous = connectedTag(
+          nodeId: null,
+          hardware: 'AA:AA:AA:AA:AA:AA',
+        );
+        expect(
+          TagBatteryReadingExtractor.fromEvent(
+            runtimeStatusEvent(now, percent: 20, deviceId: 'new-tag-ble-id'),
+            status: previous,
+          ),
+          isNull,
+        );
+      },
+    );
+  });
+
+  group('m1: freshness window scales with the TEL interval', () {
+    test('liveAgeFor is max(3 min, 1.5 x interval) capped at 30 min', () {
+      Duration w(int? s) => TagBatteryReadingExtractor.liveAgeFor(s);
+      expect(w(null), const Duration(minutes: 3));
+      expect(w(0), const Duration(minutes: 3));
+      expect(w(-5), const Duration(minutes: 3));
+      expect(w(60), const Duration(minutes: 3));
+      expect(w(120), const Duration(minutes: 3));
+      expect(w(121), const Duration(milliseconds: 181500));
+      expect(w(300), const Duration(minutes: 7, seconds: 30));
+      expect(w(1200), const Duration(minutes: 30));
+      expect(w(86400), const Duration(minutes: 30));
+    });
+
+    test('a 5-minute TEL interval accepts a 6-minute-old newest sample', () {
+      final at = now.subtract(const Duration(minutes: 6));
+      final event = liveBatchEvent(now, [record(at, 1)]);
+      expect(extract(event), isNull);
+      expect(
+        TagBatteryReadingExtractor.fromEvent(
+          event,
+          status: status,
+          telIntervalSeconds: 300,
+        ),
+        isNotNull,
+      );
+    });
+
+    test('the interval can never make hours-old data look live', () {
+      final at = now.subtract(const Duration(hours: 2));
+      expect(
+        TagBatteryReadingExtractor.fromEvent(
+          liveBatchEvent(now, [record(at, 0)]),
+          status: status,
+          telIntervalSeconds: 86400,
+        ),
+        isNull,
+      );
+    });
+  });
+
   test('historical, relayed, SOS and other traffic is never a reading', () {
     for (final type in BleIncomingEventType.values) {
       if (type == BleIncomingEventType.telLivePositionBatch ||

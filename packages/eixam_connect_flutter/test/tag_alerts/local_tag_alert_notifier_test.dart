@@ -7,81 +7,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Stateful stand-in for the OS notification center, behind the real plugin.
-final class FakeNotificationCenter {
-  final Map<int, Map<String, Object?>> pending = {};
-  final Map<int, Map<String, Object?>> delivered = {};
-  final List<String> log = [];
-
-  Future<Object?> handle(MethodCall call) async {
-    final args = call.arguments;
-    switch (call.method) {
-      case 'initialize':
-        return true;
-      case 'getNotificationAppLaunchDetails':
-        return <String, Object?>{'notificationLaunchedApp': false};
-      case 'show':
-        final map = Map<String, Object?>.from(args as Map);
-        log.add('show:${map['id']}');
-        delivered[map['id']! as int] = map;
-        return null;
-      case 'zonedSchedule':
-        final map = Map<String, Object?>.from(args as Map);
-        log.add('schedule:${map['id']}');
-        pending[map['id']! as int] = map;
-        return null;
-      case 'cancel':
-        final id = args is int ? args : (args as Map)['id'] as int;
-        log.add('cancel:$id');
-        pending.remove(id);
-        delivered.remove(id);
-        return null;
-      case 'pendingNotificationRequests':
-        return [
-          for (final e in pending.entries)
-            {
-              'id': e.key,
-              'title': e.value['title'],
-              'body': e.value['body'],
-              'payload': e.value['payload'],
-            },
-        ];
-      case 'getActiveNotifications':
-        return [
-          for (final e in delivered.entries)
-            {
-              'id': e.key,
-              'title': e.value['title'],
-              'body': e.value['body'],
-              'payload': e.value['payload'],
-            },
-        ];
-    }
-    return null;
-  }
-
-  void seedSos() {
-    pending[42001] = {'id': 42001, 'payload': 'sos:incident-1'};
-    delivered[42002] = {'id': 42002, 'payload': 'sos:incident-1'};
-    delivered[6023] = {'id': 6023, 'payload': null};
-    pending[43000] = {'id': 43000, 'payload': 'nearby#x'};
-    delivered[41001] = {'id': 41001, 'payload': 'death_man:plan'};
-  }
-
-  Set<int> get sosIds => {42001, 42002, 6023, 43000, 41001};
-
-  bool sosIntact() =>
-      pending.containsKey(42001) &&
-      delivered.containsKey(42002) &&
-      delivered.containsKey(6023) &&
-      pending.containsKey(43000) &&
-      delivered.containsKey(41001);
-
-  Iterable<int> get tagIds => [
-    ...pending.keys,
-    ...delivered.keys,
-  ].where(TagAlertNotificationIds.contains);
-}
+import 'fake_notification_center.dart';
+import 'tag_alert_test_support.dart';
+import 'package:eixam_connect_flutter/src/sdk/tag_alerts_controller.dart';
 
 TagAlert disconnected(String device, {int minutes = 5, String? alias}) =>
     TagAlert(
@@ -508,6 +436,55 @@ void main() {
       expect(center.delivered, isEmpty);
     },
   );
+
+  test('m3: under host-managed notifications an uninitialised plugin does '
+      'not consume the low-battery alert', () async {
+    // hostAppManaged: the SDK never initialises the shared plugin; the host
+    // does it lazily, possibly after the first battery alert.
+    final hostManaged = LocalTagAlertNotifier(
+      plugin: plugin,
+      ensureInitialized: () async {},
+      clock: () => now,
+    );
+    final store = MemoryTagAlertStore();
+    final controller = TagAlertsController(store: store, notifier: hostManaged);
+    addTearDown(controller.dispose);
+    await bind(controller, sessionA);
+    center.rejectUntilInitialized = true;
+    final errors = <Object>[];
+    final sub = controller
+        .watchTagAlertSettings('tag-1')
+        .listen((_) {}, onError: errors.add);
+    var n = 0;
+    Future<void> reading() => controller.onBatteryReading(
+      deviceKey: 'tag-1',
+      band: TagBatteryBand.below30,
+      sourceKey: 's${n++}',
+      epoch: 1,
+    );
+
+    await reading();
+    await reading();
+    await pumpEventQueue();
+    expect(errors, isNotEmpty, reason: 'the failure is surfaced');
+    expect(center.delivered, isEmpty);
+    expect(store.raw, isNot(contains('"cycles"')), reason: 'not consumed');
+
+    // The host initialises the plugin; the next live reading delivers it.
+    center.rejectUntilInitialized = false;
+    await reading();
+    expect(center.delivered, hasLength(1));
+    expect(
+      TagAlertPayload.decode(
+        center.delivered.values.single['payload'] as String,
+      ),
+      const TagAlertSlot('tag-1', TagAlertKind.batteryLow),
+    );
+    expect(store.raw, contains('"cycles"'));
+    await reading();
+    expect(center.delivered, hasLength(1));
+    await sub.cancel();
+  });
 
   test('ensureInitialized runs before show and schedule', () async {
     await notifier.show(battery('tag-1'));

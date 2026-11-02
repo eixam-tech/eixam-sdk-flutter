@@ -30,16 +30,38 @@ final class TagBatteryReading {
 /// provisional and need physical tuning with a real TAG.
 abstract final class TagBatteryReadingExtractor {
   static const Duration maxLiveAge = Duration(minutes: 3);
+
+  /// Upper bound for the interval-scaled window, so a very long (or bogus)
+  /// TEL interval cannot make old data look live.
+  static const Duration maxLiveAgeCap = Duration(minutes: 30);
+
+  /// `max(3 min, 1.5 x TEL interval)` when the interval is known, capped at
+  /// [maxLiveAgeCap]. The TAG flushes a `0xD3` batch once per interval, so a
+  /// fixed 3 minutes would reject every batch of a TAG configured for ~3 min
+  /// or more.
+  static Duration liveAgeFor(int? telIntervalSeconds) {
+    if (telIntervalSeconds == null || telIntervalSeconds <= 0) {
+      return maxLiveAge;
+    }
+    final scaled = Duration(milliseconds: telIntervalSeconds * 1500);
+    final limit = scaled > maxLiveAge ? scaled : maxLiveAge;
+    return limit > maxLiveAgeCap ? maxLiveAgeCap : limit;
+  }
+
   static const Duration maxFutureSkew = Duration(minutes: 2);
 
   static TagBatteryReading? fromEvent(
     BleIncomingEvent event, {
     required DeviceStatus? status,
+    int? telIntervalSeconds,
   }) {
     if (status == null) return null;
+    // Device-scoped traffic must come from the device the status describes: a
+    // reply from a TAG that is being paired or switched is not this TAG's.
+    if (event.deviceId != status.deviceId) return null;
     switch (event.type) {
       case BleIncomingEventType.telLivePositionBatch:
-        return _fromLiveBatch(event, status);
+        return _fromLiveBatch(event, status, liveAgeFor(telIntervalSeconds));
       case BleIncomingEventType.telPosition:
         return _fromClassicTel(event, status);
       case BleIncomingEventType.deviceRuntimeStatus:
@@ -90,6 +112,7 @@ abstract final class TagBatteryReadingExtractor {
   static TagBatteryReading? _fromLiveBatch(
     BleIncomingEvent event,
     DeviceStatus status,
+    Duration maxAge,
   ) {
     final live = event.telLiveBatchPacket;
     if (live == null || !_isOwnLiveLink(status)) return null;
@@ -110,7 +133,7 @@ abstract final class TagBatteryReadingExtractor {
     final age = event.receivedAt.toUtc().difference(
       samples[newest].sampledAt!.toUtc(),
     );
-    if (age > maxLiveAge || age < -maxFutureSkew) return null;
+    if (age > maxAge || age < -maxFutureSkew) return null;
     final band = TagBatteryBand.fromLevel(
       DeviceBatteryLevel.fromProtocolValue(
         live.telPackets[newest].batteryLevel,
