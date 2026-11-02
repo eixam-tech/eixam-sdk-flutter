@@ -123,7 +123,9 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     });
     initCalls = 0;
-    now = DateTime.utc(2026, 11, 2, 12);
+    // The plugin validates scheduled dates against the real clock, so a fixed
+    // date would turn into a time bomb once it passes.
+    now = DateTime.now().toUtc();
     plugin = FlutterLocalNotificationsPlugin();
     notifier = LocalTagAlertNotifier(
       plugin: plugin,
