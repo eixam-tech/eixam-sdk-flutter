@@ -370,9 +370,16 @@ final class TagAlertsController implements TagAlertsControl {
   /// Feeds one live battery reading of [deviceKey] to the low-battery policy.
   ///
   /// [epoch] identifies the connection the reading arrived on; confirmation
-  /// never spans epochs. Readings are ignored without a session. The cycle is
-  /// persisted only when it changes. A notifier failure is reported to the
-  /// settings streams and never thrown, so BLE handling is never affected.
+  /// never spans epochs. Readings are ignored without a session.
+  ///
+  /// Delivery is at-least-once: the alert is shown first and the "already
+  /// alerted" mark is persisted afterwards, so an alert that could not be shown
+  /// (notifier error or timeout) is retried by the next confirmed reading, and a
+  /// failed write after a successful show may repeat the alert at worst. While
+  /// notifications cannot be shown (permission not granted) the threshold is
+  /// not marked, so granting permission later while still low alerts on the
+  /// next live reading. Notifier failures are reported to the settings streams,
+  /// never thrown, so BLE handling is never affected.
   Future<void> onBatteryReading({
     required String deviceKey,
     required TagBatteryBand band,
@@ -386,15 +393,48 @@ final class TagAlertsController implements TagAlertsControl {
       if (_identity == null) return;
       await _load(generation);
       final cycle = _cycles[deviceKey] ?? TagBatteryCycle.none;
-      final decision = TagBatteryAlertPolicy.evaluate(
+      final streak = _streaks[deviceKey];
+      final enabled = _settingsFor(deviceKey).batteryAlerts;
+      var decision = TagBatteryAlertPolicy.evaluate(
         band: band,
         sourceKey: sourceKey,
         epoch: epoch,
         cycle: cycle,
-        streak: _streaks[deviceKey],
-        alertsEnabled: _settingsFor(deviceKey).batteryAlerts,
+        streak: streak,
+        alertsEnabled: enabled,
       );
+      if (decision.threshold != null && !await _canDeliverNotifications()) {
+        // Track and rearm, but do not consume the alert.
+        decision = TagBatteryAlertPolicy.evaluate(
+          band: band,
+          sourceKey: sourceKey,
+          epoch: epoch,
+          cycle: cycle,
+          streak: streak,
+          alertsEnabled: false,
+        );
+      }
       _streaks[deviceKey] = decision.streak;
+      final threshold = decision.threshold;
+      if (threshold != null) {
+        try {
+          await _notify(
+            () => notifier.show(
+              TagAlert(
+                kind: TagAlertKind.batteryLow,
+                deviceId: deviceKey,
+                deviceAlias: deviceAlias,
+                batteryThreshold: threshold,
+              ),
+            ),
+          );
+        } catch (error, stack) {
+          // Not shown, so not marked: the next confirmed reading retries.
+          _publishError(error, stack);
+          return;
+        }
+      }
+      _checkGeneration(generation);
       if (decision.cycle != cycle) {
         final nextCycles = Map<String, TagBatteryCycle>.of(_cycles);
         if (decision.cycle.isNone) {
@@ -402,30 +442,40 @@ final class TagAlertsController implements TagAlertsControl {
         } else {
           nextCycles[deviceKey] = decision.cycle;
         }
-        // Persist before notifying: if this fails nothing was shown and the
-        // next confirmed reading decides again.
         await _write(_devices, nextCycles);
         _checkGeneration(generation);
         _cycles = nextCycles;
       }
-      final threshold = decision.threshold;
-      try {
-        if (threshold != null) {
-          await notifier.show(
-            TagAlert(
-              kind: TagAlertKind.batteryLow,
-              deviceId: deviceKey,
-              deviceAlias: deviceAlias,
-              batteryThreshold: threshold,
-            ),
+      if (threshold == null && decision.clearDeliveredAlert) {
+        try {
+          await _notify(
+            () => notifier.cancel(deviceKey, TagAlertKind.batteryLow),
           );
-        } else if (decision.clearDeliveredAlert) {
-          await notifier.cancel(deviceKey, TagAlertKind.batteryLow);
+        } catch (error, stack) {
+          _publishError(error, stack);
         }
-      } catch (error, stack) {
-        _publishError(error, stack);
       }
     });
+  }
+
+  /// Whether the OS would show a notification right now. Only a state that
+  /// clearly blocks delivery (denied, permanently denied, not asked yet)
+  /// counts; granted and unsupported platforms, or a failing check, allow it.
+  Future<bool> _canDeliverNotifications() async {
+    try {
+      final state = await _bounded(permissions.state());
+      switch (state) {
+        case TagAlertPermissionState.denied:
+        case TagAlertPermissionState.permanentlyDenied:
+        case TagAlertPermissionState.notDetermined:
+          return false;
+        case TagAlertPermissionState.granted:
+        case TagAlertPermissionState.unsupported:
+          return true;
+      }
+    } catch (_) {
+      return true;
+    }
   }
 
   @override

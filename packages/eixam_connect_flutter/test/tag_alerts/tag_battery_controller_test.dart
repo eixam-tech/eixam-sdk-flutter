@@ -208,7 +208,7 @@ void main() {
       },
     );
 
-    test('a notifier failure is reported on watchers, not thrown', () async {
+    test('a notifier failure is surfaced, not marked, and retried', () async {
       notifier.failShow = true;
       final errors = <Object>[];
       final sub = controller
@@ -218,15 +218,38 @@ void main() {
       await twice(_b30);
       await pumpEventQueue();
       expect(errors, isNotEmpty);
-      // The cycle was recorded, so a retry does not storm.
+      expect(store.raw, isNot(contains('"cycles"')));
+      // The alert was not consumed: the next confirmed reading delivers it.
       notifier.failShow = false;
+      notifier.shown.clear();
+      await read(_b30);
+      expect(notifier.shown, hasLength(1));
       await read(_b30);
       expect(notifier.shown, hasLength(1));
       await sub.cancel();
     });
 
+    test('a hung show is bounded and retried afterwards', () async {
+      await controller.dispose();
+      controller = TagAlertsController(
+        store: store,
+        notifier: notifier,
+        notifierTimeout: const Duration(milliseconds: 50),
+      );
+      await bind(controller, sessionA);
+      notifier.hangShow = true;
+      await twice(_b30);
+      expect(notifier.shown, hasLength(1)); // attempted, never completed
+      expect(store.raw, isNot(contains('"cycles"')));
+      notifier.hangShow = false;
+      notifier.shown.clear();
+      await read(_b30);
+      expect(notifier.shown, hasLength(1));
+      expect(store.raw, contains('"cycles"'));
+    });
+
     test(
-      'a persistence failure shows nothing and the next reading retries',
+      'a persistence failure after the alert was shown never loses it',
       () async {
         store.rejectWrites = true;
         await read(_b30);
@@ -234,10 +257,13 @@ void main() {
           read(_b30),
           throwsA(tagAlertsError('PERSISTENCE_FAILED')),
         );
-        expect(notifier.shown, isEmpty);
+        // Shown first (at-least-once); not marked, so it may repeat, never vanish.
+        expect(notifier.shown, hasLength(1));
         store.rejectWrites = false;
         await read(_b30);
-        expect(thresholds(), [TagAlertBatteryThreshold.below30]);
+        expect(notifier.shown, hasLength(2));
+        await read(_b30);
+        expect(notifier.shown, hasLength(2));
       },
     );
 
@@ -262,6 +288,74 @@ void main() {
         await sub.cancel();
       },
     );
+  });
+
+  group('notification permission', () {
+    late CountingPermissionGateway permissions;
+
+    setUp(() async {
+      await controller.dispose();
+      permissions = CountingPermissionGateway();
+      controller = TagAlertsController(
+        store: store,
+        notifier: notifier,
+        permissions: permissions,
+      );
+      await bind(controller, sessionA);
+    });
+
+    for (final blocked in [
+      TagAlertPermissionState.denied,
+      TagAlertPermissionState.permanentlyDenied,
+      TagAlertPermissionState.notDetermined,
+    ]) {
+      test('$blocked: nothing is shown or marked; granting later alerts '
+          'on the next live reading', () async {
+        permissions.next = blocked;
+        await twice(_b30);
+        await read(_b30);
+        expect(notifier.shown, isEmpty);
+        expect(store.raw, isNot(contains('"cycles"')));
+        permissions.next = TagAlertPermissionState.granted;
+        await read(_b30);
+        expect(thresholds(), [TagAlertBatteryThreshold.below30]);
+        await read(_b30);
+        expect(notifier.shown, hasLength(1));
+      });
+    }
+
+    test('rearming still works while notifications are blocked', () async {
+      permissions.next = TagAlertPermissionState.granted;
+      await twice(_b30);
+      permissions.next = TagAlertPermissionState.denied;
+      await twice(_medium);
+      expect(store.raw, isNot(contains('"cycles"')));
+      permissions.next = TagAlertPermissionState.granted;
+      await twice(_b30);
+      expect(notifier.shown, hasLength(2));
+    });
+
+    test(
+      'unsupported platforms and failing checks do not block delivery',
+      () async {
+        permissions.next = TagAlertPermissionState.unsupported;
+        await twice(_b30);
+        expect(notifier.shown, hasLength(1));
+        permissions.failState = true;
+        await twice(_medium);
+        await twice(_b30);
+        expect(notifier.shown, hasLength(2));
+      },
+    );
+
+    test('the permission is only consulted when an alert would fire', () async {
+      permissions.next = TagAlertPermissionState.granted;
+      await twice(_ok);
+      await twice(_medium);
+      expect(permissions.stateCalls, 0);
+      await twice(_b30);
+      expect(permissions.stateCalls, 1);
+    });
   });
 
   group('cleanup', () {

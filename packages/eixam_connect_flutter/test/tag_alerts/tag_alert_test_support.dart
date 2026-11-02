@@ -82,6 +82,7 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   bool failCancelAll = false;
   bool failCancel = false;
   bool hangCancel = false;
+  bool hangShow = false;
   bool hangCancelAll = false;
   bool failShow = false;
   bool failCancelAllForDevice = false;
@@ -90,6 +91,7 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   Future<void> show(TagAlert alert) async {
     calls.add('show:${alert.deviceId}:${alert.kind.name}');
     shown.add(alert);
+    if (hangShow) await Completer<void>().future;
     if (failShow) throw StateError('show failed');
   }
 
@@ -122,10 +124,12 @@ final class CountingPermissionGateway implements TagAlertPermissionGateway {
   int stateCalls = 0;
   int requestCalls = 0;
   TagAlertPermissionState next = TagAlertPermissionState.notDetermined;
+  bool failState = false;
 
   @override
   Future<TagAlertPermissionState> state() async {
     stateCalls++;
+    if (failState) throw StateError('permission check failed');
     return next;
   }
 

@@ -500,6 +500,7 @@ void main() {
 
     setUp(() async {
       counter = 0;
+      permissions.next = TagAlertPermissionState.granted;
       await start();
       await connectTag();
       notifier.calls.clear();
@@ -609,6 +610,7 @@ void main() {
     }
 
     setUp(() async {
+      permissions.next = TagAlertPermissionState.granted;
       await start();
       await connectTag();
       notifier.calls.clear();
