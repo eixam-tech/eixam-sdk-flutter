@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — TAG low-battery alerts
+
+- Low-battery alerts at < 30 % and < 10 % from live TAG data only, with two-reading
+  confirmation for firing and rearming, phone-like rearm on each downward crossing,
+  and a persisted per-device cycle (`TagBatteryAlertPolicy`, `TagBatteryCycle`).
+  Sources: `0xD3` live batches (fresh timestamped sample), own classic TEL and
+  `0x23`; backlog, relays, SOS packets and stored status are never readings.
+- One `0x23` on a real foreground return (at most every 10 min per device, skipped
+  during SOS, firmware update, provisioning and migration). No polling, no new
+  BLE command, no native change. Alerts need live TAG data: a stationary TAG or a
+  backgrounded app produces none.
+
 ## Unreleased — TAG alerts foundation
 
 - Add optional `TagAlertsControl` (per-TAG `TagAlertSettings`, permission state and

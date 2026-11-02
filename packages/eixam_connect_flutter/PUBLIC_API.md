@@ -476,6 +476,45 @@ if (sdk is TagAlertsControl) {
   On Android the passive state is `granted`/`denied`; `permanentlyDenied` is
   only reported by `requestTagAlertPermission()`.
 
+### Low-battery alerts (F1)
+
+When `batteryAlerts` is on (the default) and the host has notification
+permission, the SDK shows a `TagAlertKind.batteryLow` alert through the
+`TagAlertNotifier` when the TAG's battery drops below 30 % or below 10 %. Alerts
+use only the TAG's own 2-bit battery level (or a live `0x23` percentage mapped to
+the same bands); the SDK never presents an exact percentage.
+
+- Bands: `ok` (>= 60 %), `medium` (30-59 %), `below30` (10-29 %), `below10` (< 10 %).
+- **Confirmation:** a band counts after two consecutive live readings from
+  distinct samples within one connection. A single stray reading never fires or
+  rearms anything. Confirmation never spans a disconnect.
+- **Like a phone:** each downward crossing alerts again after the battery was
+  confirmed above the threshold. `below30` fires if it has not fired since the
+  last confirmed `medium`/`ok`; `below10` fires if it has not fired since the
+  last confirmed `below30`/`medium`/`ok`, and also marks `below30`, so a direct
+  fall from >= 30 % to < 10 % gives one alert (10 %).
+- The delivered alert is removed only when `ok` (>= 60 %) is confirmed.
+- With `batteryAlerts` off the cycle keeps being tracked but nothing is shown or
+  marked; turning it back on while low alerts after two live readings.
+- The already-alerted state is persisted per device (same `eixam.tag_alerts.v1`
+  blob), so restarts and reconnects do not repeat an alert.
+- **Live data only.** Readings come from `0xD3` live batches (newest sample,
+  device timestamp within 2 min ahead / 3 min behind receipt; without a
+  plausible timestamp there is no reading), classic 12-byte TEL of the connected
+  TAG, and `0x23 GET_DEVICE_STATUS` replies (a percentage of 0 or `0xFF` is
+  ignored). Backlog (`0xD1`), neighbor relays (`0xD2`), SOS packets and any
+  stored `DeviceStatus` are never readings. The freshness window is provisional
+  and needs physical tuning.
+- **On connect and on foreground resume** the SDK uses `0x23` once (resume: at
+  most once per 10 minutes per device, only after a real return from the
+  background, never while SOS, a firmware update, provisioning or a device
+  migration is running, and never starting a reconnect). There is no polling.
+- **Limits, by design.** Alerts work while the app receives live TAG data. A
+  stationary TAG sends no `0xD3`, so no new reading arrives; a backgrounded app
+  receives nothing from the TAG (native Protection Mode does not forward battery
+  data to Dart); an alert can therefore be late or never come. This is not a
+  guaranteed safety feature and does not replace checking the device.
+
 ### Notification delivery (`TagAlertNotifier`)
 
 `show`, `schedule(alert, at)`, `cancel(deviceId, kind)`,
