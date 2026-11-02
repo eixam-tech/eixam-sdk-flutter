@@ -30,6 +30,7 @@ struct IosBleSosFrameClassifierTests {
     sosEventsUnchanged()
     removedWrappedLengths()
     nearbyOwnerNameStructure()
+    otherCharacteristicsNeverSos()
     if failures > 0 {
       print("FAILED: \(failures)")
       exit(1)
@@ -180,6 +181,23 @@ struct IosBleSosFrameClassifierTests {
     expect(parse(wrapped18, .sos) == nil, "18 B is not SOS on the SOS characteristic")
     expect(parse([], .tel) == nil, "empty frame")
     expect(parse([0x01, 0x02, 0x03], .sos) == nil, "short frame")
+  }
+
+  /// INET (ea03) and CMD (ea04) notifications are never SOS candidates, even
+  /// when their bytes look like a 7 / 12 B SOS or an E1/E2/E3 event.
+  private static func otherCharacteristicsNeverSos() {
+    let frames: [(String, [UInt8])] = [
+      ("12 B sosType 3", modernSos12),
+      ("7 B sosType 3", sos7Active),
+      ("7 B sosType 1", [0xA8, 0x1A, 0x4B, 0x59, 0x00, 0x40, 0x00]),
+      ("12 B sosType 0", Array(modernSos12.prefix(11)) + [0x00]),
+      ("E1 event", [0xE1, 0x02, 0xA8, 0x1A, 0x4B, 0x59]),
+      ("E3 event", [0xE3, 0x01, 0xA8, 0x1A, 0x4B, 0x59]),
+    ]
+    for (name, bytes) in frames {
+      expect(parse(bytes, .other) == nil, "\(name) on INET/CMD is not SOS")
+      expect(parse(bytes, .sos) != nil, "\(name) on the SOS characteristic is still parsed")
+    }
   }
 
   private static func nearbyOwnerNameStructure() {

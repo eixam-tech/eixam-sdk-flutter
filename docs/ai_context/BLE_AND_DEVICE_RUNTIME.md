@@ -71,7 +71,9 @@ candidates; 13 and 18 byte frames are not SOS wires.
 The first byte alone never rules a frame out: an SOS node id is little-endian
 at offset 0. The bit 5 gate applies to the TEL characteristic only. On the SOS
 characteristic a 12 byte frame stays SOS (`sosType` 0 clear, 1 pre-SOS, else
-active) even with bit 5 set, as in `AGENTS.md`. Frames that are not SOS on TEL
+active) even with bit 5 set, as in `AGENTS.md`. Notifications from any other
+characteristic (INET `ea03`, CMD `ea04`) are never SOS candidates. Frames that
+are not SOS on TEL
 continue to `emitTelNotify`. iOS keeps 7 B `sosType 0` as a clear (Android maps
 it to `Unknown`). Tests: `ios/Tests/IosBleSosFrameClassifierTests.swift`
 (swiftc command in its header).

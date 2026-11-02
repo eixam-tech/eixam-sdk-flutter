@@ -34,6 +34,11 @@ enum IosBleSosFrameClassifier {
     characteristic: IosBleSosCharacteristic,
     receivedAt: Int
   ) -> IosBleSosParsedSnapshot? {
+    // SOS arrives on the SOS and TEL characteristics only (firmware doc 07).
+    // INET / CMD notifications are never SOS candidates.
+    guard characteristic != .other else {
+      return nil
+    }
     // Nearby 0xD8 is chunked as 0xD0. Last fragments of 7/12 bytes match
     // SOS snapshot sizes; treat real TEL fragments as not-SOS so emitTelNotify
     // can reassemble and NearbyClosedAppNotifier can fire with the app killed.

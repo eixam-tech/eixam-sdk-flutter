@@ -12,6 +12,8 @@
   not SOS. A 12 B frame on TEL is SOS only if `bit5(flags) == 0 && sosType == 3` and is
   never a cancellation otherwise (Android parity). The SOS characteristic, `0xE1`/`0xE2`/
   `0xE3` and notification ids, texts and payloads are unchanged.
+- INET (`ea03`) and CMD (`ea04`) notifications are never SOS candidates on iOS; SOS
+  arrives on the SOS and TEL characteristics only.
 - `EixamBleProtocol.isReservedSosOrTelNotifyLength` and the Dart "+6" wrapped-SOS lengths
   are legacy and unused by the iOS parser; they are left untouched.
 - Physical iOS validation (30 min background, real SOS and TAG cancel) is pending.
