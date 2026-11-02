@@ -1,5 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/preferred_ble_device_store.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/sdk_session_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
@@ -28,7 +29,7 @@ void main() {
   late EixamConnectSdkImpl sdk;
   final trackers = <Future<void> Function()>[];
 
-  EixamConnectSdkImpl build() {
+  EixamConnectSdkImpl build({SdkSessionStore? sessionStore}) {
     final sosRepository = FakeSosRepository();
     final trackingRepository = FakeTrackingRepository();
     final contactsRepository = FakeContactsRepository();
@@ -59,6 +60,7 @@ void main() {
       bleIncomingEvents: const Stream<BleIncomingEvent>.empty(),
       preferredBleDeviceStore: PreferredBleDeviceStore(localStore: localStore),
       localStore: localStore,
+      sessionStore: sessionStore,
       tagAlertNotifier: notifier,
       tagAlertPermissions: permissions,
       protectionPlatformAdapter: const NoopProtectionPlatformAdapter(),
@@ -232,6 +234,126 @@ void main() {
     });
   });
 
+  group('cold start with a persisted session', () {
+    late _MemorySecureStore secure;
+
+    SdkSessionStore sessionStoreFor() =>
+        SdkSessionStore(localStore: localStore, secureStore: secure);
+
+    Future<void> disposeCurrent() async {
+      await sdk.dispose();
+      for (final dispose in trackers) {
+        await dispose();
+      }
+    }
+
+    setUp(() => secure = _MemorySecureStore());
+
+    Future<TagAlertSettings> seedPersistedSession() async {
+      await disposeCurrent();
+      sdk = build(sessionStore: sessionStoreFor());
+      await start();
+      final stored = TagAlertSettings(
+        deviceId: _tagHardware,
+        batteryAlerts: false,
+        disconnectAfter: const Duration(minutes: 60),
+      );
+      await control().updateTagAlertSettings(stored);
+      await disposeCurrent();
+      notifier.calls.clear();
+      return stored;
+    }
+
+    test('a normal restore keeps settings and alerts', () async {
+      final stored = await seedPersistedSession();
+      sdk = build(sessionStore: sessionStoreFor());
+      await sdk.initialize(
+        const EixamSdkConfig(
+          apiBaseUrl: 'https://sdk.test',
+          deferRuntimeStartup: true,
+        ),
+      );
+      expect(notifier.calls, isNot(contains('cancelAll')));
+      expect(await control().getTagAlertSettings(_tagHardware), stored);
+    });
+
+    for (final failure in <SecureKeyValueStoreException>[
+      const SecureKeyValueStoreUnavailableException(),
+      const SecureKeyValueStoreEntryUnreadableException(),
+    ]) {
+      test('a transient session read failure (${failure.code}) does not wipe '
+          'settings or scheduled alerts', () async {
+        final stored = await seedPersistedSession();
+        secure.readFailure = failure;
+        sdk = build(sessionStore: sessionStoreFor());
+        await expectLater(
+          sdk.initialize(
+            const EixamSdkConfig(
+              apiBaseUrl: 'https://sdk.test',
+              deferRuntimeStartup: true,
+            ),
+          ),
+          throwsA(isA<SecureKeyValueStoreException>()),
+        );
+        expect(notifier.calls, isNot(contains('cancelAll')));
+        expect(
+          localStore.stringValues[SharedPrefsSdkStore.tagAlertsKey],
+          isNotNull,
+        );
+        // The retry succeeds once the keychain is readable again.
+        secure.readFailure = null;
+        await disposeCurrent();
+        sdk = build(sessionStore: sessionStoreFor());
+        await sdk.initialize(
+          const EixamSdkConfig(
+            apiBaseUrl: 'https://sdk.test',
+            deferRuntimeStartup: true,
+          ),
+        );
+        expect(await control().getTagAlertSettings(_tagHardware), stored);
+        expect(notifier.calls, isNot(contains('cancelAll')));
+      });
+    }
+
+    test(
+      'a failed restore followed by a different user still isolates data',
+      () async {
+        await seedPersistedSession();
+        secure.readFailure = const SecureKeyValueStoreUnavailableException();
+        sdk = build(sessionStore: sessionStoreFor());
+        await expectLater(
+          sdk.initialize(
+            const EixamSdkConfig(
+              apiBaseUrl: 'https://sdk.test',
+              deferRuntimeStartup: true,
+            ),
+          ),
+          throwsA(isA<SecureKeyValueStoreException>()),
+        );
+        secure.readFailure = null;
+        await sdk.setSession(sessionB, deferRuntimeWork: true);
+        expect(
+          await control().getTagAlertSettings(_tagHardware),
+          TagAlertSettings(deviceId: _tagHardware),
+        );
+      },
+    );
+
+    test('a signed-out cold start (nothing persisted) still wipes', () async {
+      await disposeCurrent();
+      localStore.stringValues[SharedPrefsSdkStore.tagAlertsKey] = 'stale';
+      sdk = build(sessionStore: sessionStoreFor());
+      await sdk.initialize(
+        const EixamSdkConfig(
+          apiBaseUrl: 'https://sdk.test',
+          deferRuntimeStartup: true,
+        ),
+      );
+      expect(notifier.calls, contains('cancelAll'));
+      expect(localStore.stringValues[SharedPrefsSdkStore.tagAlertsKey], isNull);
+    });
+  });
+
   group('notification taps', () {
     test('a tag alert tap never queues SOS/BLE navigation', () async {
       await start();
@@ -283,4 +405,28 @@ void main() {
       }
     },
   );
+}
+
+final class _MemorySecureStore implements SecureKeyValueStore {
+  final Map<String, String> values = {};
+  SecureKeyValueStoreException? readFailure;
+
+  @override
+  Future<String?> read(String key) async {
+    final failure = readFailure;
+    if (failure != null) throw failure;
+    return values[key];
+  }
+
+  @override
+  Future<bool> containsKey(String key) async => values.containsKey(key);
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+
+  @override
+  Future<void> delete(String key) async => values.remove(key);
+
+  @override
+  Future<void> deleteAll({String? namespace}) async => values.clear();
 }

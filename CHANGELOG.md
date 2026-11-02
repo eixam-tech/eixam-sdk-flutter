@@ -10,6 +10,7 @@
   No battery source and no disconnect policy yet: the SDK emits no TAG alert.
 - Settings persist under `eixam.tag_alerts.v1` and are wiped with their alerts on
   `clearSession`, `clearLocalUserData`, identity/app change and unpair.
+- A cold-start session restore that throws (locked keychain, transient storage error) no longer wipes TAG alert settings or scheduled alerts; only a completed restore with no session or an explicit logout does.
 - The SDK ignores `tag_alert:` notification taps in SOS/BLE navigation (an
   unrecognized payload used to reach a JSON parser there).
 - SDK manifest now declares the `flutter_local_notifications` scheduled and boot

@@ -214,6 +214,86 @@ void main() {
       expect(notifier.calls, isNot(contains('cancelAll')));
     });
 
+    group('a cold-start restore that throws is not a signed-out user', () {
+      Future<void> failedRestore() async {
+        await controller.dispose();
+        controller = build();
+        await expectLater(
+          controller.withIdentityChange<void>(
+            () async => throw StateError('keychain locked'),
+            currentSession: () => null,
+            backend: () => 'https://sdk.test',
+            restoreExisting: true,
+          ),
+          throwsStateError,
+        );
+      }
+
+      test('keeps data and alerts, then adopts the same identity', () async {
+        await seed();
+        await failedRestore();
+        expect(store.raw, isNotNull);
+        expect(notifier.calls, isEmpty);
+        await bind(controller, sessionA, restore: false);
+        expect(notifier.calls, isEmpty);
+        expect(
+          (await controller.getTagAlertSettings('tag-2')).batteryAlerts,
+          isFalse,
+        );
+      });
+
+      test(
+        'a different identity afterwards still drops the old data',
+        () async {
+          await seed();
+          await failedRestore();
+          await bind(controller, sessionB, restore: false);
+          expect(
+            await controller.getTagAlertSettings('tag-2'),
+            TagAlertSettings(deviceId: 'tag-2'),
+          );
+          expect(notifier.calls, contains('cancelAll'));
+          expect(store.raw, isNull);
+        },
+      );
+
+      test('an explicit logout after the failure still wipes', () async {
+        await seed();
+        await failedRestore();
+        await bind(controller, null);
+        expect(store.raw, isNull);
+        expect(notifier.calls, contains('cancelAll'));
+      });
+
+      test('a restore that completes with no session wipes', () async {
+        await seed();
+        await controller.dispose();
+        controller = build();
+        await bind(controller, null);
+        expect(store.raw, isNull);
+        expect(notifier.calls, contains('cancelAll'));
+      });
+
+      test(
+        'while unresolved, settings read as defaults and cannot be written',
+        () async {
+          await seed();
+          await failedRestore();
+          expect(
+            await controller.getTagAlertSettings('tag-2'),
+            TagAlertSettings(deviceId: 'tag-2'),
+          );
+          await expectLater(
+            controller.updateTagAlertSettings(
+              TagAlertSettings(deviceId: 'tag-2'),
+            ),
+            throwsA(tagAlertsError('SESSION_REQUIRED')),
+          );
+          expect(store.raw, isNotNull);
+        },
+      );
+    });
+
     test('unpair removes only that device and cancels its alerts', () async {
       await seed();
       await controller.onDeviceUnpaired('tag-1');

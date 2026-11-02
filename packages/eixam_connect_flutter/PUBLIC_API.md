@@ -453,6 +453,10 @@ if (sdk is TagAlertsControl) {
   another app id). `unpairDevice` removes that device's settings and alerts.
   `dispose` releases resources but intentionally keeps persisted settings and
   scheduled alerts.
+  A cold-start session restore that *throws* (for example a locked keychain)
+  is not treated as "signed out": settings and scheduled alerts are kept, and
+  the stored owner scope decides once the identity is known. Only a restore
+  that completes with no session, or an explicit logout, wipes.
 - `TagAlert { kind, deviceId, deviceAlias?, batteryThreshold?, elapsed?,
   lastTagPosition? }` carries data only. `batteryThreshold` is
   `below30 | below10`, derived from the TAG's existing 2-bit battery level; the

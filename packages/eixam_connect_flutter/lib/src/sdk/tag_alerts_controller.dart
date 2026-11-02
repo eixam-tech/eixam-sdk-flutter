@@ -33,6 +33,8 @@ final class TagAlertsController implements TagAlertsControl {
   _Failure? _restoreFailure;
   bool _loaded = false;
   bool _pendingClear = false;
+  // The last cold-start restore failed, so the signed-in identity is unknown.
+  bool _restoreUnresolved = false;
   bool _used = false;
   bool _disposed = false;
   int _generation = 0;
@@ -77,11 +79,24 @@ final class TagAlertsController implements TagAlertsControl {
       final oldId = _sdkUserId(previous);
       final newId = _sdkUserId(next);
       final canonicalChanged = oldId != null && newId != null && oldId != newId;
+      // A restore that threw (keychain locked, transient storage error) tells
+      // us nothing about who is signed in. It must not look like "signed out":
+      // keep the data and let the owner-scope check in `_load` decide once an
+      // identity is known. Only a restore that completed with no session, or
+      // an explicit logout, clears.
+      final restoreFailed =
+          actionError != null &&
+          restoreExisting &&
+          previous == null &&
+          next == null;
+      final adoptsExisting =
+          previous == null && (restoreExisting || _restoreUnresolved);
       _pendingClear |=
           clearData ||
           canonicalChanged ||
-          (previousScope != scope && !(restoreExisting && previous == null)) ||
-          next == null;
+          (previousScope != scope && !adoptsExisting) ||
+          (next == null && !restoreFailed);
+      _restoreUnresolved = restoreFailed;
       _identity = next;
       _scope = scope;
       Object? cleanupError;
