@@ -2,6 +2,8 @@ import 'eixam_custom_endpoints.dart';
 import 'eixam_environment.dart';
 import 'eixam_session.dart';
 import '../entities/permission_disclosure.dart';
+import '../tag_alerts/tag_alert_notifier.dart';
+import '../tag_alerts/tag_alert_text.dart';
 
 enum EixamNotificationPolicy { sdkManaged, hostAppManaged }
 
@@ -17,6 +19,8 @@ class EixamBootstrapConfig {
     this.featureFlags = const <String, bool>{},
     this.enableLogging = false,
     this.allowInsecureLocalEndpoints = false,
+    this.tagAlertNotifier,
+    this.tagAlertTextResolver,
   });
 
   final String appId;
@@ -29,6 +33,14 @@ class EixamBootstrapConfig {
   final Map<String, bool> featureFlags;
   final bool enableLogging;
   final bool allowInsecureLocalEndpoints;
+
+  /// Optional host delivery for TAG alerts. Null uses the SDK's default local
+  /// notification adapter.
+  final TagAlertNotifier? tagAlertNotifier;
+
+  /// Optional localized wording for the default TAG alert adapter. Null uses
+  /// neutral English text. Ignored when [tagAlertNotifier] is supplied.
+  final TagAlertTextResolver? tagAlertTextResolver;
 }
 
 class EixamNotificationTexts {
