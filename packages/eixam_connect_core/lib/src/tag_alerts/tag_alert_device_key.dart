@@ -9,10 +9,7 @@ import '../entities/device_status.dart';
 /// late (after the first `0x23` reply, which can miss the pair-time timeout),
 /// so a key that used it would change under the same physical TAG and strand
 /// the TAG's settings. Device migration re-keys explicitly.
-String tagAlertKeyFor({
-  String? canonicalHardwareId,
-  required String deviceId,
-}) {
+String tagAlertKeyFor({String? canonicalHardwareId, required String deviceId}) {
   final hardware = canonicalHardwareId?.trim();
   if (hardware != null && hardware.isNotEmpty) {
     return hardware;

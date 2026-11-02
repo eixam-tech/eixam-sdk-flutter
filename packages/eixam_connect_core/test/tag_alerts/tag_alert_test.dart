@@ -154,12 +154,14 @@ void main() {
       expect(tagAlertDeviceKey(status()), 'ble-id');
     });
 
-    test('does not change when the node id arrives (iOS pair-time hydrate)',
-        () {
-      final before = status(id: 'UUID-1');
-      final after = status(id: 'UUID-1', node: 0x12345678);
-      expect(tagAlertDeviceKey(after), tagAlertDeviceKey(before));
-    });
+    test(
+      'does not change when the node id arrives (iOS pair-time hydrate)',
+      () {
+        final before = status(id: 'UUID-1');
+        final after = status(id: 'UUID-1', node: 0x12345678);
+        expect(tagAlertDeviceKey(after), tagAlertDeviceKey(before));
+      },
+    );
 
     test('tagAlertKeyFor matches the status rule', () {
       expect(tagAlertKeyFor(canonicalHardwareId: 'AA', deviceId: 'x'), 'AA');
