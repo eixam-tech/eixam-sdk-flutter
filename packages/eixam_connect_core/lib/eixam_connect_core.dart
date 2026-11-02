@@ -126,3 +126,4 @@ export 'src/tag_alerts/tag_alert_settings.dart';
 export 'src/tag_alerts/tag_alert_text.dart';
 export 'src/tag_alerts/tag_alerts_control.dart';
 export 'src/tag_alerts/tag_alerts_exception.dart';
+export 'src/tag_alerts/tag_battery_alert_policy.dart';
