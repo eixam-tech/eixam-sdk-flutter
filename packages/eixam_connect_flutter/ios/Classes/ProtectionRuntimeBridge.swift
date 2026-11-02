@@ -73,13 +73,6 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "notification_nearby_message_fallback_title"
   }
 
-  private enum IosBleSosSnapshotKind: String {
-    case preSos
-    case active
-    case cancelled
-    case resolved
-  }
-
   private var eventSink: FlutterEventSink?
   private var centralManager: CBCentralManager?
   private var protectedPeripheral: CBPeripheral?
@@ -1027,7 +1020,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         let bytes = [UInt8](value)
         if TelAggregateFragment.tryParse(bytes) != nil {
           emitTelNotify(bytes, source: "tel")
-        } else if parseIosBleSosSnapshot(bytes: bytes, receivedAt: Date().millisecondsSince1970) != nil {
+        } else if parseIosBleSosSnapshot(
+          bytes: bytes,
+          characteristic: characteristic,
+          receivedAt: Date().millisecondsSince1970
+        ) != nil {
           captureBleSosPayload(value, characteristic: characteristic)
         } else {
           emitTelNotify(bytes, source: "tel")
@@ -1109,7 +1106,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     print("IOS_BLE_SOS_PAYLOAD_RECEIVED source=\(source) packet_bytes_present=true byte_count=\(bytes.count)")
 #endif
 
-    guard let parsed = parseIosBleSosSnapshot(bytes: bytes, receivedAt: timestamp) else {
+    guard let parsed = parseIosBleSosSnapshot(
+      bytes: bytes,
+      characteristic: characteristic,
+      receivedAt: timestamp
+    ) else {
       return
     }
     if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
@@ -1481,59 +1482,28 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     return value?.isEmpty == false ? value! : fallback
   }
 
-  private func parseIosBleSosSnapshot(bytes: [UInt8], receivedAt: Int) -> (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)? {
-    // Nearby 0xD8 is chunked as 0xD0. Last fragments of 7/12/13/18 bytes match
-    // SOS snapshot sizes; treat real TEL fragments as not-SOS so emitTelNotify
-    // can reassemble and NearbyClosedAppNotifier can fire with the app killed.
-    // Do not reject 0xD8/0xDA/0xDB by first byte: SOS node id is little-endian
-    // at offset 0. 0xDA status is 6 B and 0xD8 text is ≥ 22 B, so they miss
-    // the 7/12-byte parse below and still reach emitTelNotify.
-    if TelAggregateFragment.tryParse(bytes) != nil {
-      return nil
-    }
-    if bytes.count == 6,
-       (bytes[0] == 0xE1 || bytes[0] == 0xE2 || bytes[0] == 0xE3) {
-      let nodeId = readUInt32(bytes, offset: 2)
-      // E3 closes the TAG episode through backend resolution. Persist and
-      // forward its real packet, preserving the distinction from user cancel.
-      let kind: IosBleSosSnapshotKind = bytes[0] == 0xE3 ? .resolved : .cancelled
-      return (kind, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
-    }
-
-    let packetLength: Int
-    if bytes.count == 18 {
-      packetLength = 12
-    } else if bytes.count == 13 {
-      packetLength = 7
-    } else {
-      packetLength = bytes.count
-    }
-    guard packetLength == 7 || packetLength == 12,
-          let nodeId = readUInt32(bytes, offset: 0) else {
-      return nil
-    }
-    let flagsOffset = packetLength == 12 ? 10 : 4
-    let flagsWord = Int(bytes[flagsOffset]) | (Int(bytes[flagsOffset + 1]) << 8)
-    let sosType = (flagsWord >> 14) & 0x03
-    let packetId = flagsWord & 0x0F
-    let cycleKey = "sos:\(nodeId):\(packetId)"
-    if sosType == 0 {
-      return (.cancelled, nodeId, packetId, cycleKey, nil)
-    }
-    if sosType == 1 {
-      return (.preSos, nodeId, packetId, cycleKey, receivedAt + 20_000)
-    }
-    return (.active, nodeId, packetId, cycleKey, nil)
+  private func parseIosBleSosSnapshot(
+    bytes: [UInt8],
+    characteristic: CBCharacteristic,
+    receivedAt: Int
+  ) -> IosBleSosParsedSnapshot? {
+    IosBleSosFrameClassifier.parse(
+      bytes: bytes,
+      characteristic: iosBleSosCharacteristic(for: characteristic),
+      receivedAt: receivedAt
+    )
   }
 
-  private func readUInt32(_ bytes: [UInt8], offset: Int) -> Int? {
-    guard bytes.count >= offset + 4 else {
-      return nil
+  private func iosBleSosCharacteristic(
+    for characteristic: CBCharacteristic
+  ) -> IosBleSosCharacteristic {
+    if characteristic.uuid == Self.telCharacteristicUuid {
+      return .tel
     }
-    return Int(bytes[offset])
-      | (Int(bytes[offset + 1]) << 8)
-      | (Int(bytes[offset + 2]) << 16)
-      | (Int(bytes[offset + 3]) << 24)
+    if characteristic.uuid == Self.sosCharacteristicUuid {
+      return .sos
+    }
+    return .other
   }
 
   func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
