@@ -376,15 +376,32 @@ void main() {
           expect(schedules(), isEmpty);
         });
 
-        test('backgrounded + no notification permission => nothing', () async {
+        test('backgrounded + last known "no permission" => nothing', () async {
           await restart(platform: platform, first: tag(connected: false));
-          await emit(tag());
-          await background();
           permissions.next = TagAlertPermissionState.denied;
-          clock = clock.add(const Duration(minutes: 2)); // past the cache TTL
+          await emit(tag()); // the answer is cached as "denied"
+          await background();
           notifier.calls.clear();
           await emit(tag(connected: false));
           expect(schedules(), isEmpty);
+        });
+
+        test('backgrounded + permission revoked since the last check => '
+            'scheduled at once, no permission round-trip first (the OS drops '
+            'it if it is really missing)', () async {
+          await restart(platform: platform, first: tag(connected: false));
+          await emit(tag()); // cached as "granted"
+          await background();
+          permissions.next = TagAlertPermissionState.denied;
+          final checks = permissions.stateCalls;
+          clock = clock.add(const Duration(minutes: 5));
+          notifier.calls.clear();
+          await emit(tag(connected: false));
+          expect(schedules(), hasLength(1));
+          expect(notifier.scheduled.last.at, clock.add(_five));
+          // The first thing the drop path did was schedule; the refresh that
+          // follows is not on the critical path.
+          expect(permissions.stateCalls, greaterThanOrEqualTo(checks));
         });
 
         test('backgrounded + "never" => nothing', () async {

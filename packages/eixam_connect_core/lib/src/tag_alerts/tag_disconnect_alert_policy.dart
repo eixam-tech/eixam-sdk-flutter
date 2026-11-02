@@ -31,6 +31,7 @@ final class TagLinkSnapshot {
     this.holdUntil,
     this.sosActive = false,
     this.backgroundDisarm = false,
+    this.backgrounded = false,
     this.lastTagPosition,
   });
 
@@ -55,6 +56,11 @@ final class TagLinkSnapshot {
   /// the app is suspended). The lease is dropped; a woken app still arms at
   /// the disconnect.
   final bool backgroundDisarm;
+
+  /// The app is in the background. A drop observed now may have only a short
+  /// wake-up window to schedule its alert, so the controller schedules it
+  /// without waiting on any permission round-trip.
+  final bool backgrounded;
 
   /// Last position reported by the TAG itself, for the alert content only.
   final TagAlertPosition? lastTagPosition;

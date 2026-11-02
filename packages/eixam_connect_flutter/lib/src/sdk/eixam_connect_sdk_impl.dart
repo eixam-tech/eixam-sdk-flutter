@@ -6053,6 +6053,7 @@ class EixamConnectSdkImpl
         deviceSosState: deviceSosController.currentStatus.state,
       ),
       backgroundDisarm: _tagLeaseDisarmedInBackground,
+      backgrounded: _isAppBackgrounded,
       lastTagPosition: _tagLastPosition,
     );
   }

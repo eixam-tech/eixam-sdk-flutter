@@ -560,12 +560,25 @@ final class TagAlertsController implements TagAlertsControl {
   }
 
   Future<void> _applyLease(int generation, TagLinkSnapshot snapshot) async {
-    await _prepare(generation);
+    // A drop observed in the background may have only seconds (the iOS wake
+    // window) to schedule its alert. That path never waits on the OS for a
+    // permission answer or on cleanup retries.
+    final backgroundDrop = !snapshot.connected && snapshot.backgrounded;
+    await _prepare(generation, retryCleanup: !backgroundDrop);
     if (_identity == null) return;
     await _load(generation);
     final key = snapshot.deviceKey;
     final after = _settingsFor(key).disconnectAfter;
-    final allowed = after == null || await _notificationsAllowed();
+    final bool allowed;
+    if (after == null) {
+      allowed = true;
+    } else if (backgroundDrop) {
+      // Last known state, however old; unknown counts as allowed. Scheduling
+      // while permission is actually missing is harmless: the OS drops it.
+      allowed = _permissionAllowedCache ?? true;
+    } else {
+      allowed = await _notificationsAllowed();
+    }
     final decision = TagDisconnectAlertPolicy.evaluate(
       snapshot: snapshot,
       state: _leases[key] ?? TagLeaseState.none,
@@ -582,6 +595,7 @@ final class TagAlertsController implements TagAlertsControl {
         '->${decision.state.phase.name} actions=${decision.actions.length}',
       );
     }
+    var applied = true;
     for (final action in decision.actions) {
       try {
         await _runLeaseAction(snapshot, action);
@@ -589,10 +603,33 @@ final class TagAlertsController implements TagAlertsControl {
         // Keep the previous state: the next snapshot retries the same step.
         _leaseLog('action_failed ${_logKey(key)} error=${error.runtimeType}');
         _publishError(error, stack);
-        return;
+        applied = false;
+        break;
       }
     }
-    _leases[key] = decision.state;
+    if (applied) _leases[key] = decision.state;
+    if (backgroundDrop && after != null) {
+      // Only now, with the alert already scheduled: bring the permission
+      // answer up to date without blocking, and re-evaluate if it changed.
+      _refreshPermissionInBackground(key);
+      await _retryCleanup();
+    }
+  }
+
+  void _refreshPermissionInBackground(String key) {
+    final checkedAt = _permissionCheckedAt;
+    if (_permissionAllowedCache != null &&
+        checkedAt != null &&
+        _clock().difference(checkedAt) < permissionCacheTtl) {
+      return;
+    }
+    unawaited(() async {
+      final allowed = await _canDeliverNotifications();
+      final changed = allowed != _permissionAllowedCache;
+      _permissionAllowedCache = allowed;
+      _permissionCheckedAt = _clock();
+      if (changed && !_disposed) _reevaluateLease(key);
+    }());
   }
 
   Future<void> _runLeaseAction(
@@ -639,6 +676,13 @@ final class TagAlertsController implements TagAlertsControl {
                 lastTagPosition: snapshot.lastTagPosition,
               );
         await _notify(() => notifier.schedule(alert, action.at));
+        if (!snapshot.connected) {
+          _leaseLog(
+            'scheduled ${_logKey(key)} kind=${action.kind.name} '
+            'dropToScheduleMs='
+            '${_clock().difference(snapshot.observedAt).inMilliseconds}',
+          );
+        }
     }
   }
 

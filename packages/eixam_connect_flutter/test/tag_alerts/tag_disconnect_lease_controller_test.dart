@@ -426,4 +426,76 @@ void main() {
       expect(notifier.calls.where((c) => c.contains('batteryLow')), isEmpty);
     });
   });
+  group('background drop fast path', backgroundDropControllerTests);
+}
+
+void backgroundDropControllerTests() {
+  late MemoryTagAlertStore store;
+  late RecordingTagAlertNotifier notifier;
+  late CountingPermissionGateway permissions;
+  late TagAlertsController controller;
+  late DateTime now;
+  late List<String> logs;
+
+  TagLinkSnapshot drop(DateTime at) => TagLinkSnapshot(
+    deviceKey: _key,
+    observedAt: at,
+    paired: true,
+    connected: false,
+    disconnectedSince: at,
+    backgroundDisarm: true,
+    backgrounded: true,
+  );
+
+  setUp(() async {
+    store = MemoryTagAlertStore();
+    notifier = RecordingTagAlertNotifier();
+    permissions = CountingPermissionGateway()
+      ..next = TagAlertPermissionState.granted;
+    now = _t0;
+    logs = <String>[];
+    controller = TagAlertsController(
+      store: store,
+      notifier: notifier,
+      permissions: permissions,
+      clock: () => now,
+      log: logs.add,
+    );
+    await bind(controller, sessionA);
+  });
+  tearDown(() => controller.dispose());
+
+  group('background drop: nothing delays the schedule', () {
+    test('pending cleanup is retried after the schedule, not before', () async {
+      await controller.onLinkSnapshot(up(_t0));
+      notifier.failCancelAll = true;
+      await bind(controller, null);
+      await bind(controller, sessionA, restore: false);
+      notifier.failCancelAll = false;
+      notifier.calls.clear();
+      await controller.onLinkSnapshot(
+        drop(_t0.add(const Duration(minutes: 1))),
+      );
+      final firstSchedule = notifier.calls.indexWhere(
+        (c) => c.startsWith('schedule:'),
+      );
+      final retry = notifier.calls.indexOf('cancelAll');
+      expect(firstSchedule, 0, reason: 'schedule is the first notifier call');
+      expect(retry, greaterThan(firstSchedule));
+    });
+
+    test('the drop-to-schedule time is logged from the SDK clock', () async {
+      final dropAt = _t0.add(const Duration(minutes: 1));
+      notifier.onScheduleHook = () {
+        now = dropAt.add(const Duration(milliseconds: 250));
+      };
+      now = dropAt;
+      await controller.onLinkSnapshot(drop(dropAt));
+      expect(
+        logs.any((l) => l.contains('dropToScheduleMs=250')),
+        isTrue,
+        reason: logs.join('\n'),
+      );
+    });
+  });
 }

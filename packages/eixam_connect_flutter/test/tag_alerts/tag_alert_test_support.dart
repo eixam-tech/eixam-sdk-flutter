@@ -81,6 +81,7 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   final List<TagAlert> shown = <TagAlert>[];
   final List<({TagAlert alert, DateTime at})> scheduled = [];
   bool failSchedule = false;
+  void Function()? onScheduleHook;
   bool hangSchedule = false;
   bool failCancelAll = false;
   bool failCancel = false;
@@ -102,6 +103,7 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   Future<void> schedule(TagAlert alert, DateTime at) async {
     calls.add('schedule:${alert.deviceId}:${alert.kind.name}');
     scheduled.add((alert: alert, at: at));
+    onScheduleHook?.call();
     if (hangSchedule) await Completer<void>().future;
     if (failSchedule) throw StateError('schedule failed');
   }
