@@ -564,10 +564,30 @@ keeps working offline and resyncs on reconnect.
   the app runs. Position data is not needed to prove liveness.
 - **Content.** The alert carries the last position the TAG itself reported (never
   the phone's) with its timestamp; the default text omits coordinates.
-- **iOS.** A suspended iOS app cannot push the lease, so it is dropped when the
-  app goes to the background and re-armed on resume. A disconnect delivered to a
-  woken app (`bluetooth-central` background mode in the host) still schedules
-  the alert at `drop + X`. Android keeps the lease armed in the background.
+- **Background (iOS and Android).** The lease is the periodic push, and a
+  suspended or Doze-stalled app cannot keep pushing it while the link is fine,
+  which would raise a false alert. So **only the lease** is dropped when the app
+  goes to the background (and re-armed on resume); an app relaunched in the
+  background never arms it. **Arm-at-disconnect is not affected**: if Dart
+  observes an unexpected drop while backgrounded it still schedules the alert at
+  `drop + X` (and `bluetoothOff` likewise), with every usual suppression (SOS,
+  manual, firmware update, provisioning reboot, migration, "never", permission).
+  A backgrounded app with a connected TAG and no events schedules nothing.
+- **How a background drop reaches Dart.** iOS with `bluetooth-central`: the
+  central manager that owns the connection (the native Protection bridge when
+  armed, otherwise flutter_blue_plus) is woken on `didDisconnectPeripheral`; the
+  Flutter engine of the woken process runs the handler (about 10 s). The native
+  bridge's event sink has no buffer, so an event with no engine attached is
+  lost, and after a system kill only the native bridge is relaunched by state
+  restoration. Android with Protection Mode: the GATT callback runs in the
+  process without Dart; the event is buffered and replayed (with its native
+  timestamp, which becomes the drop time) when an engine attaches, so with the
+  task removed the alert waits until the app starts again. Both are
+  documented-behavior assumptions that need device validation.
+- **Debug logs.** In debug builds the SDK prints `[TAG_LEASE]` lines (link
+  state with lifecycle, drop cause, schedule/cancel with kind and fire time).
+  They contain no device ids (a short digest `key#xxxxxx` instead), aliases or
+  coordinates.
 - **Cost.** A push is one platform call (the notifier caches the slot id), runs
   inside the controller's serialized tail with the 5 s bound and cleanup retry,
   and newer link snapshots replace older queued ones.

@@ -3,7 +3,7 @@
 ## Unreleased — TAG disconnect alerts
 
 - Dart-side "TAG forgotten or dropped" alert: a dead-man local notification armed while the link is up (pushed at most every clamp(X/4, 60 s, 10 min), firing X to 1.25 X after the last contact), rescheduled to exactly drop + X when an unexpected drop is observed, and removed on reconnect. Bluetooth off raises the `bluetoothOff` kind.
-- Suppressed for manual disconnects/unpair, firmware updates, device migration, the provisioning reboot window, SOS and a missing notification permission; iOS drops the lease while backgrounded. No new public API; the liveness signal is the passive OS connection state (no extra BLE traffic).
+- Suppressed for manual disconnects/unpair, firmware updates, device migration, the provisioning reboot window, SOS and a missing notification permission. The lease (the periodic push) is dropped while backgrounded on iOS and Android; arm-at-disconnect still schedules `drop + X` when Dart observes a drop in the background. Drops seen by the native owner use the native timestamp. Debug `[TAG_LEASE]` log lines (no identifiers) help device tests. No new public API; the liveness signal is the passive OS connection state (no extra BLE traffic).
 - The notifier caches the slot id, so a lease push costs one platform call instead of three.
 - Background (suspended app, killed process) still depends on a future native arm-at-disconnect.
 
