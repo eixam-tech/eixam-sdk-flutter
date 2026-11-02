@@ -52,6 +52,30 @@
   provisional `sos-*` id must not block that local close.
 - Host apps should never decode these payloads directly.
 
+### iOS native SOS frame classification
+
+`IosBleSosFrameClassifier` (iOS Protection runtime, closed-app path) decides
+whether a notification is an SOS snapshot. It mirrors Android's
+`ProtectionBleSosIdentityClassifier` / `ProtectionBleSosOverTelClassifier`
+(firmware docs 22 §2.3-2.4, 23 §4.1). Only 7 and 12 byte frames are SOS
+candidates; 13 and 18 byte frames are not SOS wires.
+
+| Frame on the **TEL** characteristic | Result |
+| --- | --- |
+| `0xD0` aggregate fragment | not SOS |
+| Known frame matched by opcode **and** structure: `0xD3` (`2 + 16*count`), `0xD1` (14/24/10/5 B by subtype), `0xD2` (27 B), `0xD8` (≥ 22 B), `0xDA` (6 B), `0xDB` (5 B header + valid UTF-8 name), `0xE9 78 02` (14 B), `0xE9 7A` (6 B) | not SOS |
+| `0xE1`/`0xE2`/`0xE3` (6 B) | cancel / cancel / resolved |
+| 7 B | `sosType` 0 clear, 1 pre-SOS, 2-3 active |
+| 12 B | SOS only if `bit5(flags) == 0 && sosType == 3`; otherwise not SOS and **not** a cancellation |
+
+The first byte alone never rules a frame out: an SOS node id is little-endian
+at offset 0. The bit 5 gate applies to the TEL characteristic only. On the SOS
+characteristic a 12 byte frame stays SOS (`sosType` 0 clear, 1 pre-SOS, else
+active) even with bit 5 set, as in `AGENTS.md`. Frames that are not SOS on TEL
+continue to `emitTelNotify`. iOS keeps 7 B `sosType 0` as a clear (Android maps
+it to `Unknown`). Tests: `ios/Tests/IosBleSosFrameClassifierTests.swift`
+(swiftc command in its header).
+
 ## Device-Origin Events
 
 - Device-origin SOS status is derived in `DeviceSosController`.
