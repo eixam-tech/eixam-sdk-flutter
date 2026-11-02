@@ -51,4 +51,58 @@ void main() {
       );
     }
   });
+
+  group('isSosActive (shared with the disconnect lease)', () {
+    test('only SOS-related state counts, never provisioning or firmware', () {
+      expect(
+        TagBatteryProbeGate.isSosActive(
+          preSosActive: false,
+          sosStage: SosLifecycleStage.idle,
+          deviceSosState: DeviceSosState.inactive,
+        ),
+        isFalse,
+      );
+      expect(
+        TagBatteryProbeGate.isSosActive(
+          preSosActive: true,
+          sosStage: SosLifecycleStage.idle,
+          deviceSosState: DeviceSosState.inactive,
+        ),
+        isTrue,
+      );
+      for (final stage in SosLifecycleStage.values) {
+        final free = {
+          SosLifecycleStage.idle,
+          SosLifecycleStage.cancelled,
+          SosLifecycleStage.resolved,
+          SosLifecycleStage.activationFailed,
+          SosLifecycleStage.cancellationFailed,
+        }.contains(stage);
+        expect(
+          TagBatteryProbeGate.isSosActive(
+            preSosActive: false,
+            sosStage: stage,
+            deviceSosState: DeviceSosState.inactive,
+          ),
+          !free,
+          reason: '$stage',
+        );
+      }
+      for (final state in DeviceSosState.values) {
+        final quiet = {
+          DeviceSosState.inactive,
+          DeviceSosState.resolved,
+        }.contains(state);
+        expect(
+          TagBatteryProbeGate.isSosActive(
+            preSosActive: false,
+            sosStage: SosLifecycleStage.idle,
+            deviceSosState: state,
+          ),
+          !quiet,
+          reason: '$state',
+        );
+      }
+    });
+  });
 }

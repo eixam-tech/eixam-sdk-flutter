@@ -536,6 +536,51 @@ the same bands); the SDK never presents an exact percentage.
   data to Dart); an alert can therefore be late or never come. This is not a
   guaranteed safety feature and does not replace checking the device.
 
+### Disconnected TAG alerts (F2)
+
+When `disconnectAfter` is not "never" (default 5 minutes) and notification
+permission is granted, the SDK raises a `TagAlertKind.tagDisconnected` alert if
+the TAG link stays down for more than that long, and `TagAlertKind.bluetoothOff`
+if the phone's Bluetooth is off. A disconnect alone is not an incident: the TAG
+keeps working offline and resyncs on reconnect.
+
+- **Dead-man lease while connected.** A local notification stays scheduled at
+  `lastPush + X + slack` and is pushed forward at most every
+  `clamp(X / 4, 60 s, 10 min)`, which is also the slack. If the app can no longer
+  observe the link, it fires between X and 1.25 X after the last contact. A
+  reconnect removes it, pending or already delivered.
+- **Observed drop.** When this run of the app sees an unexpected drop, the alert
+  is rescheduled to exactly `drop + X`.
+- **Never alerts for:** a manual disconnect or unpair; a deliberate flow
+  (firmware update, device migration, the provisioning reboot window), where the
+  deadline moves to the end of the hold; an SOS in progress (cancelled, and
+  re-armed when it ends); the "never" setting; missing notification permission
+  (denied, permanently denied or not asked yet); a TAG that was already away
+  when the app started (no honest start time, and an alert scheduled by an
+  earlier run is left alone).
+- **Liveness signal.** The firmware sends no BLE keepalive, so a stationary TAG
+  produces no traffic. The signal is the OS connection state staying "connected"
+  (passive; no extra BLE traffic and no RSSI reads), re-asserted every 30 s while
+  the app runs. Position data is not needed to prove liveness.
+- **Content.** The alert carries the last position the TAG itself reported (never
+  the phone's) with its timestamp; the default text omits coordinates.
+- **iOS.** A suspended iOS app cannot push the lease, so it is dropped when the
+  app goes to the background and re-armed on resume. A disconnect delivered to a
+  woken app (`bluetooth-central` background mode in the host) still schedules
+  the alert at `drop + X`. Android keeps the lease armed in the background.
+- **Cost.** A push is one platform call (the notifier caches the slot id), runs
+  inside the controller's serialized tail with the 5 s bound and cleanup retry,
+  and newer link snapshots replace older queued ones.
+- **Device migration.** A re-key cancels the old key's alerts and the lease is
+  re-armed under the new key.
+- **Limits.** Without a running Dart isolate nothing observes the link: a
+  suspended iOS app is not woken for an idle TAG, and Android behavior in Doze is
+  unverified. A native arm-at-disconnect (iOS `didDisconnectPeripheral`, Android
+  GATT callback, scheduling its own notification with the same reserved id
+  scheme, `tag_alert:` payload and channel) can be added later without any
+  public API change; it needs device validation. This is not a guaranteed safety
+  feature.
+
 ### Known issues and residual risks
 
 - **Stale `nodeId` after re-pairing a different TAG (pre-existing, not changed

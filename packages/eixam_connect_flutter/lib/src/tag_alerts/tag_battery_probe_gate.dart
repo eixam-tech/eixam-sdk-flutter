@@ -12,12 +12,24 @@ abstract final class TagBatteryProbeGate {
     required SosLifecycleStage sosStage,
     required DeviceSosState deviceSosState,
   }) {
-    if (provisioningBusy ||
-        firmwareUpdateActive ||
-        migrationOwnsBle ||
-        preSosActive) {
+    if (provisioningBusy || firmwareUpdateActive || migrationOwnsBle) {
       return true;
     }
+    return isSosActive(
+      preSosActive: preSosActive,
+      sosStage: sosStage,
+      deviceSosState: deviceSosState,
+    );
+  }
+
+  /// Whether an SOS (pre-SOS, app lifecycle or TAG state) is in progress or
+  /// cannot be ruled out. An unknown device SOS state fails safe.
+  static bool isSosActive({
+    required bool preSosActive,
+    required SosLifecycleStage sosStage,
+    required DeviceSosState deviceSosState,
+  }) {
+    if (preSosActive) return true;
     switch (sosStage) {
       case SosLifecycleStage.idle:
       case SosLifecycleStage.cancelled:
