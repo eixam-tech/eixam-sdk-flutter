@@ -184,6 +184,55 @@ final class TagAlertsController implements TagAlertsControl {
     });
   }
 
+  /// Moves a device's state to its new key after a device migration changed
+  /// the TAG's identity. Settings move unless the new key already has its own
+  /// (those win). Alerts of the old key are removed; the policies re-create
+  /// whatever applies under the new key.
+  Future<void> rekeyDevice(String fromKey, String toKey) {
+    if (fromKey.trim().isEmpty || toKey.trim().isEmpty || fromKey == toKey) {
+      return Future<void>.value();
+    }
+    final generation = _generation;
+    return _serialize(() async {
+      _checkGeneration(generation);
+      Object? cancelError;
+      StackTrace? cancelStack;
+      try {
+        await _notify(() => notifier.cancelAllForDevice(fromKey));
+        _cancelDevicesPending.remove(fromKey);
+      } catch (error, stack) {
+        _cancelDevicesPending.add(fromKey);
+        cancelError = error;
+        cancelStack = stack;
+      }
+      try {
+        await _prepare(generation, retryCleanup: false);
+        if (_identity == null) return;
+        await _load(generation);
+        final moved = _devices[fromKey];
+        if (moved == null) return;
+        final next = Map<String, TagAlertSettings>.of(_devices)
+          ..remove(fromKey);
+        next.putIfAbsent(
+          toKey,
+          () => TagAlertSettings(
+            deviceId: toKey,
+            batteryAlerts: moved.batteryAlerts,
+            disconnectAfter: moved.disconnectAfter,
+          ),
+        );
+        await _write(next);
+        _checkGeneration(generation);
+        _devices = next;
+        _publishAll();
+      } finally {
+        if (cancelError != null) {
+          _publishError(cancelError, cancelStack!);
+        }
+      }
+    });
+  }
+
   @override
   Future<TagAlertSettings> getTagAlertSettings(String deviceId) {
     _validateKey(deviceId);

@@ -294,6 +294,91 @@ void main() {
       );
     });
 
+    group('device migration re-key', () {
+      test(
+        'moves settings to the new key and cancels the old key alerts',
+        () async {
+          await controller.updateTagAlertSettings(
+            TagAlertSettings(
+              deviceId: 'old',
+              batteryAlerts: false,
+              disconnectAfter: const Duration(minutes: 30),
+            ),
+          );
+          notifier.calls.clear();
+          await controller.rekeyDevice('old', 'new');
+          expect(notifier.calls, ['cancelAllForDevice:old']);
+          expect(
+            await controller.getTagAlertSettings('new'),
+            TagAlertSettings(
+              deviceId: 'new',
+              batteryAlerts: false,
+              disconnectAfter: const Duration(minutes: 30),
+            ),
+          );
+          expect(
+            await controller.getTagAlertSettings('old'),
+            TagAlertSettings(deviceId: 'old'),
+          );
+          await restart();
+          expect(
+            (await controller.getTagAlertSettings('new')).batteryAlerts,
+            isFalse,
+          );
+        },
+      );
+
+      test('settings already stored under the new key win', () async {
+        await controller.updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'old', batteryAlerts: false),
+        );
+        await controller.updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'new', disconnectAfter: null),
+        );
+        await controller.rekeyDevice('old', 'new');
+        final settings = await controller.getTagAlertSettings('new');
+        expect(settings.batteryAlerts, isTrue);
+        expect(settings.disconnectAfter, isNull);
+        expect(store.raw, isNot(contains('"old"')));
+      });
+
+      test('same key, blank keys and unknown devices are no-ops', () async {
+        await controller.updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'tag-1', batteryAlerts: false),
+        );
+        notifier.calls.clear();
+        await controller.rekeyDevice('tag-1', 'tag-1');
+        await controller.rekeyDevice(' ', 'x');
+        await controller.rekeyDevice('x', '');
+        expect(notifier.calls, isEmpty);
+        await controller.rekeyDevice('ghost', 'tag-9');
+        expect(
+          await controller.getTagAlertSettings('tag-9'),
+          TagAlertSettings(deviceId: 'tag-9'),
+        );
+        expect(
+          (await controller.getTagAlertSettings('tag-1')).batteryAlerts,
+          isFalse,
+        );
+      });
+
+      test('a failed old-key cancel is retried like an unpair', () async {
+        await controller.updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'old', batteryAlerts: false),
+        );
+        notifier.failCancelAllForDevice = true;
+        await controller.rekeyDevice('old', 'new');
+        expect(
+          (await controller.getTagAlertSettings('new')).batteryAlerts,
+          isFalse,
+        );
+        notifier.calls.clear();
+        notifier.failCancelAllForDevice = false;
+        await controller.getTagAlertSettings('new');
+        expect(notifier.calls, ['cancelAllForDevice:old']);
+      });
+    });
+
     group('cleanup failures are retried and surfaced', () {
       test(
         'a failed cancelAll on logout is retried before the next operation',

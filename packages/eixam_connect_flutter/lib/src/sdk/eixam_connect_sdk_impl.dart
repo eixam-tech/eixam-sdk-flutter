@@ -7532,6 +7532,11 @@ class EixamConnectSdkImpl
     return '0x${normalized.toRadixString(16).padLeft(8, '0')} ($nodeId)';
   }
 
+  /// Internal: re-keys TAG alert state when a device migration changed the
+  /// TAG's identity (see `DeviceMigrationCoordinator.onDeviceIdentityMigrated`).
+  Future<void> rekeyTagAlertDevice(String fromKey, String toKey) =>
+      _tagAlerts.rekeyDevice(fromKey, toKey);
+
   @override
   Future<TagAlertSettings> getTagAlertSettings(String deviceId) =>
       _tagAlerts.getTagAlertSettings(deviceId);

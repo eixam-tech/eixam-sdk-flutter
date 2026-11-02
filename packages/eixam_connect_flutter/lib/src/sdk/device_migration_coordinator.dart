@@ -26,6 +26,7 @@ final class DeviceMigrationCoordinator {
     this.rediscoveryTimeout = const Duration(seconds: 12),
     this.reconciliationTimeout = const Duration(minutes: 3),
     @visibleForTesting bool Function()? isIosPlatform,
+    this.onDeviceIdentityMigrated,
   }) : sessionStore = sessionStore ?? SharedPrefsDeviceMigrationSessionStore(),
        _isIosPlatform =
            isIosPlatform ??
@@ -42,6 +43,37 @@ final class DeviceMigrationCoordinator {
   final Duration rediscoveryTimeout;
   final Duration reconciliationTimeout;
   final bool Function() _isIosPlatform;
+
+  /// Called once a migrated device is verified, with the TAG alert key of the
+  /// device before and after migration, so per-device state (TAG alert
+  /// settings, battery cycle, alerts) can follow the device. Failures are
+  /// contained: they never fail or delay the migration outcome.
+  final Future<void> Function(String fromKey, String toKey)?
+  onDeviceIdentityMigrated;
+
+  Future<void> _announceMigratedIdentity(
+    DeviceMigrationCandidate candidate,
+    EixamBleScanResult? migrated,
+  ) async {
+    final callback = onDeviceIdentityMigrated;
+    if (callback == null || migrated == null) return;
+    try {
+      await callback(
+        tagAlertKeyFor(
+          canonicalHardwareId: normalizeCanonicalHardwareId(
+            candidate.stableIdentity,
+          ),
+          deviceId: candidate.deviceId,
+        ),
+        tagAlertKeyFor(
+          canonicalHardwareId: migrated.canonicalHardwareId,
+          deviceId: migrated.deviceId,
+        ),
+      );
+    } catch (_) {
+      // Per-device alert state must never affect the migration result.
+    }
+  }
 
   bool _migrationInProgress = false;
   Future<DeviceMigrationSession?>? _reconciliationFuture;
@@ -412,13 +444,15 @@ final class DeviceMigrationCoordinator {
           updatedAt: DateTime.now(),
         ),
       );
+      final migratedDevice = _verifiedMigration!.device.toPublic();
+      await _announceMigratedIdentity(revalidated, migratedDevice);
       return DeviceMigrationResult(
         outcome: repair
             ? DeviceMigrationOutcome.recoveryRequired
             : DeviceMigrationOutcome.completed,
         candidate: revalidated,
         firmwareSession: session,
-        migratedDevice: _verifiedMigration!.device.toPublic(),
+        migratedDevice: migratedDevice,
       );
     }
     final ambiguous = session.failureCode == ambiguousDeviceCode;
@@ -1022,6 +1056,7 @@ final class DeviceMigrationCoordinator {
       updatedAt: DateTime.now(),
     );
     await _publish(completed);
+    await _announceMigratedIdentity(current.candidate, device.toPublic());
     return completed;
   }
 

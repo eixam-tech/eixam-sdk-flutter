@@ -17,6 +17,8 @@
   receivers and `RECEIVE_BOOT_COMPLETED`; new dependency `timezone ^0.11.0`.
   Hosts need core-library desugaring. SOS flows, channels and payloads are unchanged;
   the generic notification id generator now avoids the reserved range.
+- The TAG alert key is the canonical hardware id, else the transport device id, and never the firmware node id (on iOS the node id arrives after the pair-time `0x23` timeout and would change the key). Device country config keeps its own key. A completed device migration re-keys settings and removes the old key's alerts (`DeviceMigrationCoordinator.onDeviceIdentityMigrated`).
+- Cleanup that the notifier could not complete (error or 5 s timeout) is retried before every operation and surfaced to watchers; notifier calls inside the serialized tail are bounded.
 - Not a guaranteed safety feature; local notifications can be delayed or dropped.
 
 ## Unreleased — robust activity recording finalization (AR2C-B)

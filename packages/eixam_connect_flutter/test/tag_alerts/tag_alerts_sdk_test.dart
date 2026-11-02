@@ -355,6 +355,24 @@ void main() {
     });
   });
 
+  test('the SDK re-keys TAG alert state on device migration', () async {
+    await start();
+    await control().updateTagAlertSettings(
+      TagAlertSettings(deviceId: 'old-key', batteryAlerts: false),
+    );
+    notifier.calls.clear();
+    await sdk.rekeyTagAlertDevice('old-key', 'new-key');
+    expect(notifier.calls, ['cancelAllForDevice:old-key']);
+    expect(
+      (await control().getTagAlertSettings('new-key')).batteryAlerts,
+      isFalse,
+    );
+    expect(
+      (await control().getTagAlertSettings('old-key')).batteryAlerts,
+      isTrue,
+    );
+  });
+
   group('device key stability (iOS-like: no hardware id)', () {
     DeviceStatus iosStatus({int? nodeId}) => buildDeviceStatus(
       deviceId: 'CB-UUID-1',

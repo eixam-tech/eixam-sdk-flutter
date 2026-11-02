@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/device/canonical_hardware_id.dart';
 import 'package:eixam_connect_flutter/src/device/ble_client.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
@@ -123,7 +124,9 @@ void main() {
     _MigrationBleClient? ble,
     DeviceMigrationSessionStore? store,
     bool ios = false,
+    Future<void> Function(String fromKey, String toKey)? onIdentityMigrated,
   }) => DeviceMigrationCoordinator(
+    onDeviceIdentityMigrated: onIdentityMigrated,
     bleClient: ble ?? _MigrationBleClient(),
     metadataProbe: probe,
     firmwareUpdates: firmware ?? _FakeMigrationFirmwareService(),
@@ -1628,6 +1631,77 @@ void main() {
       expect(result.migratedDevice?.deviceId, 'new-platform-id');
     },
   );
+
+  group('TAG alert re-key on migration', () {
+    test('a completed migration reports the key before and after', () async {
+      const iosId = 'A56EA17E-21B0-4F9B-9899-123456789ABC';
+      const mac = 'AA:BB:CC:DD:EE:FF';
+      final calls = <(String, String)>[];
+      final ble = _MigrationBleClient(
+        scans: <BleScanResult>[_eixamScan('new-platform-id', mac)],
+      );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105, mac: mac)),
+        ble: ble,
+        onIdentityMigrated: (from, to) async => calls.add((from, to)),
+      );
+      final candidate = await coordinator.inspect(deviceId: iosId);
+
+      final result = await coordinator.migrate(candidate);
+
+      expect(result.outcome, DeviceMigrationOutcome.completed);
+      expect(calls, [
+        (
+          tagAlertKeyFor(
+            canonicalHardwareId: normalizeCanonicalHardwareId(
+              candidate.stableIdentity,
+            ),
+            deviceId: candidate.deviceId,
+          ),
+          tagAlertKeyFor(
+            canonicalHardwareId: result.migratedDevice!.canonicalHardwareId,
+            deviceId: result.migratedDevice!.deviceId,
+          ),
+        ),
+      ]);
+    });
+
+    test('a failing callback never changes the migration outcome', () async {
+      final ble = _MigrationBleClient(
+        scans: <BleScanResult>[_eixamScan(selectedId, selectedId)],
+      );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        ble: ble,
+        onIdentityMigrated: (_, _) async => throw StateError('boom'),
+      );
+      final candidate = await coordinator.inspect(deviceId: selectedId);
+
+      final result = await coordinator.migrate(candidate);
+
+      expect(result.outcome, DeviceMigrationOutcome.completed);
+      expect(result.migratedDevice?.deviceId, selectedId);
+    });
+
+    test('a failed migration does not re-key anything', () async {
+      var calls = 0;
+      final ble = _MigrationBleClient(
+        scans: <BleScanResult>[_eixamScan(selectedId, selectedId)],
+        firmwareVersion: '1.0.0',
+      );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        ble: ble,
+        onIdentityMigrated: (_, _) async => calls++,
+      );
+      final candidate = await coordinator.inspect(deviceId: selectedId);
+
+      final result = await coordinator.migrate(candidate);
+
+      expect(result.outcome, isNot(DeviceMigrationOutcome.completed));
+      expect(calls, 0);
+    });
+  });
 
   test('target firmware mismatch fails migration', () async {
     final ble = _MigrationBleClient(

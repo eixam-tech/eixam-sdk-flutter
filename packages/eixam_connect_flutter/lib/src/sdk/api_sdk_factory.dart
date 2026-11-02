@@ -239,6 +239,8 @@ class ApiSdkFactory {
       metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
       firmwareUpdates: firmwareUpdateCoordinator,
       sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
+      onDeviceIdentityMigrated: (fromKey, toKey) =>
+          sdk.rekeyTagAlertDevice(fromKey, toKey),
     );
     final notificationPlugin = FlutterLocalNotificationsPlugin();
     final notificationsRepository = LocalNotificationsRepository(
