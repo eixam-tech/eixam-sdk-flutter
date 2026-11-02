@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
-/// Debug-level log for the TAG disconnect lease, readable from logcat or the
-/// Xcode console in debug builds.
+/// Log for the TAG disconnect lease, readable from logcat or the device
+/// console in debug and profile builds. Silent in release builds.
 ///
 /// Deliberately **not** written to the shared `BleDebugRegistry` ring buffer
 /// (30 events): lease lines are frequent and would evict SOS and BLE
@@ -19,7 +19,7 @@ abstract final class TagLeaseLog {
       sink(line);
       return;
     }
-    if (kDebugMode) {
+    if (!kReleaseMode) {
       debugPrint(line);
     }
   }

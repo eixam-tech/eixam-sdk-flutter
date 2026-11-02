@@ -590,7 +590,7 @@ keeps working offline and resyncs on reconnect.
   timestamp, which becomes the drop time) when an engine attaches, so with the
   task removed the alert waits until the app starts again. Both are
   documented-behavior assumptions that need device validation.
-- **Debug logs.** In debug builds the SDK prints `[TAG_LEASE]` lines (link
+- **Debug logs.** In debug and profile builds (never release) the SDK prints `[TAG_LEASE]` lines (link
   state with lifecycle, drop cause, schedule/cancel with kind and fire time, and
   `dropToScheduleMs`, the time from the observed drop to the schedule being done).
   They contain no device ids (a short digest `key#xxxxxx` instead), aliases or
