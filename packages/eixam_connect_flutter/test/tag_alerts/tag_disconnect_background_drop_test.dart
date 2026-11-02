@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/sdk/tag_alerts_controller.dart';
 import 'package:eixam_connect_flutter/src/tag_alerts/local_tag_alert_notifier.dart';
@@ -13,7 +11,6 @@ import 'fake_notification_center.dart';
 import 'tag_alert_test_support.dart';
 
 const _key = 'AA:BB:CC:DD:EE:01';
-const _five = Duration(minutes: 5);
 
 /// Records every permission call into the same ordered list as the platform
 /// channel, so the order "permission query vs zonedSchedule" can be asserted.
