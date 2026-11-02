@@ -409,6 +409,114 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
+## Optional TAG alerts (foundation)
+
+`TagAlertsControl` is an optional capability: detect it with a type check
+(`sdk is TagAlertsControl`). Existing `EixamConnectSdk` implementations need no
+change. This block ships only the shared foundation: per-TAG settings, the
+notification port and the default local-notification adapter. **It contains no
+battery source and no disconnect policy**, so the SDK does not emit TAG alerts
+by itself yet.
+
+TAG alerts are local notifications generated on the phone. They are a
+convenience, **not a guaranteed safety feature**: the OS may delay, coalesce or
+drop notifications, and they never replace or interact with SOS flows. They do
+not use the SOS channel, payloads or colors.
+
+```dart
+final sdk = await EixamConnectSdk.bootstrap(EixamBootstrapConfig(
+  // ...
+  tagAlertNotifier: myNotifier,        // optional: replaces the default adapter
+  tagAlertTextResolver: (alert) => ..., // optional: localized text, default adapter only
+));
+if (sdk is TagAlertsControl) {
+  final key = tagAlertDeviceKey(deviceStatus); // canonical hardware id, else node:<id>, else deviceId
+  final settings = await sdk.getTagAlertSettings(key);
+  await sdk.updateTagAlertSettings(settings.copyWith(disconnectAfter: const Duration(minutes: 15)));
+}
+```
+
+- `TagAlertSettings { deviceId, batteryAlerts = true, disconnectAfter = 5 min }`
+  is immutable and validated. `disconnectAfter` is `null` (never) or 5, 15, 30
+  or 60 minutes; anything else throws `ArgumentError`. JSON is versioned
+  (`v: 1`); unknown versions and out-of-set values throw `FormatException`.
+- `getTagAlertSettings` returns defaults when nothing is stored **or** the store
+  is unreadable. Unreadable data is reported as a `TagAlertsException`
+  (`E_TAG_ALERTS_RESTORE_FAILED`) on `watchTagAlertSettings`, which stays usable;
+  the next successful update replaces the bad data. `updateTagAlertSettings`
+  throws `TagAlertsException` (`E_TAG_ALERTS_SESSION_REQUIRED`,
+  `E_TAG_ALERTS_PERSISTENCE_FAILED`, `E_TAG_ALERTS_UNAVAILABLE`).
+- Settings live under `eixam.tag_alerts.v1`, per identity scope and per device.
+  They are removed, together with every scheduled and delivered TAG alert, on
+  `clearSession`, `clearLocalUserData`, and when the signed user, app or backend
+  changes (including the bootstrap path that clears a session restored for
+  another app id). `unpairDevice` removes that device's settings and alerts.
+  `dispose` releases resources but intentionally keeps persisted settings and
+  scheduled alerts.
+- `TagAlert { kind, deviceId, deviceAlias?, batteryThreshold?, elapsed?,
+  lastTagPosition? }` carries data only. `batteryThreshold` is
+  `below30 | below10`, derived from the TAG's existing 2-bit battery level; the
+  SDK never presents an exact percentage. `lastTagPosition` accepts only
+  `SdkLocationSource.connectedDevice`; phone, cached and backend positions are
+  rejected. Wording comes from a `TagAlertTextResolver` (neutral English by
+  default; coordinates are not included in default text).
+- `getTagAlertPermissionState()` never prompts. `requestTagAlertPermission()`
+  prompts only when the host calls it; the SDK never calls it at bootstrap.
+  States: `granted | denied | permanentlyDenied | notDetermined | unsupported`.
+  On Android the passive state is `granted`/`denied`; `permanentlyDenied` is
+  only reported by `requestTagAlertPermission()`.
+
+### Notification delivery (`TagAlertNotifier`)
+
+`show`, `schedule(alert, at)`, `cancel(deviceId, kind)`,
+`cancelAllForDevice(deviceId)` and `cancelAll()`. `(deviceId, kind)` is one slot:
+scheduling again replaces the pending alert (cheap enough to push a reminder
+forward repeatedly), and an `at` that already passed is delivered immediately.
+`cancel*` also remove already delivered alerts, because they show the TAG alias.
+Hosts may inject their own notifier through `EixamBootstrapConfig.tagAlertNotifier`.
+
+The default adapter:
+
+- uses channel `eixam_tag_alerts` (high importance, not max) and payload
+  `tag_alert:<kind>:<hex(device key)>`. The key is hex-encoded so no device id
+  can produce the substring `sos`, which hosts use to classify SOS
+  notifications. TAG alert taps are ignored by the SDK's SOS/BLE navigation;
+- never calls `initialize` on the shared `flutter_local_notifications` plugin.
+  With `EixamNotificationPolicy.sdkManaged` it asks the SDK notification adapter
+  to initialize before showing or scheduling; with `hostAppManaged` the host must
+  already have initialized the plugin (or inject its own notifier);
+- schedules with `AndroidScheduleMode.inexactAllowWhileIdle` (no exact-alarm
+  permission), so delivery time is approximate;
+- relies on the plugin's native persistence and boot receiver. It stores no
+  schedule of its own.
+
+**Reserved notification ids.** `flutter_local_notifications` is a process-wide
+singleton and its ids share one namespace with Android native notifications. TAG
+alerts use only ids `1000000000..1000099999`, derived from a stable hash of
+(device key, kind) and probed on collision against pending and delivered
+notifications. Known ids in use: `6021-6024`, `6031` (Android services), `41001-41002`
+(DMP), `42001-42008` (SDK SOS mirror in the commercial app), `43000` (nearby text)
+and `44001` (activity). The SDK's generic id generator now skips the reserved range.
+
+### Host requirements
+
+- **Core library desugaring** must be enabled in the host's Android Gradle
+  build (`isCoreLibraryDesugaringEnabled = true` and
+  `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:<version>")`),
+  as required by `flutter_local_notifications` for scheduled notifications.
+- **Time zone data:** the default adapter schedules absolute instants in UTC and
+  needs no time zone initialization. The host owns `tz.initializeTimeZones()` /
+  `tz.setLocalLocation(...)` if it uses `tz.local` elsewhere (the commercial app
+  already does); the SDK never initializes them.
+- **Android manifest:** the SDK manifest declares `RECEIVE_BOOT_COMPLETED`,
+  `ScheduledNotificationReceiver` and `ScheduledNotificationBootReceiver` (with
+  the standard `BOOT_COMPLETED`, `MY_PACKAGE_REPLACED` and QUICKBOOT intent
+  filters), so hosts that do not declare them still get delivery and reboot
+  rescheduling. Identical host declarations merge without conflict. Action
+  buttons additionally need `ActionBroadcastReceiver`, which TAG alerts do not use.
+- **iOS:** request permission with `requestTagAlertPermission()` at a moment the
+  user understands; no Info.plist background mode is added by this capability.
+
 ## Optional activity recording (AR2A + AR2B + AR2C-A + AR2C-B + AR2D fixes)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state

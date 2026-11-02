@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — TAG alerts foundation
+
+- Add optional `TagAlertsControl` (per-TAG `TagAlertSettings`, permission state and
+  request), the `TagAlertNotifier` port, `TagAlert`/`TagAlertText` contracts and a
+  default local-notification adapter (channel `eixam_tag_alerts`, `tag_alert:`
+  payloads, reserved id range `1000000000..1000099999`, inexact scheduling).
+  Optional `tagAlertNotifier` / `tagAlertTextResolver` on `EixamBootstrapConfig`.
+  No battery source and no disconnect policy yet: the SDK emits no TAG alert.
+- Settings persist under `eixam.tag_alerts.v1` and are wiped with their alerts on
+  `clearSession`, `clearLocalUserData`, identity/app change and unpair.
+- The SDK ignores `tag_alert:` notification taps in SOS/BLE navigation (an
+  unrecognized payload used to reach a JSON parser there).
+- SDK manifest now declares the `flutter_local_notifications` scheduled and boot
+  receivers and `RECEIVE_BOOT_COMPLETED`; new dependency `timezone ^0.11.0`.
+  Hosts need core-library desugaring. SOS flows, channels and payloads are unchanged;
+  the generic notification id generator now avoids the reserved range.
+- Not a guaranteed safety feature; local notifications can be delayed or dropped.
+
 ## Unreleased — robust activity recording finalization (AR2C-B)
 
 - Persist immutable finish cutoffs and five-second final catch-up deadlines; resume
