@@ -80,6 +80,8 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   final List<String> calls = <String>[];
   bool failCancelAll = false;
   bool failCancel = false;
+  bool hangCancel = false;
+  bool hangCancelAll = false;
   bool failCancelAllForDevice = false;
 
   @override
@@ -93,6 +95,7 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   @override
   Future<void> cancel(String deviceId, TagAlertKind kind) async {
     calls.add('cancel:$deviceId:${kind.name}');
+    if (hangCancel) await Completer<void>().future;
     if (failCancel) throw StateError('cancel failed');
   }
 
@@ -105,6 +108,7 @@ final class RecordingTagAlertNotifier implements TagAlertNotifier {
   @override
   Future<void> cancelAll() async {
     calls.add('cancelAll');
+    if (hangCancelAll) await Completer<void>().future;
     if (failCancelAll) throw StateError('cancelAll failed');
   }
 }

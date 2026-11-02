@@ -17,7 +17,13 @@ final class TagAlertsController implements TagAlertsControl {
     required this.store,
     required this.notifier,
     this.permissions = const UnsupportedTagAlertPermissionGateway(),
+    this.notifierTimeout = defaultNotifierTimeout,
   });
+
+  /// Bound for every notifier call made inside the serialized tail, so a hung
+  /// platform call can never hold logout, unpair or settings changes.
+  static const Duration defaultNotifierTimeout = Duration(seconds: 5);
+  final Duration notifierTimeout;
 
   final TagAlertStore store;
   final TagAlertNotifier notifier;
@@ -33,6 +39,11 @@ final class TagAlertsController implements TagAlertsControl {
   _Failure? _restoreFailure;
   bool _loaded = false;
   bool _pendingClear = false;
+  // Cleanup the notifier could not complete (error or timeout). The data is
+  // already gone, but delivered/scheduled alerts show the TAG alias, so they
+  // are retried before every controller operation until they are removed.
+  bool _cancelAllPending = false;
+  final Set<String> _cancelDevicesPending = <String>{};
   // The last cold-start restore failed, so the signed-in identity is unknown.
   bool _restoreUnresolved = false;
   bool _used = false;
@@ -147,13 +158,15 @@ final class TagAlertsController implements TagAlertsControl {
       Object? cancelError;
       StackTrace? cancelStack;
       try {
-        await notifier.cancelAllForDevice(deviceKey);
+        await _notify(() => notifier.cancelAllForDevice(deviceKey));
+        _cancelDevicesPending.remove(deviceKey);
       } catch (error, stack) {
+        _cancelDevicesPending.add(deviceKey);
         cancelError = error;
         cancelStack = stack;
       }
       try {
-        await _prepare(generation);
+        await _prepare(generation, retryCleanup: false);
         await _load(generation);
         if (_devices.containsKey(deviceKey)) {
           final next = Map<String, TagAlertSettings>.of(_devices)
@@ -289,10 +302,15 @@ final class TagAlertsController implements TagAlertsControl {
   Future<void> _cancelDisabled(TagAlertSettings settings) async {
     try {
       if (!settings.batteryAlerts) {
-        await notifier.cancel(settings.deviceId, TagAlertKind.batteryLow);
+        await _notify(
+          () => notifier.cancel(settings.deviceId, TagAlertKind.batteryLow),
+        );
       }
       if (settings.disconnectAfter == null) {
-        await notifier.cancel(settings.deviceId, TagAlertKind.tagDisconnected);
+        await _notify(
+          () =>
+              notifier.cancel(settings.deviceId, TagAlertKind.tagDisconnected),
+        );
       }
     } catch (error, stack) {
       _publishError(error, stack);
@@ -302,13 +320,46 @@ final class TagAlertsController implements TagAlertsControl {
   TagAlertSettings _settingsFor(String deviceId) =>
       _devices[deviceId] ?? TagAlertSettings(deviceId: deviceId);
 
-  Future<void> _prepare(int generation) async {
+  Future<void> _prepare(int generation, {bool retryCleanup = true}) async {
     _checkGeneration(generation);
     _used = true;
     if (!_tryAcquire()) throw _unavailable;
+    if (retryCleanup) {
+      await _retryCleanup();
+      _checkGeneration(generation);
+    }
     if (_pendingClear) {
       await _clear();
       _checkGeneration(generation);
+    }
+  }
+
+  Future<T> _bounded<T>(Future<T> operation) =>
+      operation.timeout(notifierTimeout);
+
+  Future<void> _notify(Future<void> Function() operation) =>
+      _bounded(operation());
+
+  /// Retries notifier cleanup that previously failed. Failures are surfaced to
+  /// watchers and the cleanup stays pending.
+  Future<void> _retryCleanup() async {
+    if (_cancelAllPending) {
+      try {
+        await _notify(notifier.cancelAll);
+        _cancelAllPending = false;
+        _cancelDevicesPending.clear();
+      } catch (error, stack) {
+        _publishError(error, stack);
+        return;
+      }
+    }
+    for (final key in _cancelDevicesPending.toList()) {
+      try {
+        await _notify(() => notifier.cancelAllForDevice(key));
+        _cancelDevicesPending.remove(key);
+      } catch (error, stack) {
+        _publishError(error, stack);
+      }
     }
   }
 
@@ -368,8 +419,11 @@ final class TagAlertsController implements TagAlertsControl {
     Object? cancelError;
     StackTrace? cancelStack;
     try {
-      await notifier.cancelAll();
+      await _notify(notifier.cancelAll);
+      _cancelAllPending = false;
+      _cancelDevicesPending.clear();
     } catch (error, stack) {
+      _cancelAllPending = true;
       cancelError = error;
       cancelStack = stack;
     }

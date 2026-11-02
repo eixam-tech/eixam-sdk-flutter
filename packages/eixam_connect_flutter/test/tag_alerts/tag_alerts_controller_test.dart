@@ -294,6 +294,91 @@ void main() {
       );
     });
 
+    group('cleanup failures are retried and surfaced', () {
+      test(
+        'a failed cancelAll on logout is retried before the next operation',
+        () async {
+          await seed();
+          notifier.failCancelAll = true;
+          final errors = <Object>[];
+          final sub = controller
+              .watchTagAlertSettings('tag-1')
+              .listen((_) {}, onError: errors.add);
+          await pumpEventQueue();
+          await bind(controller, null);
+          await pumpEventQueue();
+          expect(store.raw, isNull);
+          expect(errors, isNotEmpty);
+          notifier.calls.clear();
+          // Still failing: every operation retries, nothing is silently dropped.
+          await controller.getTagAlertSettings('tag-1');
+          expect(notifier.calls, ['cancelAll']);
+          notifier.failCancelAll = false;
+          await controller.getTagAlertSettings('tag-1');
+          expect(notifier.calls, ['cancelAll', 'cancelAll']);
+          // Done: no further retries.
+          await controller.getTagAlertSettings('tag-1');
+          expect(notifier.calls, ['cancelAll', 'cancelAll']);
+          await sub.cancel();
+        },
+      );
+
+      test('a failed unpair cancel is retried for that device only', () async {
+        await seed();
+        notifier.failCancelAllForDevice = true;
+        await controller.onDeviceUnpaired('tag-1');
+        expect(notifier.calls, ['cancelAllForDevice:tag-1']);
+        notifier.calls.clear();
+        await controller.getTagAlertSettings('tag-2');
+        expect(notifier.calls, ['cancelAllForDevice:tag-1']);
+        notifier.failCancelAllForDevice = false;
+        await controller.getTagAlertSettings('tag-2');
+        notifier.calls.clear();
+        await controller.getTagAlertSettings('tag-2');
+        expect(notifier.calls, isEmpty);
+      });
+
+      test('a hung notifier is bounded and cannot block logout', () async {
+        await controller.dispose();
+        controller = TagAlertsController(
+          store: store,
+          notifier: notifier,
+          notifierTimeout: const Duration(milliseconds: 50),
+        );
+        await bind(controller, sessionA);
+        await seed();
+        notifier.hangCancelAll = true;
+        final watch = Stopwatch()..start();
+        await bind(controller, null);
+        expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+        expect(store.raw, isNull);
+        // The notifier recovers: the pending cleanup completes on next use.
+        notifier.hangCancelAll = false;
+        notifier.calls.clear();
+        await bind(controller, sessionA, restore: false);
+        await controller.getTagAlertSettings('tag-1');
+        expect(notifier.calls, contains('cancelAll'));
+      });
+
+      test('a hung per-slot cancel does not block a settings change', () async {
+        await controller.dispose();
+        controller = TagAlertsController(
+          store: store,
+          notifier: notifier,
+          notifierTimeout: const Duration(milliseconds: 50),
+        );
+        await bind(controller, sessionA);
+        notifier.hangCancel = true;
+        await controller.updateTagAlertSettings(
+          TagAlertSettings(deviceId: 'tag-1', batteryAlerts: false),
+        );
+        expect(
+          (await controller.getTagAlertSettings('tag-1')).batteryAlerts,
+          isFalse,
+        );
+      });
+    });
+
     test('unpair removes only that device and cancels its alerts', () async {
       await seed();
       await controller.onDeviceUnpaired('tag-1');
