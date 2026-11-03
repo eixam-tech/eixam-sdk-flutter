@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — post-cancel SOS convergence
+
+- A TAG that the user already cancelled (`0xE1`) is now clear proof for the
+  redundant remote-terminal clear that the backend echo dispatches, so the
+  device mirror converges at once instead of waiting for an `0xE2` that never
+  comes. Before this, a second TAG SOS was suppressed for minutes on Android.
+- A dispatched remote-terminal clear without a matching `0xE2`/`0xE3` now moves
+  the device mirror to `failed` after 10 s, which ends post-terminal
+  suppression. A late matching ack still converges it to `synchronized`.
+- Replays are still rejected: a new physical start after a terminal needs a
+  receive newer than the observed TAG closure. No change to commands, backend
+  calls, notifications or native code. Physical Android/iOS validation pending.
+
 ## Unreleased — robust activity recording finalization (AR2C-B)
 
 - Persist immutable finish cutoffs and five-second final catch-up deadlines; resume
