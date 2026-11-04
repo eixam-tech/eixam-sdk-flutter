@@ -31,9 +31,13 @@ class SharedPrefsSdkStore {
   // Availability is also cleared through its controller's checked writer lease.
   static const String activityAvailabilityKey =
       'eixam.activity.availability.v1';
+  // TAG alert settings are per-device user data, cleared through their
+  // controller's checked writer lease together with the scheduled alerts.
+  static const String tagAlertsKey = 'eixam.tag_alerts.v1';
   static const List<String> checkedLocalUserDataKeys = <String>[
     activitySessionKey,
     activityAvailabilityKey,
+    tagAlertsKey,
   ];
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
 

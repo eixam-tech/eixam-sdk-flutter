@@ -409,6 +409,275 @@ contract. The commercial app will later intersect remote keys with its local
 ActivityCatalog; M2B does not perform that intersection, alias, normalize, or drop
 keys because ActivitySession would reject them.
 
+## Optional TAG alerts (foundation)
+
+`TagAlertsControl` is an optional capability: detect it with a type check
+(`sdk is TagAlertsControl`). Existing `EixamConnectSdk` implementations need no
+change. This block ships only the shared foundation: per-TAG settings, the
+notification port and the default local-notification adapter. **It contains no
+battery source and no disconnect policy**, so the SDK does not emit TAG alerts
+by itself yet.
+
+TAG alerts are local notifications generated on the phone. They are a
+convenience, **not a guaranteed safety feature**: the OS may delay, coalesce or
+drop notifications, and they never replace or interact with SOS flows. They do
+not use the SOS channel, payloads or colors.
+
+```dart
+final sdk = await EixamConnectSdk.bootstrap(EixamBootstrapConfig(
+  // ...
+  tagAlertNotifier: myNotifier,        // optional: replaces the default adapter
+  tagAlertTextResolver: (alert) => ..., // optional: localized text, default adapter only
+));
+if (sdk is TagAlertsControl) {
+  final key = tagAlertDeviceKey(deviceStatus); // canonical hardware id (Android MAC), else deviceId (iOS UUID); never the node id
+  final settings = await sdk.getTagAlertSettings(key);
+  await sdk.updateTagAlertSettings(settings.copyWith(disconnectAfter: const Duration(minutes: 15)));
+}
+```
+
+- `TagAlertSettings { deviceId, batteryAlerts = true, disconnectAfter = 5 min }`
+  is immutable and validated. `disconnectAfter` is `null` (never) or 5, 15, 30
+  or 60 minutes; anything else throws `ArgumentError`. JSON is versioned
+  (`v: 1`); unknown versions and out-of-set values throw `FormatException`.
+- `getTagAlertSettings` returns defaults when nothing is stored **or** the store
+  is unreadable. Unreadable data is reported as a `TagAlertsException`
+  (`E_TAG_ALERTS_RESTORE_FAILED`) on `watchTagAlertSettings`, which stays usable;
+  the next successful update replaces the bad data. `updateTagAlertSettings`
+  throws `TagAlertsException` (`E_TAG_ALERTS_SESSION_REQUIRED`,
+  `E_TAG_ALERTS_PERSISTENCE_FAILED`, `E_TAG_ALERTS_UNAVAILABLE`).
+- **The key is stable for a TAG**: `tagAlertDeviceKey(status)` is the canonical
+  hardware id when present, otherwise the transport device id. It never uses the
+  firmware node id, which can arrive after the pair-time `0x23` timeout and
+  would otherwise change the key (and strand the TAG's settings) mid-session on
+  iOS. A completed device migration re-keys the settings, cycle and alerts
+  explicitly.
+- Settings live under `eixam.tag_alerts.v1`, per identity scope and per device.
+  They are removed, together with every scheduled and delivered TAG alert, on
+  `clearSession`, `clearLocalUserData`, and when the signed user, app or backend
+  changes (including the bootstrap path that clears a session restored for
+  another app id). `unpairDevice` removes that device's settings and alerts.
+  `dispose` releases resources but intentionally keeps persisted settings and
+  scheduled alerts.
+  A cold-start session restore that *throws* (for example a locked keychain)
+  is not treated as "signed out": settings and scheduled alerts are kept, and
+  the stored owner scope decides once the identity is known. Only a restore
+  that completes with no session, or an explicit logout, wipes.
+- `TagAlert { kind, deviceId, deviceAlias?, batteryThreshold?, elapsed?,
+  lastTagPosition? }` carries data only. `batteryThreshold` is
+  `below30 | below10`, derived from the TAG's existing 2-bit battery level; the
+  SDK never presents an exact percentage. `lastTagPosition` accepts only
+  `SdkLocationSource.connectedDevice`; phone, cached and backend positions are
+  rejected. Wording comes from a `TagAlertTextResolver` (neutral English by
+  default; coordinates are not included in default text).
+- `getTagAlertPermissionState()` never prompts. `requestTagAlertPermission()`
+  prompts only when the host calls it; the SDK never calls it at bootstrap.
+  States: `granted | denied | permanentlyDenied | notDetermined | unsupported`.
+  On Android the passive state is `granted`/`denied`; `permanentlyDenied` is
+  only reported by `requestTagAlertPermission()`.
+
+### Low-battery alerts (F1)
+
+When `batteryAlerts` is on (the default) and the host has notification
+permission, the SDK shows a `TagAlertKind.batteryLow` alert through the
+`TagAlertNotifier` when the TAG's battery drops below 30 % or below 10 %. Alerts
+use only the TAG's own 2-bit battery level (or a live `0x23` percentage mapped to
+the same bands); the SDK never presents an exact percentage.
+
+- Bands: `ok` (>= 60 %), `medium` (30-59 %), `below30` (10-29 %), `below10` (< 10 %).
+- **Confirmation:** a band counts after two consecutive live readings from
+  distinct samples within one connection. A single stray reading never fires or
+  rearms anything. Confirmation never spans a disconnect.
+- **Like a phone:** each downward crossing alerts again after the battery was
+  confirmed above the threshold. `below30` fires if it has not fired since the
+  last confirmed `medium`/`ok`; `below10` fires if it has not fired since the
+  last confirmed `below30`/`medium`/`ok`, and also marks `below30`, so a direct
+  fall from >= 30 % to < 10 % gives one alert (10 %).
+- The delivered alert is removed only when `ok` (>= 60 %) is confirmed.
+- With `batteryAlerts` off the cycle keeps being tracked but nothing is shown or
+  marked; turning it back on while low alerts after two live readings.
+- The already-alerted state is persisted per device (same `eixam.tag_alerts.v1`
+  blob), so restarts and reconnects do not repeat an alert.
+- **Live data only.** Readings come from `0xD3` live batches (newest sample,
+  device timestamp within 2 min ahead of receipt and `max(3 min, 1.5 x the TEL
+  interval)` behind it, capped at 30 min; the interval is learned from the last
+  `0x23` reply; without a plausible timestamp there is no reading), classic
+  12-byte TEL of the connected TAG, and `0x23 GET_DEVICE_STATUS` replies (a
+  percentage of 0 or `0xFF` is ignored). Every device-scoped reading must come
+  from the device the current status describes (`event.deviceId ==
+  status.deviceId`; a known `nodeId` must match too). Backlog (`0xD1`), neighbor
+  relays (`0xD2`), SOS packets and any stored `DeviceStatus` are never readings.
+  The freshness window is provisional and needs physical tuning.
+- **Delivery is at-least-once.** The alert is shown first and the "already
+  alerted" mark is persisted afterwards. If it cannot be shown (notifier error,
+  5 s timeout, plugin not yet initialised under host-managed notifications) it
+  is not marked and the next confirmed reading retries; a failed write after a
+  successful show may repeat the alert, never lose it. While notification
+  permission is denied, permanently denied or not asked yet, the threshold is
+  not marked, so granting permission later while still low alerts on the next
+  live reading. (The permission check uses the OS notification permission even
+  when the host supplies its own notifier.)
+- **SOS.** Battery alerts continue during an SOS; they use their own channel and
+  never touch SOS UI, ids or flows. (The planned disconnect alert will be
+  suppressed during SOS.)
+- **On connect and on foreground resume** the SDK uses `0x23` once. The resume
+  probe runs at most once per 10 minutes per device, only after a real return
+  from the background, and only **after SOS rehydration has completed** (if SOS
+  state cannot be confirmed within 10 s it stays silent). The gate (SOS,
+  pre-SOS, firmware update, provisioning, device migration) is checked after
+  that wait and again immediately before the send. It sends only when the
+  command path is **already** ready (`hasCommandCapableBleRuntime`, or the native
+  owner reports ready); otherwise it does nothing. It never goes through the
+  generic runtime-status helper, so it can never start a reconnect, a rebind or a
+  rediscovery. There is no polling and no new command.
+- **Limits, by design.** Alerts work while the app receives live TAG data. A
+  stationary TAG sends no `0xD3`, so no new reading arrives; a backgrounded app
+  receives nothing from the TAG (native Protection Mode does not forward battery
+  data to Dart); an alert can therefore be late or never come. This is not a
+  guaranteed safety feature and does not replace checking the device.
+
+### Disconnected TAG alerts (F2)
+
+When `disconnectAfter` is not "never" (default 5 minutes) and notification
+permission is granted, the SDK raises a `TagAlertKind.tagDisconnected` alert if
+the TAG link stays down for more than that long, and `TagAlertKind.bluetoothOff`
+if the phone's Bluetooth is off. A disconnect alone is not an incident: the TAG
+keeps working offline and resyncs on reconnect.
+
+- **Dead-man lease while connected.** A local notification stays scheduled at
+  `lastPush + X + slack` and is pushed forward at most every
+  `clamp(X / 4, 60 s, 10 min)`, which is also the slack. If the app can no longer
+  observe the link, it fires between X and 1.25 X after the last contact. A
+  reconnect removes it, pending or already delivered.
+- **Observed drop.** When this run of the app sees an unexpected drop, the alert
+  is rescheduled to exactly `drop + X`.
+- **Never alerts for:** a manual disconnect or unpair; a deliberate flow
+  (firmware update, device migration, the provisioning reboot window), where the
+  deadline moves to the end of the hold; an SOS in progress (cancelled, and
+  re-armed when it ends); the "never" setting; missing notification permission
+  (denied, permanently denied or not asked yet); a TAG that was already away
+  when the app started (no honest start time, and an alert scheduled by an
+  earlier run is left alone).
+- **Liveness signal.** The firmware sends no BLE keepalive, so a stationary TAG
+  produces no traffic. The signal is the OS connection state staying "connected"
+  (passive; no extra BLE traffic and no RSSI reads), re-asserted every 30 s while
+  the app runs. Position data is not needed to prove liveness.
+- **Content.** The alert carries the last position the TAG itself reported (never
+  the phone's) with its timestamp; the default text omits coordinates.
+- **Background (iOS and Android).** The lease is the periodic push, and a
+  suspended or Doze-stalled app cannot keep pushing it while the link is fine,
+  which would raise a false alert. So **only the lease** is dropped when the app
+  goes to the background (and re-armed on resume); an app relaunched in the
+  background never arms it. **Arm-at-disconnect is not affected**: if Dart
+  observes an unexpected drop while backgrounded it still schedules the alert at
+  `drop + X` (and `bluetoothOff` likewise), with every usual suppression (SOS,
+  manual, firmware update, provisioning reboot, migration, "never", permission).
+  A backgrounded app with a connected TAG and no events schedules nothing.
+  A drop observed in the background is scheduled **without waiting on anything
+  else** (the iOS wake window is about 10 s): it uses the last known
+  notification-permission state (unknown counts as allowed; scheduling while
+  permission is really missing is harmless, the OS drops it) and defers cleanup
+  retries until after the schedule. The permission answer is refreshed
+  afterwards without blocking, and the alert is re-evaluated if it changed.
+- **How a background drop reaches Dart.** iOS with `bluetooth-central`: the
+  central manager that owns the connection (the native Protection bridge when
+  armed, otherwise flutter_blue_plus) is woken on `didDisconnectPeripheral`; the
+  Flutter engine of the woken process runs the handler (about 10 s). The native
+  bridge's event sink has no buffer, so an event with no engine attached is
+  lost, and after a system kill only the native bridge is relaunched by state
+  restoration. Android with Protection Mode: the GATT callback runs in the
+  process without Dart; the event is buffered and replayed (with its native
+  timestamp, which becomes the drop time) when an engine attaches, so with the
+  task removed the alert waits until the app starts again. Both are
+  documented-behavior assumptions that need device validation.
+- **Debug logs.** In debug and profile builds (never release) the SDK prints `[TAG_LEASE]` lines (link
+  state with lifecycle, drop cause, schedule/cancel with kind and fire time, and
+  `dropToScheduleMs`, the time from the observed drop to the schedule being done).
+  They contain no device ids (a short digest `key#xxxxxx` instead), aliases or
+  coordinates.
+- **Cost.** A push is one platform call (the notifier caches the slot id), runs
+  inside the controller's serialized tail with the 5 s bound and cleanup retry,
+  and newer link snapshots replace older queued ones.
+- **Device migration.** A re-key cancels the old key's alerts and the lease is
+  re-armed under the new key.
+- **Limits.** Without a running Dart isolate nothing observes the link: a
+  suspended iOS app is not woken for an idle TAG, and Android behavior in Doze is
+  unverified. A native arm-at-disconnect (iOS `didDisconnectPeripheral`, Android
+  GATT callback, scheduling its own notification with the same reserved id
+  scheme, `tag_alert:` payload and channel) can be added later without any
+  public API change; it needs device validation. This is not a guaranteed safety
+  feature.
+
+### Known issues and residual risks
+
+- **Stale `nodeId` after re-pairing a different TAG (pre-existing, not changed
+  here).** `ble_device_runtime_provider.dart:449`, `:644` and `:1303` use
+  `nodeId: runtimeStatus?.nodeId` and `DeviceStatus.copyWith` keeps the old
+  value when it is null, so if the pair-time `0x23` misses (2 s timeout,
+  `:1484`) a newly paired TAG can carry the previous TAG's node id until the next
+  reply. This also affects the country-config key. TAG alerts are protected by
+  the device-id check and by not using the node id in the key; switching TAGs is
+  rare. Pick it up separately.
+- A TAG without a battery (or reading 0) cannot be told apart from an empty one
+  on the 2-bit TEL path; two-reading confirmation is the only guard.
+- A redelivered older `0xD3` batch inside the freshness window can count as a
+  reading.
+- The settings and cycle key is `tagAlertDeviceKey(status)`; a host that stores
+  settings under another id will not have its unpair cleanup applied.
+- Notification permission is read from the OS even when a host notifier is
+  supplied.
+
+### Notification delivery (`TagAlertNotifier`)
+
+`show`, `schedule(alert, at)`, `cancel(deviceId, kind)`,
+`cancelAllForDevice(deviceId)` and `cancelAll()`. `(deviceId, kind)` is one slot:
+scheduling again replaces the pending alert (cheap enough to push a reminder
+forward repeatedly), and an `at` that already passed is delivered immediately.
+`cancel*` also remove already delivered alerts, because they show the TAG alias.
+Hosts may inject their own notifier through `EixamBootstrapConfig.tagAlertNotifier`.
+
+The default adapter:
+
+- uses channel `eixam_tag_alerts` (high importance, not max) and payload
+  `tag_alert:<kind>:<hex(device key)>`. The key is hex-encoded so no device id
+  can produce the substring `sos`, which hosts use to classify SOS
+  notifications. TAG alert taps are ignored by the SDK's SOS/BLE navigation;
+- never calls `initialize` on the shared `flutter_local_notifications` plugin.
+  With `EixamNotificationPolicy.sdkManaged` it asks the SDK notification adapter
+  to initialize before showing or scheduling; with `hostAppManaged` the host must
+  already have initialized the plugin (or inject its own notifier);
+- schedules with `AndroidScheduleMode.inexactAllowWhileIdle` (no exact-alarm
+  permission), so delivery time is approximate;
+- relies on the plugin's native persistence and boot receiver. It stores no
+  schedule of its own.
+
+**Reserved notification ids.** `flutter_local_notifications` is a process-wide
+singleton and its ids share one namespace with Android native notifications. TAG
+alerts use only ids `1000000000..1000099999`, derived from a stable hash of
+(device key, kind) and probed on collision against pending and delivered
+notifications. Known ids in use: `6021-6024`, `6031` (Android services), `41001-41002`
+(DMP), `42001-42008` (SDK SOS mirror in the commercial app), `43000` (nearby text)
+and `44001` (activity). The SDK's generic id generator now skips the reserved range.
+
+### Host requirements
+
+- **Core library desugaring** must be enabled in the host's Android Gradle
+  build (`isCoreLibraryDesugaringEnabled = true` and
+  `coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:<version>")`),
+  as required by `flutter_local_notifications` for scheduled notifications.
+- **Time zone data:** the default adapter schedules absolute instants in UTC and
+  needs no time zone initialization. The host owns `tz.initializeTimeZones()` /
+  `tz.setLocalLocation(...)` if it uses `tz.local` elsewhere (the commercial app
+  already does); the SDK never initializes them.
+- **Android manifest:** the SDK manifest declares `RECEIVE_BOOT_COMPLETED`,
+  `ScheduledNotificationReceiver` and `ScheduledNotificationBootReceiver` (with
+  the standard `BOOT_COMPLETED`, `MY_PACKAGE_REPLACED` and QUICKBOOT intent
+  filters), so hosts that do not declare them still get delivery and reboot
+  rescheduling. Identical host declarations merge without conflict. Action
+  buttons additionally need `ActionBroadcastReceiver`, which TAG alerts do not use.
+- **iOS:** request permission with `requestTagAlertPermission()` at a moment the
+  user understands; no Info.plist background mode is added by this capability.
+
 ## Optional activity recording (AR2A + AR2B + AR2C-A + AR2C-B + AR2D fixes)
 
 AR1 exports `ActivityRecordingControl`, immutable recording/route models, state

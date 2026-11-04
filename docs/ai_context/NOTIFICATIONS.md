@@ -61,6 +61,14 @@
 - There is no broad repository-level “do not show notifications while app is foregrounded” rule in `LocalNotificationsRepository`.
 - `Needs verification`: if product wants foreground suppression beyond cycle deduplication, that rule is not currently encoded as a general repository policy.
 
+## TAG Alerts (foundation)
+
+- Optional capability `TagAlertsControl`; settings, notifier port and default adapter only. No battery source or disconnect policy yet.
+- Default adapter: `packages/eixam_connect_flutter/lib/src/tag_alerts/local_tag_alert_notifier.dart`. Channel `eixam_tag_alerts`, payload prefix `tag_alert:` (device key hex-encoded), reserved ids `1000000000..1000099999`.
+- Never uses the SOS channel/payloads; SDK tap handling ignores `tag_alert:` payloads. Scheduling relies on the plugin's native persistence and boot receiver.
+- Low-battery alerts (F1): policy in core `tag_battery_alert_policy.dart`, live-reading rules in `lib/src/tag_alerts/tag_battery_reading_extractor.dart`, wiring in `EixamConnectSdkImpl._ingestTagBatteryFromEvent` and `_probeTagBatteryOnResume`.
+- Contract and host requirements: `packages/eixam_connect_flutter/PUBLIC_API.md#optional-tag-alerts-foundation`.
+
 ## Main Files
 
 - `packages/eixam_connect_flutter/lib/src/data/repositories/local_notifications_repository.dart`
