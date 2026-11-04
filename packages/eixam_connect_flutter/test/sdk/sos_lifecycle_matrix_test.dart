@@ -4057,6 +4057,375 @@ void main() {
       });
     }
 
+    group('TAG cancel then backend cancel echo', () {
+      const domain = 'post-cancel-convergence';
+
+      // Mirrors the field sequence: SOS active on the TAG, the user cancels on
+      // the TAG (E1), and the backend publishes the cancellation while the
+      // SDK's own cancel request is still in flight. The SDK then sends a
+      // redundant clear to a TAG that is already inactive.
+      // A TAG that answers the SDK's confirm (0x05) with ACTIVE.
+      Future<void> attachTag(
+        _SdkSosHarness harness,
+        int Function() nextSequence,
+      ) {
+        return harness.deviceSosController.attach(
+          commandWriter: (command) async {
+            if (command.opcode == 0x05) {
+              scheduleMicrotask(
+                () => harness.deviceSosController.handleIncomingSosPacket(
+                  _deviceOriginActivePacket(),
+                  source: DeviceSosTransitionSource.device,
+                  resolutionContext: _physicalResolutionContext(
+                    receiveSequence: nextSequence(),
+                    terminal: false,
+                    receiveSequenceDomain: domain,
+                  ),
+                ),
+              );
+            }
+          },
+          transportId: 'ble-1',
+        );
+      }
+
+      void publishBackendTerminal(_SdkSosHarness harness, SosState terminal) {
+        harness.sosRepository.currentIncident = harness
+            .sosRepository
+            .currentIncident
+            .copyWith(state: terminal, isBackendConfirmed: true);
+        if (terminal == SosState.cancelled) {
+          harness.sosRepository.stateController.add(SosState.cancelRequested);
+        }
+        harness.sosRepository.stateController.add(terminal);
+      }
+
+      // The field sequence: the user starts SOS on the TAG, the SDK publishes
+      // it, the user cancels on the TAG (E1), and the backend publishes that
+      // cancellation while the SDK's own cancel request is still in flight.
+      // The SDK then sends a redundant clear to a TAG that already stopped.
+      Future<SosLifecycleSnapshot> startTagSos(
+        _SdkSosHarness harness,
+        int Function() nextSequence,
+      ) async {
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _physicalResolutionContext(
+            receiveSequence: nextSequence(),
+            terminal: false,
+            receiveSequenceDomain: domain,
+          ),
+        );
+        await _waitForCondition(
+          () async =>
+              (await harness.sdk.getSosLifecycle()).stage ==
+                  SosLifecycleStage.active &&
+              harness.deviceSosController.currentStatus.state ==
+                  DeviceSosState.active,
+        );
+        // The backend holds the incident published for this TAG cycle.
+        final published = await harness.sdk.getSosLifecycle();
+        harness.sosRepository.currentIncident = SosIncident(
+          id: published.localIncidentId!,
+          state: SosState.sent,
+          createdAt: DateTime.now().toUtc(),
+          triggerSource: 'ble_device_runtime',
+          isBackendConfirmed: true,
+        );
+        harness.sosRepository.stateController.add(SosState.sent);
+        await pumpEventQueue(times: 10);
+        final first = await harness.sdk.getSosLifecycle();
+        expect(first.stage, SosLifecycleStage.active);
+        return first;
+      }
+
+      Future<SosLifecycleSnapshot> activeSosCancelledOnTag(
+        _SdkSosHarness harness,
+        int Function() nextSequence,
+      ) async {
+        final first = await startTagSos(harness, nextSequence);
+        final cancelGate = Completer<void>();
+        harness.sosRepository.cancelGate = cancelGate;
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _devicePostFireCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _physicalResolutionContext(
+            receiveSequence: nextSequence(),
+            terminal: true,
+            receiveSequenceDomain: domain,
+          ),
+        );
+        await _waitForCondition(
+          () => harness.sosRepository.cancelCallCount == 1,
+        );
+        expect(
+          harness.deviceSosController.currentStatus.state,
+          DeviceSosState.inactive,
+        );
+        publishBackendTerminal(harness, SosState.cancelled);
+        await pumpEventQueue(times: 20);
+        cancelGate.complete();
+        await pumpEventQueue(times: 20);
+        return first;
+      }
+
+      test(
+        'an already inactive TAG is clear proof and a new press starts N+1',
+        () async {
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            deviceCountdown: const Duration(milliseconds: 5),
+          );
+          var sequence = 0;
+          try {
+            await attachTag(harness, () => ++sequence);
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            await activeSosCancelledOnTag(harness, () => ++sequence);
+            final terminal = await harness.sdk.getSosLifecycle();
+            expect(terminal.stage, SosLifecycleStage.cancelled);
+            expect(
+              _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED'),
+              isTrue,
+              reason: 'the backend echo dispatches a redundant clear',
+            );
+            expect(
+              _hasDebugMessage(
+                'deviceMirrorState=synchronized generation=${terminal.generation} '
+                'source=remote_terminal_device_clear_inactive_observed',
+              ),
+              isTrue,
+              reason:
+                  'an already inactive TAG is the clear proof; no E2 follows',
+            );
+
+            // The firmware reuses the cycle's packet identity for a new press;
+            // only the receive order after the observed E1 tells them apart.
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: ++sequence,
+                terminal: false,
+                receiveSequenceDomain: domain,
+              ),
+            );
+            await _waitForCondition(
+              () async =>
+                  (await harness.sdk.getSosLifecycle()).generation >
+                  terminal.generation,
+            );
+            final next = await harness.sdk.getSosLifecycle();
+            expect(next.generation, terminal.generation + 1);
+            expect(next.isOpen, isTrue);
+            expect(
+              _hasDebugMessage('SOS_POST_TERMINAL_INFLIGHT_START_SUPPRESSED'),
+              isFalse,
+            );
+          } finally {
+            await harness.dispose();
+          }
+        },
+      );
+
+      test('a replay of the cancelled packet not newer than the observed E1 '
+          'stays rejected', () async {
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          deviceCountdown: const Duration(milliseconds: 5),
+        );
+        var sequence = 0;
+        try {
+          await attachTag(harness, () => ++sequence);
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await activeSosCancelledOnTag(harness, () => ++sequence);
+          final terminal = await harness.sdk.getSosLifecycle();
+          expect(
+            _hasDebugMessage(
+              'source=remote_terminal_device_clear_inactive_observed',
+            ),
+            isTrue,
+          );
+
+          // Same bytes, received at or before the TAG's E1 (an older receive
+          // sequence), or from another receive domain (a backlog or a
+          // previous process): not proof of a new press.
+          for (final replay in <(int, String)>[
+            (1, domain),
+            (sequence, domain),
+            (sequence + 1, 'other-receive-domain'),
+          ]) {
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: replay.$1,
+                terminal: false,
+                receiveSequenceDomain: replay.$2,
+              ),
+            );
+            await pumpEventQueue(times: 10);
+            final after = await harness.sdk.getSosLifecycle();
+            expect(
+              after.generation,
+              terminal.generation,
+              reason: 'replay ${replay.$1}@${replay.$2} must not start an SOS',
+            );
+            expect(after.isOpen, isFalse);
+          }
+          expect(_hasDebugMessage('decision=reject_replay'), isTrue);
+        } finally {
+          await harness.dispose();
+        }
+      });
+
+      for (final terminal in <SosState>[
+        SosState.cancelled,
+        SosState.resolved,
+      ]) {
+        final ack = terminal == SosState.resolved ? 'E3' : 'E2';
+        EixamSosEventPacket ackPacket() => terminal == SosState.resolved
+            ? _deviceBackendResolvedPacket()
+            : _deviceCancelAckPacket();
+
+        test('a ${terminal.name} clear without $ack fails after the timeout, '
+            'then the TAG can start N+1', () async {
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            deviceCountdown: const Duration(milliseconds: 5),
+            // The controller's own ack wait must not be what ends the stall.
+            appActivationObservationTimeout: const Duration(seconds: 30),
+            remoteTerminalDeviceClearAckTimeout: const Duration(
+              milliseconds: 50,
+            ),
+          );
+          var sequence = 0;
+          try {
+            await attachTag(harness, () => ++sequence);
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+            );
+            await harness.setSession();
+            await startTagSos(harness, () => ++sequence);
+            // The backend terminates while the TAG is still active; the TAG
+            // receives the clear but never acknowledges it.
+            publishBackendTerminal(harness, terminal);
+            await _waitForCondition(
+              () => _hasDebugMessage(
+                'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED terminal=${terminal.name}',
+              ),
+            );
+            await _waitForCondition(
+              () => _hasDebugMessage(
+                'deviceMirrorState=failed generation=1 '
+                'source=remote_terminal_device_clear_ack_timeout',
+              ),
+            );
+            final closed = await harness.sdk.getSosLifecycle();
+            expect(closed.isOpen, isFalse);
+
+            // The TAG closes its episode (E1) and the user presses again.
+            harness.deviceSosController.handleIncomingSosEventPacket(
+              _devicePostFireCancelPacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: ++sequence,
+                terminal: true,
+                receiveSequenceDomain: domain,
+              ),
+            );
+            await pumpEventQueue(times: 10);
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: ++sequence,
+                terminal: false,
+                receiveSequenceDomain: domain,
+              ),
+            );
+            await _waitForCondition(
+              () async =>
+                  (await harness.sdk.getSosLifecycle()).generation >
+                  closed.generation,
+            );
+            expect(
+              _hasDebugMessage('SOS_POST_TERMINAL_INFLIGHT_START_SUPPRESSED'),
+              isFalse,
+            );
+          } finally {
+            await harness.dispose();
+          }
+        });
+
+        for (final afterTimeout in <bool>[false, true]) {
+          test('a late $ack converges a ${terminal.name} clear '
+              '${afterTimeout ? "after" : "before"} the timeout', () async {
+            final harness = _SdkSosHarness(
+              connectedBle: true,
+              deviceCountdown: const Duration(milliseconds: 5),
+              appActivationObservationTimeout: const Duration(seconds: 30),
+              remoteTerminalDeviceClearAckTimeout: afterTimeout
+                  ? const Duration(milliseconds: 50)
+                  : const Duration(seconds: 30),
+            );
+            var sequence = 0;
+            try {
+              await attachTag(harness, () => ++sequence);
+              await harness.sdk.initialize(
+                const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+              );
+              await harness.setSession();
+              await startTagSos(harness, () => ++sequence);
+              publishBackendTerminal(harness, terminal);
+              await _waitForCondition(
+                () => _hasDebugMessage(
+                  'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED',
+                ),
+              );
+              if (afterTimeout) {
+                await _waitForCondition(
+                  () => _hasDebugMessage(
+                    'source=remote_terminal_device_clear_ack_timeout',
+                  ),
+                );
+              }
+              harness.deviceSosController.handleIncomingSosEventPacket(
+                ackPacket(),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: ++sequence,
+                  terminal: true,
+                  receiveSequenceDomain: domain,
+                ),
+              );
+              await _waitForCondition(
+                () => _hasDebugMessage(
+                  'deviceMirrorState=synchronized generation=1 '
+                  'source=device_terminal_ack:$ack',
+                ),
+              );
+              expect(
+                _hasDebugMessage('deviceMirrorState=failed'),
+                afterTimeout,
+                reason: afterTimeout
+                    ? 'the timeout fired first'
+                    : 'a timely $ack must never pass through failed',
+              );
+            } finally {
+              await harness.dispose();
+            }
+          });
+        }
+      }
+    });
+
     test(
       'migrated connected TAG starts N+1 from a new packet cycle after restored cancelled N',
       () async {
@@ -16062,6 +16431,7 @@ final class _SdkSosHarness {
     Duration deviceCountdown = const Duration(seconds: 20),
     Duration appActivationObservationTimeout = const Duration(seconds: 3),
     Duration appTriggeredSosBridgeWindow = const Duration(seconds: 15),
+    Duration remoteTerminalDeviceClearAckTimeout = const Duration(seconds: 10),
     DateTime Function()? deviceClock,
     String connectedDeviceId = 'ble-1',
     int? connectedNodeId,
@@ -16135,6 +16505,7 @@ final class _SdkSosHarness {
       realtimeClient: this.realtimeClient,
       deviceSosController: deviceSosController,
       appTriggeredSosBridgeWindow: appTriggeredSosBridgeWindow,
+      remoteTerminalDeviceClearAckTimeout: remoteTerminalDeviceClearAckTimeout,
       bleIncomingEvents: bleIncomingEvents,
       preferredBleDeviceStore: preferredBleDeviceStore,
       localStore: this.localStore,

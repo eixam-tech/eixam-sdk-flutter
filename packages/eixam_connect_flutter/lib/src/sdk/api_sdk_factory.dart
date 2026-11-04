@@ -25,6 +25,9 @@ import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
+import '../tag_alerts/local_tag_alert_notifier.dart';
+import '../tag_alerts/tag_alert_permission_gateway.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
 import '../data/repositories/mqtt_telemetry_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
@@ -67,6 +70,8 @@ class ApiSdkFactory {
     bool enableLogging = false,
     bool allowInsecureLocalEndpoints = false,
     bool deferRuntimeStartup = false,
+    TagAlertNotifier? tagAlertNotifier,
+    TagAlertTextResolver? tagAlertTextResolver,
   }) => _createHttpApi(
     apiBaseUrl: apiBaseUrl,
     websocketUrl: websocketUrl,
@@ -78,6 +83,8 @@ class ApiSdkFactory {
     allowInsecureLocalEndpoints: allowInsecureLocalEndpoints,
     deferRuntimeStartup: deferRuntimeStartup,
     recoverUnreadablePersistedSession: false,
+    tagAlertNotifier: tagAlertNotifier,
+    tagAlertTextResolver: tagAlertTextResolver,
   );
 
   static Future<EixamConnectSdk> _createHttpApi({
@@ -91,6 +98,8 @@ class ApiSdkFactory {
     required bool allowInsecureLocalEndpoints,
     required bool deferRuntimeStartup,
     required bool recoverUnreadablePersistedSession,
+    TagAlertNotifier? tagAlertNotifier,
+    TagAlertTextResolver? tagAlertTextResolver,
   }) async {
     BleDebugRegistry.instance.reset();
 
@@ -230,6 +239,12 @@ class ApiSdkFactory {
       metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
       firmwareUpdates: firmwareUpdateCoordinator,
       sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
+      onDeviceIdentityMigrated: (fromKey, toKey) =>
+          sdk.rekeyTagAlertDevice(fromKey, toKey),
+    );
+    final notificationPlugin = FlutterLocalNotificationsPlugin();
+    final notificationsRepository = LocalNotificationsRepository(
+      plugin: notificationPlugin,
     );
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
@@ -244,7 +259,22 @@ class ApiSdkFactory {
       ),
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
-      notificationsRepository: LocalNotificationsRepository(),
+      notificationsRepository: notificationsRepository,
+      tagAlertNotifier:
+          tagAlertNotifier ??
+          LocalTagAlertNotifier(
+            plugin: notificationPlugin,
+            // The shared plugin has one response callback. Under host-managed
+            // notifications the host owns and initializes it already.
+            ensureInitialized:
+                notificationPolicy == EixamNotificationPolicy.hostAppManaged
+                ? () async {}
+                : () => sdk.initializeNotifications(),
+            textResolver: tagAlertTextResolver,
+          ),
+      tagAlertPermissions: PlatformTagAlertPermissionGateway(
+        plugin: notificationPlugin,
+      ),
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
@@ -307,6 +337,8 @@ class ApiSdkFactory {
       deferRuntimeStartup: config.featureFlags['defer_runtime_startup'] == true,
       recoverUnreadablePersistedSession:
           resolved.recoverUnreadablePersistedSession,
+      tagAlertNotifier: config.tagAlertNotifier,
+      tagAlertTextResolver: config.tagAlertTextResolver,
     );
 
     final restoredSession = await sdk.getCurrentSession();
