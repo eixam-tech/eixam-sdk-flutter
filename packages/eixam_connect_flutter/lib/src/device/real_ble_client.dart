@@ -1622,15 +1622,37 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     return null;
   }
 
+  /// `CBError.peerRemovedPairingInformation` (CBErrorDomain code 14).
+  static const int _cbErrorPeerRemovedPairingInformation = 14;
+
+  /// English `localizedDescription`; iOS localizes it, so fallback only.
+  static const String _peerRemovedPairingInformationText =
+      'peer removed pairing information';
+
   static bool _isIosPairingInformationRemoved(Object error) {
     if (error is FlutterBluePlusException) {
+      if (error.platform != ErrorPlatform.apple ||
+          error.code != _cbErrorPeerRemovedPairingInformation) {
+        return false;
+      }
+      // FlutterBluePlus drops the NSError domain. Its apple "connect" errors
+      // only come from CBCentralManagerDelegate didFailToConnect/didDisconnect,
+      // which always report CBErrorDomain, so code 14 is unambiguous there
+      // and must not depend on the device language.
+      if (error.function == 'connect') return true;
+      // Other operations may report CBATTErrorDomain, where 14 means
+      // "unlikely error": keep the English description as the only signal.
       final description = error.description?.toLowerCase() ?? '';
-      return error.platform == ErrorPlatform.apple &&
-          error.code == 14 &&
-          description.contains('peer removed pairing information');
+      return description.contains(_peerRemovedPairingInformationText);
     }
     final text = error.toString().toLowerCase();
-    return text.contains('apple-code: 14') &&
-        text.contains('peer removed pairing information');
+    if (!text.contains('apple-code: $_cbErrorPeerRemovedPairingInformation')) {
+      return false;
+    }
+    // A wrapped FlutterBluePlus connect error keeps its "| connect |" marker.
+    return text.contains(
+          '| connect | apple-code: $_cbErrorPeerRemovedPairingInformation |',
+        ) ||
+        text.contains(_peerRemovedPairingInformationText);
   }
 }
