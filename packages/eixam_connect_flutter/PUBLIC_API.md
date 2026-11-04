@@ -160,6 +160,16 @@ Firmware ≥ **2.7.56** is required; 2.7.55 plaza-only framing is not compatible
 Firmware ≥ **2.7.57** enforces the 231 B cap and ignores SECONDARY group keys
 on TEL/SOS/cluster ports. Firmware ≥ **2.7.58** for owner-name `0x42` / `0xDB`.
 
+## Pairing list display classification
+
+`EixamBleScanResult.pairingDisplayCategory` lets hosts filter and sort a TAG
+pairing list without inspecting advertisements: show `eixam`, `legacyOrStock`
+and `dfuRecovery`, drop `hidden`, and keep showing `null` (not classified, e.g.
+host-built results). Resolve each poll through one `EixamPairingDisplayFilter`
+per list so a device already shown does not flicker out while its name is
+missing. The category is display-only: it never authorizes a connection, and
+compatibility is still verified by connection and service discovery.
+
 ## TAG box-code correlation
 
 `TagPairingCode.inspect(payload)` recognizes only `N6` or `A6` followed by six

@@ -1,4 +1,5 @@
 import '../enums/ble_discovered_device_brand.dart';
+import 'eixam_pairing_display.dart';
 
 /// Public BLE discovery result exposed to host apps.
 ///
@@ -17,6 +18,7 @@ class EixamBleScanResult {
     required this.isEixamDevice,
     required this.discoveredAt,
     this.isDfuBootloader = false,
+    this.pairingDisplayCategory,
   });
 
   final String deviceId;
@@ -37,4 +39,10 @@ class EixamBleScanResult {
   /// bootloader (advertising the Secure DFU service) rather than a normal
   /// device — i.e. one that needs firmware recovery.
   final bool isDfuBootloader;
+
+  /// Display-only pairing-list category computed by the SDK from the fresh
+  /// advertisement. `null` means "not classified" (e.g. results built by a
+  /// host or restored from storage); hosts should keep showing those.
+  /// Never authorizes a connection.
+  final EixamPairingDisplayCategory? pairingDisplayCategory;
 }

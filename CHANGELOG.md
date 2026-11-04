@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — pairing list display classifier
+
+- `EixamBleScanResult.pairingDisplayCategory` (`eixam`, `legacyOrStock`, `dfuRecovery`, `hidden`; `null` = not classified) computed from the fresh advertisement by the pure-Dart `classifyEixamPairingDisplay`. Shows the Eixam or stock service, names `EIXAM_*`, `N6*`, `Meshtastic_*`, `AdaDFU` and the DFU service; hides `EIXAM_GW_*` and everything else.
+- `EixamPairingDisplayFilter` keeps a device that was already shown visible when a later result lacks the name (iOS scan response), but still hides an explicit gateway name.
+- Display-only and additive: scanning, brand classification, `isDfuBootloader`, identity, migration and connection paths are unchanged. The category never authorizes a connection.
+
 ## Unreleased — TAG disconnect alerts
 
 - Dart-side "TAG forgotten or dropped" alert: a dead-man local notification armed while the link is up (pushed at most every clamp(X/4, 60 s, 10 min), firing X to 1.25 X after the last contact), rescheduled to exactly drop + X when an unexpected drop is observed, and removed on reconnect. Bluetooth off raises the `bluetoothOff` kind.
