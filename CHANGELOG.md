@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — iOS stale-bond detection independent of language
+
+- `E_BLE_IOS_PAIRING_INFORMATION_REMOVED` is now raised from the CoreBluetooth error code (`CBError.peerRemovedPairingInformation`, 14) on FlutterBluePlus apple `connect` failures, which only carry CBErrorDomain. Before, it matched the English `localizedDescription`, which iOS localizes, so Catalan and Spanish iPhones got a generic connection error. Other operations, where 14 can be `CBATTError.unlikelyError`, keep the English text match as a fallback. No API change.
+
 ## Unreleased — pairing list display classifier
 
 - `EixamBleScanResult.pairingDisplayCategory` (`eixam`, `legacyOrStock`, `dfuRecovery`, `hidden`; `null` = not classified) computed from the fresh advertisement by the pure-Dart `classifyEixamPairingDisplay`. Shows the Eixam or stock service, names `EIXAM_*`, `N6*`, `Meshtastic_*`, `AdaDFU` and the DFU service; hides `EIXAM_GW_*` and everything else.

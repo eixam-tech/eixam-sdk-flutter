@@ -497,6 +497,91 @@ void main() {
 
     expect(mapped, isNull);
   });
+
+  group('iOS stale bond detection is language independent', () {
+    String? codeOf(Object error) =>
+        RealBleClient.mapConnectionFailureForTesting(error)?.code;
+    const staleBond = DeviceException.bleIosPairingInformationRemovedCode;
+
+    for (final description in <String?>[
+      'El periférico ha eliminado la información de emparejamiento',
+      "El perifèric ha eliminat la informació d'aparellament",
+      null,
+    ]) {
+      test('connect code 14 maps with description "$description"', () {
+        expect(
+          codeOf(
+            FlutterBluePlusException(
+              ErrorPlatform.apple,
+              'connect',
+              14,
+              description,
+            ),
+          ),
+          staleBond,
+        );
+      });
+    }
+
+    test('wrapped connect error with localized text maps by code', () {
+      final wrapped = StateError(
+        FlutterBluePlusException(
+          ErrorPlatform.apple,
+          'connect',
+          14,
+          'El periférico ha eliminado la información de emparejamiento',
+        ).toString(),
+      );
+      expect(codeOf(wrapped), staleBond);
+    });
+
+    test('English description fallback still maps other operations', () {
+      expect(
+        codeOf(
+          FlutterBluePlusException(
+            ErrorPlatform.apple,
+            'discoverServices',
+            14,
+            'Peer removed pairing information.',
+          ),
+        ),
+        staleBond,
+      );
+      expect(
+        codeOf(StateError('apple-code: 14 Peer removed pairing information')),
+        staleBond,
+      );
+    });
+
+    test('unrelated errors are not matched', () {
+      final unrelated = <Object>[
+        // CBATTError code 14 ("unlikely error") outside connect.
+        FlutterBluePlusException(
+          ErrorPlatform.apple,
+          'setNotifyValue',
+          14,
+          'Error poco probable',
+        ),
+        FlutterBluePlusException(
+          ErrorPlatform.apple,
+          'readCharacteristic',
+          14,
+          'Unlikely error',
+        ),
+        // Same code on other platforms.
+        FlutterBluePlusException(ErrorPlatform.android, 'connect', 14, null),
+        FlutterBluePlusException(ErrorPlatform.fbp, 'connect', 14, null),
+        // Other apple connect codes.
+        FlutterBluePlusException(ErrorPlatform.apple, 'connect', 6, null),
+        FlutterBluePlusException(ErrorPlatform.apple, 'connect', 15, null),
+        StateError('apple-code: 14 something else'),
+        StateError('connect failed'),
+      ];
+      for (final error in unrelated) {
+        expect(codeOf(error), isNull, reason: '$error');
+      }
+    });
+  });
 }
 
 RealBleClient _buildRealBleClient({
