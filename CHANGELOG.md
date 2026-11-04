@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — post-cancel SOS convergence
+
+- A TAG that the user already cancelled (`0xE1`) is now clear proof for the
+  redundant remote-terminal clear that the backend echo dispatches, so the
+  device mirror converges at once instead of waiting for an `0xE2` that never
+  comes. Before this, a second TAG SOS was suppressed for minutes on Android.
+- A dispatched remote-terminal clear without a matching `0xE2`/`0xE3` now moves
+  the device mirror to `failed` after 10 s, which ends post-terminal
+  suppression. A late matching ack still converges it to `synchronized`.
+- Replays are still rejected: a new physical start after a terminal needs a
+  receive newer than the observed TAG closure. No change to commands, backend
+  calls, notifications or native code.
+- Physically validated on iPhone 15 and Xiaomi Android 13 (QA 03/11): no ghost SOS
+  2 min after cancel; second TAG SOS accepted (iOS 18/68 s, Android 39/99 s); TAG SOS
+  after a prior cancel with app backgrounded and locked; app SOS + cancel. Firmware
+  dependency open: the TAG must never resend a cancelled-cycle SOS packet after `E1`.
+
 ## Unreleased — iOS false "SOS active" from TEL frames
 
 - Fix iOS native SOS parsing (introduced in 340c548b, present in `main` and `develop`):
@@ -16,7 +33,8 @@
   arrives on the SOS and TEL characteristics only.
 - `EixamBleProtocol.isReservedSosOrTelNotifyLength` and the Dart "+6" wrapped-SOS lengths
   are legacy and unused by the iOS parser; they are left untouched.
-- Physical iOS validation (30 min background, real SOS and TAG cancel) is pending.
+- Physically validated on iPhone 15 (QA 03/11): 30 min background with a TAG nearby
+  produced no false SOS; real TAG SOS, cancel and app SOS unchanged; INET/CMD non-SOS.
 
 ## Unreleased — robust activity recording finalization (AR2C-B)
 

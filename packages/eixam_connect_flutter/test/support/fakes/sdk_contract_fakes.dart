@@ -34,6 +34,10 @@ class FakeSosRepository implements SosRepository {
   OsSosWidgetActivation? lastOsWidgetActivation;
   Object? triggerError;
   Object? cancelError;
+
+  /// Holds [cancelSos] open until completed, so a backend terminal echo can
+  /// arrive while the device-originated cancel request is still in flight.
+  Completer<void>? cancelGate;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
 
@@ -89,6 +93,10 @@ class FakeSosRepository implements SosRepository {
   Future<SosIncident> cancelSos() async {
     cancelCallCount++;
     terminalOperations.add('cancel:${currentIncident.id}');
+    final gate = cancelGate;
+    if (gate != null) {
+      await gate.future;
+    }
     final error = cancelError;
     if (error != null) {
       throw error;
