@@ -295,6 +295,9 @@ class EixamConnectSdkImpl
     activityAvailabilityRemoteDataSource,
     DateTime Function()? clock,
     Duration appTriggeredSosBridgeWindow = _defaultAppTriggeredSosBridgeWindow,
+    @visibleForTesting
+    Duration remoteTerminalDeviceClearAckTimeout =
+        _defaultRemoteTerminalDeviceClearAckTimeout,
     SosLocationOwnershipEffectMode sosLocationOwnershipEffectMode =
         SosLocationOwnershipEffectMode.enabled,
     TargetPlatform? sosLocationOwnershipPlatform,
@@ -304,6 +307,8 @@ class EixamConnectSdkImpl
     this.disposeCallback,
   }) : _clock = clock ?? DateTime.now,
        _appTriggeredSosBridgeWindow = appTriggeredSosBridgeWindow,
+       _remoteTerminalDeviceClearAckTimeout =
+           remoteTerminalDeviceClearAckTimeout,
        _localStore = localStore ?? SharedPrefsSdkStore(),
        protectionPlatformAdapter =
            protectionPlatformAdapter ?? buildDefaultProtectionPlatformAdapter(),
@@ -849,6 +854,8 @@ class EixamConnectSdkImpl
   String? _remoteTerminalDeviceClearInFlightKey;
   final Map<String, Completer<void>> _remoteTerminalDeviceClearCompletions =
       <String, Completer<void>>{};
+  final Map<String, Timer> _remoteTerminalDeviceClearAckTimers =
+      <String, Timer>{};
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearPendingProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAwaitingAckProof;
   _PhysicalSosTerminationTarget? _remoteTerminalDeviceClearAcknowledgedProof;
@@ -951,6 +958,7 @@ class EixamConnectSdkImpl
   late final NearbyTextController _nearbyTextController;
   late final SosSilenceCommandCoordinator _sosSilenceCommandCoordinator;
   final Duration _appTriggeredSosBridgeWindow;
+  final Duration _remoteTerminalDeviceClearAckTimeout;
   bool _deferredRuntimeWorkPending = false;
   Future<void>? _deferredRuntimeStart;
   bool _backgroundTelemetryEnabled = false;
@@ -976,6 +984,13 @@ class EixamConnectSdkImpl
   static const Duration _externalRelayIdentityTtl = Duration(days: 30);
   static const Duration _defaultAppTriggeredSosBridgeWindow = Duration(
     seconds: 15,
+  );
+
+  /// How long a dispatched remote terminal clear may hold the device mirror
+  /// pending without a matching E2/E3. While pending, new physical starts are
+  /// suppressed, so this bounds how long a real TAG SOS can be ignored.
+  static const Duration _defaultRemoteTerminalDeviceClearAckTimeout = Duration(
+    seconds: 10,
   );
   static const Duration _preSosTickInterval = Duration(milliseconds: 50);
   static const Duration _preSosTerminalCancelGraceWindow = Duration(seconds: 5);
@@ -2921,6 +2936,7 @@ class EixamConnectSdkImpl
     _physicalSosSilenceTarget = null;
     _completedSosSilenceOperations.clear();
     _sosDeviceMirrorState = _SosDeviceMirrorState.synchronized;
+    _cancelRemoteTerminalDeviceClearAckTimers();
     _terminalConvergenceFence = null;
     _freshPhysicalStartSupersededRemoteClearGeneration = null;
     _postResolvePhysicalRxGeneration = null;
@@ -16266,7 +16282,10 @@ class EixamConnectSdkImpl
         : _currentDeviceCommandOwnerRoute;
   }
 
-  bool _consumeRemoteTerminalDeviceClearAck(DeviceSosStatus status) {
+  bool _consumeRemoteTerminalDeviceClearAck(
+    DeviceSosStatus status, {
+    String? mirrorSource,
+  }) {
     final awaiting = _remoteTerminalDeviceClearAwaitingAckProof;
     final pending = _remoteTerminalDeviceClearPendingProof;
     final acknowledged = _remoteTerminalDeviceClearAcknowledgedProof;
@@ -16302,6 +16321,7 @@ class EixamConnectSdkImpl
         _setSosDeviceMirrorState(
           _SosDeviceMirrorState.synchronized,
           source:
+              mirrorSource ??
               'device_terminal_ack:${status.lastOpcode == 0xE3 ? "E3" : "E2"}',
         );
         BleDebugRegistry.instance.recordEvent(
@@ -16766,6 +16786,7 @@ class EixamConnectSdkImpl
       return;
     }
     _supersededRemoteTerminalDeviceClearKeys.add(proof.operationKey);
+    _remoteTerminalDeviceClearAckTimers.remove(proof.operationKey)?.cancel();
     _freshPhysicalStartSupersededRemoteClearGeneration = proof.generation;
     _remoteTerminalDeviceClearPendingProof = null;
     if (_remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
@@ -16903,6 +16924,7 @@ class EixamConnectSdkImpl
       return;
     }
     _supersededRemoteTerminalDeviceClearKeys.add(proof.operationKey);
+    _remoteTerminalDeviceClearAckTimers.remove(proof.operationKey)?.cancel();
     _freshPhysicalStartSupersededRemoteClearGeneration = proof.generation;
     _remoteTerminalDeviceClearPendingProof = null;
     if (_remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
@@ -16936,6 +16958,56 @@ class EixamConnectSdkImpl
     );
     _remoteTerminalDeviceClearInFlightKey = proof.operationKey;
     unawaited(_runRemoteTerminalDeviceClear(proof));
+  }
+
+  /// Bounds how long a dispatched clear can keep the mirror pending. Without
+  /// a matching E2/E3 the mirror becomes `failed`, which ends post-terminal
+  /// suppression. The proof is kept, so a late matching ack still converges
+  /// the mirror to `synchronized`.
+  void _armRemoteTerminalDeviceClearAckTimer(
+    _PhysicalSosTerminationTarget proof,
+  ) {
+    _remoteTerminalDeviceClearAckTimers.remove(proof.operationKey)?.cancel();
+    _remoteTerminalDeviceClearAckTimers[proof.operationKey] = Timer(
+      _remoteTerminalDeviceClearAckTimeout,
+      () => _expireRemoteTerminalDeviceClearAck(proof),
+    );
+  }
+
+  void _cancelRemoteTerminalDeviceClearAckTimers() {
+    for (final timer in _remoteTerminalDeviceClearAckTimers.values) {
+      timer.cancel();
+    }
+    _remoteTerminalDeviceClearAckTimers.clear();
+  }
+
+  void _expireRemoteTerminalDeviceClearAck(
+    _PhysicalSosTerminationTarget proof,
+  ) {
+    _remoteTerminalDeviceClearAckTimers.remove(proof.operationKey);
+    final operationKey = proof.operationKey;
+    final stillAwaited =
+        _remoteTerminalDeviceClearPendingProof?.operationKey == operationKey ||
+        _remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
+            operationKey;
+    if (_disposed ||
+        !_terminalDeviceMirrorIsPending ||
+        !stillAwaited ||
+        _remoteTerminalDeviceClearAcknowledgedProof?.operationKey ==
+            operationKey ||
+        !_physicalSosTerminationTargetIsCurrent(proof)) {
+      return;
+    }
+    _setSosDeviceMirrorState(
+      _SosDeviceMirrorState.failed,
+      source: 'remote_terminal_device_clear_ack_timeout',
+    );
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACK_TIMEOUT '
+      'terminal=${proof.terminalState.name} '
+      'timeoutMs=${_remoteTerminalDeviceClearAckTimeout.inMilliseconds} '
+      'uiAuthority=backend_terminal lateAckAccepted=true',
+    );
   }
 
   Future<void> _runRemoteTerminalDeviceClear(
@@ -17001,6 +17073,7 @@ class EixamConnectSdkImpl
             'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED '
             'terminal=${proof.terminalState.name} channel=existing_device_path',
           );
+          _armRemoteTerminalDeviceClearAckTimer(proof);
         },
       );
       if (_remoteTerminalDeviceClearAcknowledgedProof?.operationKey ==
@@ -17027,6 +17100,20 @@ class EixamConnectSdkImpl
           'terminal=${proof.terminalState.name} deviceState=${status.state.name} '
           'observed=${status.derivedFromBlePacket}',
         );
+        // The TAG can close the cycle itself (user cancel, E1) before this
+        // redundant clear reaches it. That closure is observed, identity
+        // matched and newer than the active packet, so it is the clear proof:
+        // an inactive TAG sends no E2. Consuming it through the shared
+        // consumer keeps the proof acknowledged, so the status listener that
+        // sees the same packet later matches it instead of treating it as an
+        // unrelated device-only terminal.
+        if (_terminalDeviceMirrorIsPending &&
+            _deviceTerminalStatusMatchesClearProof(status, proof)) {
+          _consumeRemoteTerminalDeviceClearAck(
+            status,
+            mirrorSource: 'remote_terminal_device_clear_inactive_observed',
+          );
+        }
         if (proof.terminalState == SosState.resolved) {
           _logBackendResolveDeviceResult(
             proof: proof,
@@ -18159,6 +18246,7 @@ class EixamConnectSdkImpl
     _lastSosRehydrationNote = null;
     _clearAcknowledgedTerminalSosSummaries(reason: reason);
     _sosDeviceMirrorState = _SosDeviceMirrorState.synchronized;
+    _cancelRemoteTerminalDeviceClearAckTimers();
     _terminalConvergenceFence = null;
     _recordPublicSosGenerationProjection(
       action: 'reset_previous_generation',
@@ -18224,6 +18312,7 @@ class EixamConnectSdkImpl
     if (state != _SosDeviceMirrorState.pendingResolve &&
         state != _SosDeviceMirrorState.pendingCancel) {
       _terminalConvergenceFence = null;
+      _cancelRemoteTerminalDeviceClearAckTimers();
     }
     _logPublicSosLifecycleState(source: source);
   }
@@ -27621,6 +27710,7 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
+    _cancelRemoteTerminalDeviceClearAckTimers();
     _advanceIdentityRevision();
     final recordingDisposal = _activityRecordings.dispose();
     final activityDisposal = _activitySessions.dispose();
