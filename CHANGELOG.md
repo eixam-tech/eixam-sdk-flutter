@@ -11,7 +11,30 @@
   suppression. A late matching ack still converges it to `synchronized`.
 - Replays are still rejected: a new physical start after a terminal needs a
   receive newer than the observed TAG closure. No change to commands, backend
-  calls, notifications or native code. Physical Android/iOS validation pending.
+  calls, notifications or native code.
+- Physically validated on iPhone 15 and Xiaomi Android 13 (QA 03/11): no ghost SOS
+  2 min after cancel; second TAG SOS accepted (iOS 18/68 s, Android 39/99 s); TAG SOS
+  after a prior cancel with app backgrounded and locked; app SOS + cancel. Firmware
+  dependency open: the TAG must never resend a cancelled-cycle SOS packet after `E1`.
+
+## Unreleased — iOS false "SOS active" from TEL frames
+
+- Fix iOS native SOS parsing (introduced in 340c548b, present in `main` and `develop`):
+  a `0xD3` live batch with one record is exactly 18 B and arrives about every 120 s. The
+  parser mapped 18 B to a 12 B SOS and 13 B to a 7 B SOS, so random record bytes produced
+  a false `.active` (an "SOS active" notification and an SDK `sent` snapshot), a false
+  `.preSos`, or a `.cancelled` that could locally cancel a real SOS.
+- Remove the 13/18 B mapping. Known TEL frames (`0xD3`, `0xD1`, `0xD2`, `0xD8`, `0xDA`,
+  `0xDB`, the `0x23` reply and CMD results) are matched by opcode and structure and are
+  not SOS. A 12 B frame on TEL is SOS only if `bit5(flags) == 0 && sosType == 3` and is
+  never a cancellation otherwise (Android parity). The SOS characteristic, `0xE1`/`0xE2`/
+  `0xE3` and notification ids, texts and payloads are unchanged.
+- INET (`ea03`) and CMD (`ea04`) notifications are never SOS candidates on iOS; SOS
+  arrives on the SOS and TEL characteristics only.
+- `EixamBleProtocol.isReservedSosOrTelNotifyLength` and the Dart "+6" wrapped-SOS lengths
+  are legacy and unused by the iOS parser; they are left untouched.
+- Physically validated on iPhone 15 (QA 03/11): 30 min background with a TAG nearby
+  produced no false SOS; real TAG SOS, cancel and app SOS unchanged; INET/CMD non-SOS.
 
 ## Unreleased — robust activity recording finalization (AR2C-B)
 
