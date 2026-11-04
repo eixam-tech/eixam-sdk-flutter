@@ -27,9 +27,11 @@ void main() {
       ActivityRecordingGapReason,
       ActivityRecordingIssue,
       ActivityRecordingException,
+      EixamPairingDisplayCategory,
+      EixamPairingDisplayFilter,
     ];
 
-    expect(publicTypes, hasLength(23));
+    expect(publicTypes, hasLength(25));
     expect(publicTypes.toSet(), hasLength(publicTypes.length));
   });
 }

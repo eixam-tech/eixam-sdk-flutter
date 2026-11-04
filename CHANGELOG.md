@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — pairing list display classifier
+
+- `EixamBleScanResult.pairingDisplayCategory` (`eixam`, `legacyOrStock`, `dfuRecovery`, `hidden`; `null` = not classified) computed from the fresh advertisement by the pure-Dart `classifyEixamPairingDisplay`. Shows the Eixam or stock service, names `EIXAM_*`, `N6*`, `Meshtastic_*`, `AdaDFU` and the DFU service; hides `EIXAM_GW_*` and everything else.
+- `EixamPairingDisplayFilter` keeps a device that was already shown visible when a later result lacks the name (iOS scan response), but still hides an explicit gateway name.
+- Display-only and additive: scanning, brand classification, `isDfuBootloader`, identity, migration and connection paths are unchanged. The category never authorizes a connection.
+
 ## Unreleased — robust activity recording finalization (AR2C-B)
 
 - Persist immutable finish cutoffs and five-second final catch-up deadlines; resume
