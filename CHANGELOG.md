@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — iOS false "SOS active" from TEL frames
+
+- Fix iOS native SOS parsing (introduced in 340c548b, present in `main` and `develop`):
+  a `0xD3` live batch with one record is exactly 18 B and arrives about every 120 s. The
+  parser mapped 18 B to a 12 B SOS and 13 B to a 7 B SOS, so random record bytes produced
+  a false `.active` (an "SOS active" notification and an SDK `sent` snapshot), a false
+  `.preSos`, or a `.cancelled` that could locally cancel a real SOS.
+- Remove the 13/18 B mapping. Known TEL frames (`0xD3`, `0xD1`, `0xD2`, `0xD8`, `0xDA`,
+  `0xDB`, the `0x23` reply and CMD results) are matched by opcode and structure and are
+  not SOS. A 12 B frame on TEL is SOS only if `bit5(flags) == 0 && sosType == 3` and is
+  never a cancellation otherwise (Android parity). The SOS characteristic, `0xE1`/`0xE2`/
+  `0xE3` and notification ids, texts and payloads are unchanged.
+- INET (`ea03`) and CMD (`ea04`) notifications are never SOS candidates on iOS; SOS
+  arrives on the SOS and TEL characteristics only.
+- `EixamBleProtocol.isReservedSosOrTelNotifyLength` and the Dart "+6" wrapped-SOS lengths
+  are legacy and unused by the iOS parser; they are left untouched.
+- Physical iOS validation (30 min background, real SOS and TAG cancel) is pending.
+
 ## Unreleased — robust activity recording finalization (AR2C-B)
 
 - Persist immutable finish cutoffs and five-second final catch-up deadlines; resume
