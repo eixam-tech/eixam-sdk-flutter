@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — interrupted DFU recovery and DFU pre-flight
+
+- Optional `DfuRecoveryControl` (status, `watchDfuRecovery`, `prepareCableRecovery`, `restartDfuFromScratch`, `confirmDeviceForgotten`, `dismissDfuRecovery`) with `DfuRecoveryState`, `DfuRecoveryReason`, `DfuRecoveryAction`, `E1RecoveryStrategy` and `resolveE1RecoveryStrategy` (bootloader 0.4.3 and unknown -> cable). BLE resume is not possible with bootloader 0.4.3; recovery is by cable. Final E1 behaviour is an open product decision.
+- No automatic DFU: Android `setNumberOfRetries(0)`, watchdogs and plugin detach no longer abort an engaged transfer (abort makes Nordic send Reset and strands the TAG in USB/UF2-only mode), `attemptRecovery` and the old forceDfu recovery are gone (`recoverFirmwareUpdate` throws `remoteRecoveryUnsupported`), iOS connection timeout 30 s.
+- Pre-flight before every OTA/migration/recovery start (Bluetooth, foreground, screen, phone battery level and charging); unreadable values are `DfuPreflightWarning`s and never block. BREAKING for hosts: starting needs `FirmwareUpdatePolicy.interruptionWarningAcknowledged` / `migrateDeviceToEixam(interruptionWarningAcknowledged: true)`, otherwise `interruptionWarningNotAcknowledged`.
+- `EixamBootstrapConfig.dfuRecovery` (`silenceWindow`, `observeInterval`). `DeviceMigrationFirmwareService.recoverMigrationFirmwareUpdate` removed.
+- Stock migration supersedes a stale interrupted firmware record when the TAG reappears as verified stock (hardware model 105, same identity) instead of failing `firmwareUpdateResumeRequired`.
+- Native probes `phoneBattery` and `screenAwake`. iOS stale-link detection and the Android task-removal behaviour are unverified on hardware.
+
 ## Unreleased — iOS stale-bond detection independent of language
 
 - `E_BLE_IOS_PAIRING_INFORMATION_REMOVED` is now raised from the CoreBluetooth error code (`CBError.peerRemovedPairingInformation`, 14) on FlutterBluePlus apple `connect` failures, which only carry CBErrorDomain. Before, it matched the English `localizedDescription`, which iOS localizes, so Catalan and Spanish iPhones got a generic connection error. Other operations, where 14 can be `CBATTError.unlikelyError`, keep the English text match as a fallback. No API change.

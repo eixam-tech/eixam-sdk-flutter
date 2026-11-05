@@ -252,13 +252,15 @@ firmware. Absence without that evidence remains waiting. An independent
 authoritative platform verdict for the same device can also establish that an
 invalid application has no supported remote recovery capability.
 
-The coordinator permits at most three native remote recovery invocations. It
-fully releases each failed invocation before reconciling/retrying. If the
-matched recovery endpoint disappears after a terminal failure, three fresh
-reconciliation scans exhaust the current remote opportunities. Android Nordic
-DFU 2.11 additionally retries the initial GATT connection three times
-(initial connection plus two retries); its configured DFU disconnect retry
-limit is three. Exhaustion survives process death and prevents endless retries.
+The SDK never retries or cancels a native legacy DFU after it started and never
+starts a DFU on its own, including on app relaunch: `attemptRecovery` only
+refreshes evidence, and `recoverFirmwareUpdate` fails with the typed
+`remoteRecoveryUnsupported`. The Nordic Android service answers an abort with
+Reset (Op Code 6), and a bootloader holding an erased application then reboots
+into USB/UF2-only mode, so Android uses `setNumberOfRetries(0)`, watchdogs fail
+only the Dart session, and plugin detach / task removal do not stop the service.
+Exhaustion survives process death. Interrupted-update recovery is the explicit,
+user-started `DfuRecoveryControl` below.
 
 After physical recovery, the SDK verifies the same hardware and actual
 application/version. A returned target completes only after verification; a
@@ -277,6 +279,96 @@ Firmware information, release eligibility, and reconciliation request a fresh
 installed-version inspection from the connected runtime. A missing or failed
 inspection cannot confirm the target using a cached version. A disconnected
 snapshot remains waiting until the actual application can be verified.
+
+## Interrupted DFU recovery (`DfuRecoveryControl`)
+
+Optional capability (`sdk is DfuRecoveryControl`; the base interface is unchanged).
+**BLE resume is not possible with bootloader 0.4.3; recovery is by cable.** After
+an interrupted legacy DFU the bootloader answers every new Start with
+INVALID_STATE and the Nordic library then resets it into USB/UF2-only mode
+(verified on hardware, Start then Reset 108-245 ms later). Nothing here starts a
+DFU automatically.
+
+```dart
+if (sdk is DfuRecoveryControl) {
+  final status = await sdk.getDfuRecoveryStatus();
+  sdk.watchDfuRecovery().listen(render); // scans only while an interrupted update is persisted
+  switch (status.availableAction) {
+    case DfuRecoveryAction.prepareCableRecovery:
+      await sdk.prepareCableRecovery();     // one tap
+    case DfuRecoveryAction.restartDfuFromScratch:
+      await sdk.restartDfuFromScratch();    // one tap
+    case DfuRecoveryAction.forgetDevice:    // iOS; after the user forgot the TAG
+      await sdk.confirmDeviceForgotten();
+    case DfuRecoveryAction.none:
+      break;
+  }
+  await sdk.dismissDfuRecovery();
+}
+```
+
+`DfuRecoveryStatus`: `state` (`resumable` = interrupted update with the bootloader
+visible (E1; the name is historical, it cannot resume), `iosStaleLink`,
+`silentNeedsCable`, `recovered`, `unknown`), `reason` (`DfuRecoveryReason`),
+`availableAction`, `needsCable`, `progressFraction`, `deviceId`, `warnings`. No
+localized text.
+
+- E1 action by bootloader version: `resolveE1RecoveryStrategy(version)` returns
+  `cableRecovery` for 0.4.3 and for any unknown version and
+  `restartFromScratch` only for versions in `kBleRestartCapableBootloaderVersions`
+  (EMPTY today; add a version only with hardware proof). Only the resolved action is
+  offered; the other is refused with `actionNotAvailable`. The SDK can read the
+  bootloader version without extra protocol: the bootloader exposes the Device
+  Information Service firmware revision (`2A26`, for example `0.4.3 s140 6.1.1`) while
+  advertising as AdaDFU; the controller's `bootloaderVersionReader` hook reads it
+  and is consulted only when the allowlist is not empty. The final E1 product
+  behaviour is an open product decision.
+- `prepareCableRecovery()`: expected outcome is the bootloader reset into USB/UF2
+  mode. After it, the TAG being gone from the air gives `silentNeedsCable`. The
+  phone cannot see the UF2 drive.
+  `silentNeedsCable` is also derived from a persisted interrupted update plus
+  silence for `EixamDfuRecoveryConfig.silenceWindow`.
+- `restartDfuFromScratch()`: a fresh DFU session for a bootloader proven to allow it.
+  Both actions use the same fresh-session mechanism; neither is retried.
+- `recovered` only after the TAG reconnected and the installed version was verified
+  by the existing reconciliation, never from DFU progress alone.
+- After a cable recovery the TAG reappears as stock Meshtastic. A fresh
+  re-verification (hardware model 105, same identity) supersedes the stale
+  interrupted record, so the stock to EIXAM migration is no longer blocked by
+  `firmwareUpdateResumeRequired`. Ambiguous identity or hardware stays fail-closed.
+- iOS stale link (`iosStaleLink`, action `forgetDevice`) is derived from CBError 14
+  on a connect while the TAG advertises. UNVERIFIED ON HARDWARE.
+
+### Pre-flight and acknowledgement (every OTA, migration and recovery start)
+
+Each check is pass, warning or fail. **A value that cannot be read never blocks**; it
+is returned as a typed `DfuPreflightWarning` on `FirmwareUpdateSession.preflightWarnings`,
+`FirmwareUpdateEligibility.warnings` and `DfuRecoveryStatus.warnings`. Only a value
+that was read and fails its threshold, or a precondition known to be false, blocks
+with a `DfuPreflightFailure` (`FirmwareUpdateException.code == failure.name`).
+
+| Check | Fails when | Unknown (warning) |
+| --- | --- | --- |
+| Bluetooth adapter | powered off (`bluetoothOff`) | `bluetoothStateUnknown` |
+| App foreground | not resumed (`appNotForeground`) | `appForegroundUnknown` |
+| Screen on | off (`screenNotAwake`) | `screenStateUnknown` |
+| Phone battery | read below 30 % (10 % while charging) (`phoneBatteryLow`) | `phoneBatteryUnknown`; charging state unreadable: `phoneChargingUnknown` and the lenient threshold |
+| TAG battery | read below the policy minimum (`deviceBatteryLow`) | `deviceBatteryUnknown` (stock firmware, bootloader) |
+| TAG visible, no other owner | recovery actions only (`deviceNotVisible`, `operationInProgress`) | - |
+
+Thresholds are inclusive pass at the limit (30 passes, 29 fails). Platform notes:
+TAG battery is unreadable on stock Meshtastic and in the bootloader on both
+platforms; phone battery and charging are read natively (Android
+`ACTION_BATTERY_CHANGED`, iOS `UIDevice`) and can be null; screen state is
+`PowerManager.isInteractive` on Android and "app active" on iOS. Keeping the screen
+awake during the transfer (wakelock) is the host's job; the SDK only refuses to start
+while the screen is off.
+
+Starting requires the host to have shown "if the update is interrupted, a computer
+will be needed": `FirmwareUpdatePolicy(interruptionWarningAcknowledged: true)` for
+`startFirmwareUpdate` and `migrateDeviceToEixam(candidate:, interruptionWarningAcknowledged: true)`.
+Without it nothing starts (`interruptionWarningNotAcknowledged`). Breaking for
+hosts: existing start calls must pass it.
 
 ## Optional logical activity sessions
 
