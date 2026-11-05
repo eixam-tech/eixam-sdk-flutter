@@ -21,6 +21,7 @@ class EixamBootstrapConfig {
     this.allowInsecureLocalEndpoints = false,
     this.tagAlertNotifier,
     this.tagAlertTextResolver,
+    this.dfuRecovery = const EixamDfuRecoveryConfig(),
   });
 
   final String appId;
@@ -41,6 +42,25 @@ class EixamBootstrapConfig {
   /// Optional localized wording for the default TAG alert adapter. Null uses
   /// neutral English text. Ignored when [tagAlertNotifier] is supplied.
   final TagAlertTextResolver? tagAlertTextResolver;
+
+  /// Interrupted-DFU recovery behaviour (see `DfuRecoveryControl`).
+  final EixamDfuRecoveryConfig dfuRecovery;
+}
+
+/// Options of the interrupted-DFU recovery capability.
+class EixamDfuRecoveryConfig {
+  const EixamDfuRecoveryConfig({
+    this.silenceWindow = const Duration(minutes: 2),
+    this.observeInterval = const Duration(seconds: 30),
+  });
+
+  /// How long an interrupted TAG must stay unseen before it is reported as
+  /// `silentNeedsCable`.
+  final Duration silenceWindow;
+
+  /// Minimum spacing between BLE scans made on behalf of `watchDfuRecovery()`
+  /// (Android throttles scan starts).
+  final Duration observeInterval;
 }
 
 class EixamNotificationTexts {

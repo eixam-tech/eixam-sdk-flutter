@@ -19,6 +19,7 @@ class BleAutoReconnectCoordinator {
     this.autoReconnectPairingCode = 'AUTO-RECONNECT',
     Future<PermissionState> Function()? permissionStateProvider,
     bool Function()? isIosPlatform,
+    Future<void> Function(String deviceId)? onIosStaleBond,
     bool Function()? isNativeProtectionOwningBle,
     String? Function()? nativeProtectionReconnectSuppressionReason,
     Future<void> Function(String trigger)? onNativeProtectionOwnsBle,
@@ -43,6 +44,7 @@ class BleAutoReconnectCoordinator {
        _retryTimerFactory = retryTimerFactory ?? Timer.new,
        _lateAvailabilityScanTimeout = lateAvailabilityScanTimeout,
        _lateAvailabilityScanDelay = lateAvailabilityScanDelay,
+       _onIosStaleBond = onIosStaleBond,
        _isIosPlatform = isIosPlatform ?? (() => Platform.isIOS);
 
   // The first retry waits longer than flutter_blue_plus's internal 2 s
@@ -89,6 +91,7 @@ class BleAutoReconnectCoordinator {
   final Duration _lateAvailabilityScanDelay;
   final String autoReconnectPairingCode;
   final bool Function() _isIosPlatform;
+  final Future<void> Function(String deviceId)? _onIosStaleBond;
 
   String? get _nativeReconnectSuppressionReason {
     final typedReason = _nativeProtectionReconnectSuppressionReason?.call();
@@ -1943,6 +1946,13 @@ class BleAutoReconnectCoordinator {
     String deviceId, {
     String reason = 'android_bond_missing',
   }) async {
+    if (reason == 'ios_pairing_information_removed') {
+      // Stale bond / GATT cache signature (CBError 14). Informs DFU recovery;
+      // contained so it can never alter the reconnect handling below.
+      try {
+        await _onIosStaleBond?.call(deviceId);
+      } catch (_) {}
+    }
     _manualDisconnectRequested = true;
     await _preferredDeviceStore.saveManualDisconnectRequested(true);
     await _preferredDeviceStore.clearPreferredDevice();

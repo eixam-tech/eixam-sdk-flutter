@@ -226,8 +226,18 @@ final class DeviceMigrationCoordinator {
   }
 
   Future<DeviceMigrationResult> migrate(
-    DeviceMigrationCandidate candidate,
-  ) async {
+    DeviceMigrationCandidate candidate, {
+    bool interruptionWarningAcknowledged = false,
+  }) async {
+    if (!interruptionWarningAcknowledged) {
+      // Typed refusal before anything is probed, published or started.
+      return DeviceMigrationResult(
+        outcome: DeviceMigrationOutcome.blocked,
+        candidate: candidate,
+        failureCode:
+            DfuPreflightFailure.interruptionWarningNotAcknowledged.name,
+      );
+    }
     if (_migrationInProgress) {
       throw const FirmwareUpdateException(
         'migrationAlreadyRunning',
@@ -266,7 +276,7 @@ final class DeviceMigrationCoordinator {
         failureCode: 'bluetoothBondRepairRequired',
       );
     }
-    final activeFirmware = await firmwareUpdates
+    var activeFirmware = await firmwareUpdates
         .getActiveMigrationFirmwareUpdate();
     if (activeFirmware != null &&
         !_firmwareSessionMatchesCandidate(activeFirmware, candidate)) {
@@ -309,6 +319,20 @@ final class DeviceMigrationCoordinator {
       );
     }
 
+    // An interrupted EIXAM update leaves the TAG in its USB/UF2 bootloader; the
+    // user then copies the stock recovery image. Seeing stock firmware again
+    // (hardware model re-verified just above, same identity as the record, which
+    // the active-firmware ownership check above already enforced) is proof of
+    // that physical recovery, so the stale record is superseded instead of
+    // blocking with firmwareUpdateResumeRequired. Anything ambiguous never
+    // reaches this point: it was blocked above.
+    if (activeFirmware != null &&
+        _isSupersedableInterruptedUpdate(activeFirmware)) {
+      await firmwareUpdates.supersedeInterruptedFirmwareUpdate(
+        activeFirmware.sessionId,
+      );
+      activeFirmware = null;
+    }
     if (activeFirmware != null &&
         activeFirmware.nextAction !=
             FirmwareUpdateNextAction.physicalRecovery &&
@@ -395,9 +419,12 @@ final class DeviceMigrationCoordinator {
       session = await firmwareUpdates.startMigrationFirmwareUpdate(
         sourceStatus: sourceStatus,
         release: release,
+        // Reached only after migrate() verified the warning acknowledgement,
+        // or from reconcile() resuming a flow the user already started.
         policy: const FirmwareUpdatePolicy(
           supportedHardwareModels: <String>[eixamFirmwareCatalogModel],
           requireKnownDeviceBattery: false,
+          interruptionWarningAcknowledged: true,
         ),
         postMigrationStatusRefresh:
             ({required deviceId, required attempt, required targetVersion}) =>
@@ -649,7 +676,6 @@ final class DeviceMigrationCoordinator {
         .where((scan) => _stronglyMatches(current.candidate, scan))
         .toList(growable: false);
     if (matchingBootloaders.length == 1) {
-      final bootloader = matchingBootloaders.single;
       final firmware = await firmwareUpdates.getActiveMigrationFirmwareUpdate();
       if (firmware?.nextAction == FirmwareUpdateNextAction.physicalRecovery) {
         return _reconciled(
@@ -659,65 +685,9 @@ final class DeviceMigrationCoordinator {
           nextAction: DeviceMigrationNextAction.physicalRecovery,
         );
       }
-      if (attemptRecovery) {
-        safeSdkDebugPrint('MIGRATION_RECOVERY_START identityVerified=true');
-        final FirmwareUpdateSession recovered;
-        final progressSub = firmwareUpdates
-            .watchMigrationFirmwareProgress(
-              deviceId: current.candidate.deviceId,
-            )
-            .listen(_onFirmwareProgress);
-        try {
-          recovered = await firmwareUpdates.recoverMigrationFirmwareUpdate(
-            bootloaderDeviceId: bootloader.deviceId,
-            releaseId: current.releaseId,
-            targetVersion: current.targetVersion,
-          );
-        } on FirmwareUpdateException catch (error) {
-          safeSdkDebugPrint('MIGRATION_RECOVERY_FAILED code=${error.code}');
-          return _reconciled(
-            current,
-            state: DeviceMigrationState.recoveryRequired,
-            outcome: DeviceMigrationReconciliationOutcome.recoveryRequired,
-            nextAction: DeviceMigrationNextAction.recover,
-            failureCode: error.code,
-          );
-        } finally {
-          await progressSub.cancel();
-          await _writeTail;
-        }
-        if (recovered.state == FirmwareUpdateState.completed ||
-            recovered.state == FirmwareUpdateState.reconnecting) {
-          await _publish(
-            current.copyWith(
-              firmwareSession: recovered,
-              state: DeviceMigrationState.waitingForDevice,
-              reconciliationDeadline: DateTime.now().add(reconciliationTimeout),
-              reconciliationOutcome: DeviceMigrationReconciliationOutcome
-                  .matchingRecoveryDeviceFound,
-              nextAction: DeviceMigrationNextAction.waitForDevice,
-              canCancel: false,
-              updatedAt: DateTime.now(),
-            ),
-          );
-          return _reconcile();
-        }
-        if (recovered.nextAction == FirmwareUpdateNextAction.physicalRecovery) {
-          return _reconciled(
-            current.copyWith(firmwareSession: recovered),
-            state: DeviceMigrationState.physicalRecoveryRequired,
-            outcome: DeviceMigrationReconciliationOutcome.recoveryRequired,
-            nextAction: DeviceMigrationNextAction.physicalRecovery,
-          );
-        }
-        return _reconciled(
-          current.copyWith(firmwareSession: recovered),
-          state: DeviceMigrationState.recoveryRequired,
-          outcome: DeviceMigrationReconciliationOutcome.recoveryRequired,
-          nextAction: DeviceMigrationNextAction.recover,
-          failureCode: recovered.failureCode ?? 'firmwareRecoveryFailed',
-        );
-      }
+      // [attemptRecovery] never starts a DFU against the bootloader: an
+      // interrupted legacy update cannot be recovered over BLE with bootloader
+      // 0.4.3 and a DFU needs an explicit user action (DfuRecoveryControl).
       return _reconciled(
         current,
         state: DeviceMigrationState.recoveryRequired,
@@ -1220,6 +1190,18 @@ final class DeviceMigrationCoordinator {
     }
     return first.deviceId == second.deviceId;
   }
+
+  /// An unfinished firmware record whose native transfer started: the device
+  /// was left without a valid application (or its fate is unproven), which is
+  /// the situation a physical recovery resolves.
+  bool _isSupersedableInterruptedUpdate(FirmwareUpdateSession session) =>
+      !session.isCompleted &&
+      session.nativeTransferEngaged &&
+      (session.requiresRecovery ||
+          session.state == FirmwareUpdateState.recoveryRequired ||
+          session.state == FirmwareUpdateState.physicalRecoveryRequired ||
+          session.nextAction == FirmwareUpdateNextAction.physicalRecovery ||
+          session.nextAction == FirmwareUpdateNextAction.waitForDevice);
 
   bool _firmwareSessionMatchesCandidate(
     FirmwareUpdateSession session,

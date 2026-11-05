@@ -299,6 +299,9 @@ void main() {
           final result = await coordinator.startFirmwareUpdate(
             deviceId: 'demo-device',
             releaseId: 'fw-1',
+            policy: const FirmwareUpdatePolicy(
+              interruptionWarningAcknowledged: true,
+            ),
           );
           expect(result.state, FirmwareUpdateState.completed);
           expect(result.sessionId, 'fw-restored');
@@ -321,6 +324,9 @@ void main() {
         final result = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         expect(remote.downloadCallCount, 1);
         expect(result.requiresRecovery, false);
@@ -355,11 +361,17 @@ void main() {
       final first = coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
       await expectLater(
         coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         ),
         throwsA(isA<FirmwareUpdateException>()),
       );
@@ -450,6 +462,9 @@ void main() {
         final operation = first.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         while (remote.downloadCallCount == 0) {
           await Future<void>.delayed(Duration.zero);
@@ -478,6 +493,9 @@ void main() {
         final result = await restored.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         expect(result.sessionId, sessionId);
         expect(result.state, FirmwareUpdateState.completed);
@@ -502,6 +520,9 @@ void main() {
       final operation = coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
       await entered.future;
       expect(store.value?.artifactVerified, true);
@@ -537,6 +558,9 @@ void main() {
         final result = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         expect(result.state, isNot(FirmwareUpdateState.completed));
       },
@@ -772,6 +796,9 @@ void main() {
                 model: 'EIXAM R1',
                 firmwareVersion: actual ?? 'unknown',
               ),
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         expect(
           result.verificationPolicy,
@@ -846,6 +873,9 @@ void main() {
                 }) async => _readyStatus(
                   firmwareVersion: '3.0.0.abc1234',
                 ).copyWith(model: 'EIXAM R1'),
+            policy: const FirmwareUpdatePolicy(
+              interruptionWarningAcknowledged: true,
+            ),
           );
           expect(result.releaseId, release.releaseId);
           expect(
@@ -894,6 +924,7 @@ void main() {
           sourceStatus: _readyStatus().copyWith(model: 'EIXAM R1'),
           release: release!,
           policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
             supportedHardwareModels: <String>['EIXAM R1'],
           ),
           postMigrationStatusRefresh:
@@ -987,6 +1018,9 @@ void main() {
                 required attempt,
                 required targetVersion,
               }) async => _readyStatus(firmwareVersion: targetVersion),
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         if (scenario.allowed) {
           expect((await operation).state, FirmwareUpdateState.completed);
@@ -1008,6 +1042,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.failed);
@@ -1022,6 +1059,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.failed);
@@ -1039,6 +1079,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.failed);
@@ -1057,6 +1100,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.failed);
@@ -1072,6 +1118,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.failed);
@@ -1093,6 +1142,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.failed);
@@ -1116,6 +1168,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.completed);
@@ -1143,6 +1198,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.completed);
@@ -1167,6 +1225,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.completed);
@@ -1175,17 +1236,21 @@ void main() {
     );
 
     test(
-      'recoverFirmwareUpdate re-flashes a bootloader device and completes',
+      'startBootloaderRecoveryDfu runs one explicit fresh session and '
+      'reaches reconnecting',
       () async {
+        final interrupted = _durableFirmwareSession(
+          FirmwareUpdateState.transferring,
+        );
         final coordinator = buildCoordinator(
+          sessionStore: _MemoryFirmwareStore()..value = interrupted,
           transport: _SuccessfulDfuTransport(),
         );
         addTearDown(coordinator.dispose);
 
-        final session = await coordinator.recoverFirmwareUpdate(
+        final session = await coordinator.startBootloaderRecoveryDfu(
           bootloaderDeviceId: 'bootloader-addr',
-          releaseId: 'fw-1',
-          targetVersion: '2.0.0',
+          interrupted: interrupted,
         );
 
         expect(session.state, FirmwareUpdateState.reconnecting);
@@ -1194,15 +1259,20 @@ void main() {
     );
 
     test(
-      'recoverFirmwareUpdate stays recovery-required when the flash fails',
+      'startBootloaderRecoveryDfu stays recovery-required when the flash fails',
       () async {
-        final coordinator = buildCoordinator(transport: _FailingDfuTransport());
+        final interrupted = _durableFirmwareSession(
+          FirmwareUpdateState.transferring,
+        );
+        final coordinator = buildCoordinator(
+          sessionStore: _MemoryFirmwareStore()..value = interrupted,
+          transport: _FailingDfuTransport(),
+        );
         addTearDown(coordinator.dispose);
 
-        final session = await coordinator.recoverFirmwareUpdate(
+        final session = await coordinator.startBootloaderRecoveryDfu(
           bootloaderDeviceId: 'bootloader-addr',
-          releaseId: 'fw-1',
-          targetVersion: '2.0.0',
+          interrupted: interrupted,
         );
 
         expect(session.state, FirmwareUpdateState.recoveryRequired);
@@ -1229,13 +1299,16 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.recoveryRequired);
       expect(session.failureCode, 'dfuStalled');
-      // The still-pending native transfer must be cancelled, not orphaned, so a
-      // subsequent recovery is not rejected with 'alreadyRunning'.
-      expect(transport.cancelCount, greaterThanOrEqualTo(1));
+      // The pending native transfer is NEVER cancelled by a watchdog: Nordic's
+      // abort() sends Reset (Op Code 6) and strands the TAG in USB/UF2 mode.
+      expect(transport.cancelCount, 0);
     });
 
     test('a stall with no native event at all requires reconciliation '
@@ -1256,6 +1329,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.recoveryRequired);
@@ -1288,6 +1364,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.completed);
@@ -1315,6 +1394,9 @@ void main() {
       final updateFuture = coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
       final sessionId = await sessionIdSeen.future.timeout(
         const Duration(seconds: 5),
@@ -1336,10 +1418,14 @@ void main() {
       expect(session.state, FirmwareUpdateState.recoveryRequired);
     });
 
-    test('recoverFirmwareUpdate suppresses auto-reconnect for the transfer '
+    test('startBootloaderRecoveryDfu suppresses auto-reconnect for the transfer '
         'window (release/restore hooks)', () async {
       final calls = <String>[];
+      final interrupted = _durableFirmwareSession(
+        FirmwareUpdateState.transferring,
+      );
       final coordinator = buildCoordinator(
+        sessionStore: _MemoryFirmwareStore()..value = interrupted,
         transport: _SuccessfulDfuTransport(),
         releaseBleForDfuTransfer: ({required String deviceId}) async {
           calls.add('release:$deviceId');
@@ -1350,10 +1436,9 @@ void main() {
       );
       addTearDown(coordinator.dispose);
 
-      final session = await coordinator.recoverFirmwareUpdate(
+      final session = await coordinator.startBootloaderRecoveryDfu(
         bootloaderDeviceId: 'bootloader-addr',
-        releaseId: 'fw-1',
-        targetVersion: '2.0.0',
+        interrupted: interrupted,
       );
 
       expect(session.state, FirmwareUpdateState.reconnecting);
@@ -1399,6 +1484,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         await pumpEventQueue();
 
@@ -1444,6 +1532,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.completed);
@@ -1489,6 +1580,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.completed);
@@ -1534,6 +1628,9 @@ void main() {
           final session = await coordinator.startFirmwareUpdate(
             deviceId: 'demo-device',
             releaseId: 'fw-1',
+            policy: const FirmwareUpdatePolicy(
+              interruptionWarningAcknowledged: true,
+            ),
           );
           expect(session.state, FirmwareUpdateState.completed);
           expect(attempts, 3);
@@ -1571,6 +1668,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(session.state, FirmwareUpdateState.recoveryRequired);
@@ -1604,6 +1704,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       expect(prepareCalls, greaterThanOrEqualTo(1));
@@ -1620,6 +1723,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
 
       // The device engaged and was mid-flash when the error hit, so it may be
@@ -1646,6 +1752,9 @@ void main() {
       final session = await coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
+        policy: const FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: true,
+        ),
       );
       expect(session.nativeTransferEngaged, isTrue);
       expect(session.requiresRecovery, isFalse);
@@ -1677,6 +1786,9 @@ void main() {
         final session = await coordinator.startFirmwareUpdate(
           deviceId: 'demo-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
 
         expect(session.state, FirmwareUpdateState.completed);
@@ -1685,7 +1797,7 @@ void main() {
     );
 
     test(
-      'migration recovery reuses the interrupted firmware session',
+      'bootloader recovery reuses the interrupted firmware session',
       () async {
         final original = _durableFirmwareSession(
           FirmwareUpdateState.transferring,
@@ -1695,44 +1807,15 @@ void main() {
           transport: _SuccessfulDfuTransport(),
         );
         addTearDown(coordinator.dispose);
-        final recovered = await coordinator.recoverMigrationFirmwareUpdate(
+        final recovered = await coordinator.startBootloaderRecoveryDfu(
           bootloaderDeviceId: original.deviceId,
-          releaseId: original.releaseId,
-          targetVersion: original.targetVersion,
+          interrupted: original,
         );
         expect(recovered.sessionId, original.sessionId);
         expect(recovered.startedAt, original.startedAt);
         expect(recovered.state, FirmwareUpdateState.reconnecting);
       },
     );
-
-    for (final mismatch in ['device', 'release', 'version']) {
-      test(
-        'migration recovery rejects interrupted $mismatch mismatch',
-        () async {
-          final original = _durableFirmwareSession(
-            FirmwareUpdateState.transferring,
-          );
-          final store = _MemoryFirmwareStore()..value = original;
-          final coordinator = buildCoordinator(sessionStore: store);
-          addTearDown(coordinator.dispose);
-          await expectLater(
-            coordinator.recoverMigrationFirmwareUpdate(
-              bootloaderDeviceId: mismatch == 'device'
-                  ? 'other'
-                  : original.deviceId,
-              releaseId: mismatch == 'release' ? 'other' : original.releaseId,
-              targetVersion: mismatch == 'version'
-                  ? '9.0.0'
-                  : original.targetVersion,
-            ),
-            throwsA(isA<FirmwareUpdateException>()),
-          );
-          expect(store.value?.sessionId, original.sessionId);
-          expect(store.value?.state, original.state);
-        },
-      );
-    }
 
     test('restores every non-terminal OTA restart phase', () async {
       for (final state in <FirmwareUpdateState>[
@@ -1829,84 +1912,33 @@ void main() {
       expect(session?.nextAction, FirmwareUpdateNextAction.waitForDevice);
     });
 
-    for (final failures in [1, 3]) {
-      test(
-        'GATT 133: $failures failures release lifecycle before retry',
-        () async {
-          final store = _MemoryFirmwareStore()
-            ..value = _durableFirmwareSession(
-              FirmwareUpdateState.recoveryRequired,
-            );
-          final transport = _RetryingRecoveryTransport(failures);
-          var releases = 0;
-          var restores = 0;
-          final coordinator = buildCoordinator(
-            sessionStore: store,
-            transport: transport,
-            initialStatus: _readyStatus(connected: false),
-            bleClient: _FirmwareBleClient([
-              _dfuScan('bootloader', 'AA:BB:CC:DD:EE:FF'),
-            ]),
-            releaseBleForDfuTransfer: ({required deviceId}) async {
-              expect(transport.active, isFalse);
-              expect(transport.listeners, 1);
-              expect(releases, restores);
-              releases++;
-            },
-            restoreBleAfterDfuTransfer: ({required deviceId}) async {
-              expect(transport.active, isFalse);
-              expect(transport.listeners, 0);
-              restores++;
-            },
-          );
-          addTearDown(coordinator.dispose);
-          final result = await coordinator.reconcileFirmwareUpdate(
-            attemptRecovery: true,
-          );
-          expect(transport.starts, failures == 1 ? 2 : 3);
-          expect(transport.ids.toSet().length, transport.starts);
-          expect(releases, restores);
-          expect(transport.listeners, 0);
-          expect(result?.recoveryDeviceMatched, isTrue);
-          expect(
-            result?.nextAction,
-            failures == 1
-                ? FirmwareUpdateNextAction.waitForDevice
-                : FirmwareUpdateNextAction.physicalRecovery,
-          );
-          expect(result?.manualRecoveryRequired, failures == 3);
-          if (failures == 3) {
-            await coordinator.reconcileFirmwareUpdate(attemptRecovery: true);
-            expect(transport.starts, 3);
-            expect(store.value?.remoteRecoveryExhausted, isTrue);
-          }
-        },
-      );
-    }
-
     test(
-      'failed matched recovery then absence exhausts reconciliation, not identity',
+      'attemptRecovery never starts a DFU against a visible bootloader',
       () async {
-        final scans = [_dfuScan('bootloader', 'AA:BB:CC:DD:EE:FF')];
         final store = _MemoryFirmwareStore()
           ..value = _durableFirmwareSession(
             FirmwareUpdateState.recoveryRequired,
           );
-        final transport = _RetryingRecoveryTransport(3, onFailure: scans.clear);
+        final transport = _RetryingRecoveryTransport(0);
+        var releases = 0;
         final coordinator = buildCoordinator(
           sessionStore: store,
           transport: transport,
           initialStatus: _readyStatus(connected: false),
-          bleClient: _FirmwareBleClient(scans),
+          bleClient: _FirmwareBleClient([
+            _dfuScan('bootloader', 'AA:BB:CC:DD:EE:FF'),
+          ]),
+          releaseBleForDfuTransfer: ({required deviceId}) async => releases++,
         );
         addTearDown(coordinator.dispose);
         final result = await coordinator.reconcileFirmwareUpdate(
           attemptRecovery: true,
         );
-        expect(transport.starts, 1);
-        expect(result?.nextAction, FirmwareUpdateNextAction.physicalRecovery);
-        expect(result?.recoveryReconciliationAttempts, 3);
-        expect(result?.remoteRecoveryFailed, isTrue);
+        expect(transport.starts, 0);
+        expect(releases, 0);
+        expect(result?.recoveryDeviceMatched, isTrue);
+        expect(result?.nextAction, FirmwareUpdateNextAction.recover);
+        expect(result?.state, FirmwareUpdateState.recoveryRequired);
       },
     );
 
@@ -2014,6 +2046,9 @@ void main() {
                 required attempt,
                 required targetVersion,
               }) async => _readyStatus(firmwareVersion: '2.0.0'),
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         );
         expect(result.state, FirmwareUpdateState.completed);
         expect(result.remoteRecoveryExhausted, isFalse);
@@ -2076,11 +2111,11 @@ void main() {
     test(
       'matching bootloader recovery still waits for version verification',
       () async {
-        final store = _MemoryFirmwareStore()
-          ..value = _durableFirmwareSession(
-            FirmwareUpdateState.recoveryRequired,
-            requiresRecovery: true,
-          );
+        final interrupted = _durableFirmwareSession(
+          FirmwareUpdateState.recoveryRequired,
+          requiresRecovery: true,
+        );
+        final store = _MemoryFirmwareStore()..value = interrupted;
         final coordinator = buildCoordinator(
           sessionStore: store,
           initialStatus: _readyStatus(connected: false),
@@ -2091,8 +2126,9 @@ void main() {
         );
         addTearDown(coordinator.dispose);
 
-        final recovered = await coordinator.reconcileFirmwareUpdate(
-          attemptRecovery: true,
+        final recovered = await coordinator.startBootloaderRecoveryDfu(
+          bootloaderDeviceId: 'bootloader',
+          interrupted: interrupted,
         );
 
         expect(recovered?.state, FirmwareUpdateState.reconnecting);
@@ -2125,6 +2161,9 @@ void main() {
         coordinator.startFirmwareUpdate(
           deviceId: 'other-device',
           releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
         ),
         throwsA(
           isA<FirmwareUpdateException>().having(

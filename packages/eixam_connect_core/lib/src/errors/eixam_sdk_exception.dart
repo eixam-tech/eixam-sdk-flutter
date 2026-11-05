@@ -1,3 +1,4 @@
+import '../entities/dfu_recovery.dart' show DfuPreflightFailure;
 import '../profile/sdk_profile_validation.dart';
 
 sealed class EixamSdkException implements Exception {
@@ -97,6 +98,16 @@ class FirmwareUpdateException extends EixamSdkException {
   /// the failure carries no native verdict (a stall/timeout thrown before any
   /// terminal event), so the caller must fall back to its own heuristic.
   final bool? requiresRecovery;
+}
+
+/// Typed refusal/failure of a `DfuRecoveryControl` action. `code` equals
+/// `failure.name`, so an ordinary firmware update that fails the same
+/// pre-flight raises a [FirmwareUpdateException] with the same code.
+class DfuRecoveryException extends EixamSdkException {
+  DfuRecoveryException(this.failure, [String? message])
+    : super(failure.name, message ?? failure.name);
+
+  final DfuPreflightFailure failure;
 }
 
 class FeedbackException extends EixamSdkException {

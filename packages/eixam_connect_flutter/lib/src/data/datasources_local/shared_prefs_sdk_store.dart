@@ -60,6 +60,7 @@ class SharedPrefsSdkStore {
       'eixam.device.migration_session';
   static const String firmwareUpdateSessionKey =
       'eixam.device.firmware_update_session';
+  static const String dfuRecoveryRecordKey = 'eixam.device.dfu_recovery_record';
   static const List<String> localUserDataKeys = <String>[
     sosIncidentKey,
     sosStateKey,
@@ -82,6 +83,7 @@ class SharedPrefsSdkStore {
     manualDisconnectRequestedKey,
     deviceMigrationSessionKey,
     firmwareUpdateSessionKey,
+    dfuRecoveryRecordKey,
   ];
 
   SharedPreferences? _prefs;

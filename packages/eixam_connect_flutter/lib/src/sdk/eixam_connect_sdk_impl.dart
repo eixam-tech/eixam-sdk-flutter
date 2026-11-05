@@ -83,6 +83,7 @@ import 'device_country_config_controller.dart';
 import 'device_position_batch_normalizer.dart';
 import 'device_position_backlog_coordinator.dart';
 import '../device/eixam_position_backlog_packet.dart';
+import 'dfu_recovery_controller.dart';
 import 'firmware_update_coordinator.dart';
 import 'device_migration_coordinator.dart';
 import 'nearby_text_controller.dart';
@@ -241,6 +242,7 @@ class EixamConnectSdkImpl
         BackgroundLocationControl,
         ActivitySessionControl,
         ActivityAvailabilityControl,
+        DfuRecoveryControl,
         TagAlertsControl,
         ActivityRecordingControl,
         ActivityRecordingHistoryControl,
@@ -274,6 +276,7 @@ class EixamConnectSdkImpl
     this.provisioningBackendUrl,
     this.deviceConfigStore,
     this.firmwareUpdateCoordinator,
+    this.dfuRecoveryController,
     this.deviceMigrationCoordinator,
     this.notificationPolicy = EixamNotificationPolicy.sdkManaged,
     this.notificationTexts = _fallbackNotificationTexts,
@@ -378,6 +381,9 @@ class EixamConnectSdkImpl
       deviceRepository: deviceRepository,
       preferredDeviceStore: preferredBleDeviceStore,
       permissionStateProvider: permissionsRepository.getPermissionState,
+      onIosStaleBond: (deviceId) async {
+        await dfuRecoveryController?.noteIosStaleBond(deviceId);
+      },
       isNativeProtectionOwningBle: () => _shouldSkipFlutterBleReconnect,
       nativeProtectionReconnectSuppressionReason: () {
         if (!_isProtectionPlatformOwningBle) {
@@ -636,6 +642,7 @@ class EixamConnectSdkImpl
   final BackgroundTelemetryPlatformAdapter backgroundTelemetryPlatformAdapter;
   final PhoneRadioPlatformProbe _phoneRadioProbe;
   final FirmwareUpdateCoordinator? firmwareUpdateCoordinator;
+  final DfuRecoveryController? dfuRecoveryController;
   final DeviceMigrationCoordinator? deviceMigrationCoordinator;
   DeviceCountryConfigController? _deviceCountryConfigController;
   DeviceProvisioningCoordinator? _deviceProvisioningCoordinator;
@@ -4063,6 +4070,7 @@ class EixamConnectSdkImpl
   @override
   Future<DeviceMigrationResult> migrateDeviceToEixam({
     required DeviceMigrationCandidate candidate,
+    bool interruptionWarningAcknowledged = false,
   }) async {
     final coordinator = deviceMigrationCoordinator;
     if (coordinator == null) {
@@ -4075,7 +4083,10 @@ class EixamConnectSdkImpl
     await _devicePositionBacklogCoordinator.cancel();
     _firmwareOtaInProgress = true;
     try {
-      return await coordinator.migrate(candidate);
+      return await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: interruptionWarningAcknowledged,
+      );
     } finally {
       _firmwareOtaInProgress = false;
     }
@@ -4555,25 +4566,20 @@ class EixamConnectSdkImpl
     );
   }
 
-  /// Re-flashes a device stranded in the DFU bootloader (recovery after an
-  /// interrupted transfer). [bootloaderDeviceId] is the address the device
-  /// advertises while in bootloader mode.
+  /// Removed behaviour: an interrupted legacy DFU cannot be re-flashed over BLE
+  /// (bootloader 0.4.3 answers Start with INVALID_STATE and the library then
+  /// resets the TAG into USB/UF2-only mode). Use [DfuRecoveryControl]. Kept so
+  /// older hosts fail with a typed error instead of starting a DFU.
   Future<FirmwareUpdateSession> recoverFirmwareUpdate({
     required String bootloaderDeviceId,
     required String releaseId,
     String targetVersion = '',
   }) async {
-    await _devicePositionBacklogCoordinator.cancel();
-    _firmwareOtaInProgress = true;
-    return _firmwareUpdates()
-        .recoverFirmwareUpdate(
-          bootloaderDeviceId: bootloaderDeviceId,
-          releaseId: releaseId,
-          targetVersion: targetVersion,
-        )
-        .whenComplete(() {
-          _firmwareOtaInProgress = false;
-        });
+    throw const FirmwareUpdateException(
+      'remoteRecoveryUnsupported',
+      'BLE recovery of an interrupted update is not possible; use '
+          'DfuRecoveryControl (cable recovery).',
+    );
   }
 
   @override
@@ -4587,6 +4593,43 @@ class EixamConnectSdkImpl
   Future<void> cancelFirmwareUpdate(String sessionId) {
     return _firmwareUpdates().cancelFirmwareUpdate(sessionId);
   }
+
+  DfuRecoveryController _dfuRecovery() {
+    final controller = dfuRecoveryController;
+    if (controller == null) {
+      throw const FirmwareUpdateException(
+        'E_FIRMWARE_OTA_UNAVAILABLE',
+        'DFU recovery is not configured for this SDK instance.',
+      );
+    }
+    return controller;
+  }
+
+  @override
+  Future<DfuRecoveryStatus> getDfuRecoveryStatus() =>
+      dfuRecoveryController?.getDfuRecoveryStatus() ??
+      Future<DfuRecoveryStatus>.value(const DfuRecoveryStatus.unknown());
+
+  @override
+  Stream<DfuRecoveryStatus> watchDfuRecovery() =>
+      dfuRecoveryController?.watchDfuRecovery() ??
+      const Stream<DfuRecoveryStatus>.empty();
+
+  @override
+  Future<DfuRecoveryStatus> restartDfuFromScratch() =>
+      _dfuRecovery().restartDfuFromScratch();
+
+  @override
+  Future<DfuRecoveryStatus> prepareCableRecovery() =>
+      _dfuRecovery().prepareCableRecovery();
+
+  @override
+  Future<DfuRecoveryStatus> confirmDeviceForgotten() =>
+      _dfuRecovery().confirmDeviceForgotten();
+
+  @override
+  Future<DfuRecoveryStatus> dismissDfuRecovery() =>
+      _dfuRecovery().dismissDfuRecovery();
 
   FirmwareUpdateCoordinator _firmwareUpdates() {
     final coordinator = firmwareUpdateCoordinator;
@@ -27778,6 +27821,7 @@ class EixamConnectSdkImpl
     await _deviceCountryConfigController?.dispose();
     await _deviceProvisioningCoordinator?.dispose();
     await deviceMigrationCoordinator?.dispose();
+    await dfuRecoveryController?.dispose();
     await firmwareUpdateCoordinator?.dispose();
     await _operationalTelemetryCoordinator.stop();
     await _trackingOwnerArbiter.dispose();
