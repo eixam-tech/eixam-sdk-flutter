@@ -98,10 +98,12 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   /// Bluetooth off, app not in the foreground, screen off, phone battery low.
   Future<List<DfuPreflightWarning>> preflightDfuStart() => runDfuPreflight(
     adapterState: adapterStateProvider,
-    appForeground: () {
-      final state = appLifecycleStateProvider?.call();
-      return state == null ? null : state == AppLifecycleState.resumed;
-    },
+    appForeground: appLifecycleStateProvider == null
+        ? null
+        : () {
+            final state = appLifecycleStateProvider!.call();
+            return state == null ? null : state == AppLifecycleState.resumed;
+          },
     screenAwake: screenAwakeProvider,
     phoneBattery: phoneBatteryProvider,
   );

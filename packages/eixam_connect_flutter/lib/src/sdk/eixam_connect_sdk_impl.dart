@@ -4617,11 +4617,25 @@ class EixamConnectSdkImpl
 
   @override
   Future<DfuRecoveryStatus> restartDfuFromScratch() =>
-      _dfuRecovery().restartDfuFromScratch();
+      _runDfuRecoveryAction(_dfuRecovery().restartDfuFromScratch);
 
   @override
   Future<DfuRecoveryStatus> prepareCableRecovery() =>
-      _dfuRecovery().prepareCableRecovery();
+      _runDfuRecoveryAction(_dfuRecovery().prepareCableRecovery);
+
+  /// A recovery DFU preempts position backlog sync and holds the firmware OTA
+  /// ownership flag for its duration, like an ordinary update.
+  Future<DfuRecoveryStatus> _runDfuRecoveryAction(
+    Future<DfuRecoveryStatus> Function() action,
+  ) async {
+    await _devicePositionBacklogCoordinator.cancel();
+    _firmwareOtaInProgress = true;
+    try {
+      return await action();
+    } finally {
+      _firmwareOtaInProgress = false;
+    }
+  }
 
   @override
   Future<DfuRecoveryStatus> confirmDeviceForgotten() =>

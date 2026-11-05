@@ -2325,8 +2325,6 @@ final class _FakeMigrationFirmwareService
     this.activeFirmware,
     this.transferGate,
     this.transferEntered,
-    this.recoveryError,
-    this.recoveryGate,
     this.releaseUnavailable = false,
     this.startError,
     this.evidenceAfterStartOnly = false,
@@ -2336,8 +2334,6 @@ final class _FakeMigrationFirmwareService
   final bool evidenceAfterStartOnly;
   final FirmwareUpdateException? startError;
   final Completer<void>? transferGate;
-  final FirmwareUpdateException? recoveryError;
-  final Completer<void>? recoveryGate;
   final Completer<void>? transferEntered;
   final FirmwareUpdateState? forcedState;
   final bool forcedNativeEngaged;
