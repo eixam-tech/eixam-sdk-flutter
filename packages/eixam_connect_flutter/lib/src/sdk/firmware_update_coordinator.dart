@@ -370,7 +370,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     );
     _ensureMayStart(intent);
     final priorIntent = _activeSession;
-    if (priorIntent != null && priorIntent.releaseId == releaseId) {
+    if (priorIntent != null &&
+        priorIntent.releaseId == releaseId &&
+        !priorIntent.isInstalledVersionMismatch) {
       intent = priorIntent.copyWith(
         state: FirmwareUpdateState.checking,
         clearCompletedAt: true,
@@ -941,7 +943,13 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   }) async {
     await _restore();
     final current = _activeSession;
-    if (current == null || current.isCompleted) return current;
+    // A verified version mismatch is terminal: only a new user-started update
+    // replaces it (see FirmwareUpdateSession.isInstalledVersionMismatch).
+    if (current == null ||
+        current.isCompleted ||
+        current.isInstalledVersionMismatch) {
+      return current;
+    }
 
     DeviceStatus status;
     try {
@@ -970,6 +978,20 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         status.firmwareVersion,
         current.fromVersion,
       );
+      final versionRead = status.firmwareVersion?.trim().isNotEmpty == true;
+      if (!oldApplicationValid && versionRead) {
+        // The TAG runs and reports a version that is neither the old nor the
+        // target one. Waiting cannot change that: terminal mismatch (retry =
+        // a new user-started update), never an endless "waiting for device".
+        return _settleReconciliation(
+          current,
+          state: FirmwareUpdateState.failed,
+          outcome: FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+          nextAction: FirmwareUpdateNextAction.retry,
+          requiresRecovery: false,
+          failureCode: FirmwareUpdateSession.installedVersionMismatchCode,
+        );
+      }
       return _settleReconciliation(
         current,
         state: oldApplicationValid
@@ -1707,7 +1729,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
           );
         }
         if (restored.nativeTransferEngaged &&
-            restored.state != FirmwareUpdateState.physicalRecoveryRequired) {
+            restored.state != FirmwareUpdateState.physicalRecoveryRequired &&
+            // A verified mismatch stays terminal across restarts.
+            !restored.isInstalledVersionMismatch) {
           restored = restored.copyWith(
             nextAction: FirmwareUpdateNextAction.waitForDevice,
           );
@@ -1752,6 +1776,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
                         )))) ||
             (_restoredSessions.contains(active.sessionId) &&
                 !active.nativeTransferEngaged) ||
+            // The TAG runs and reported its version: a fresh, user-started
+            // update (same warning + pre-flight) may replace the mismatch.
+            active.isInstalledVersionMismatch ||
             active.nextAction == FirmwareUpdateNextAction.retryTransfer ||
             active.nextAction == FirmwareUpdateNextAction.retryDownload ||
             active.nextAction == FirmwareUpdateNextAction.startTransfer)) {

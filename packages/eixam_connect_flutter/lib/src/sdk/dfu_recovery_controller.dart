@@ -534,8 +534,13 @@ final class DfuRecoveryController implements DfuRecoveryControl {
 
   Future<_Observation> _observeRaw({bool force = false}) async {
     final active = await firmware.getActiveFirmwareUpdate();
+    // A verified version mismatch is a running TAG, not an interrupted update:
+    // the firmware card owns it (retry / contact support), no recovery card.
     final session =
-        active != null && !active.isCompleted && active.nativeTransferEngaged
+        active != null &&
+            !active.isCompleted &&
+            active.nativeTransferEngaged &&
+            !active.isInstalledVersionMismatch
         ? active
         : null;
     var record = await recordStore.load();
@@ -705,6 +710,34 @@ final class DfuRecoveryController implements DfuRecoveryControl {
             const DfuRecoveryEvidence(recoveredLatched: true),
             strategy: strategy,
             silenceWindow: config.silenceWindow,
+          ).copyWith(deviceId: session.deviceId),
+          null,
+        );
+      }
+      if (settled != null &&
+          settled.sessionId == session.sessionId &&
+          settled.reconciliationOutcome ==
+              FirmwareUpdateReconciliationOutcome.installedVersionMismatch) {
+        // The TAG runs its EIXAM application again and the connected TAG
+        // reported its version (for example the cut came before the erase,
+        // or the deliberate reset booted the intact old application). Nothing
+        // to recover: no recovery card, ever. An older version shows the
+        // normal update card; a verified mismatch stays with the firmware
+        // card (terminal, retry / contact support).
+        if (!settled.isInstalledVersionMismatch) {
+          try {
+            await firmware.supersedeInterruptedFirmwareUpdate(
+              session.sessionId,
+            );
+          } on FirmwareUpdateException {
+            // Another owner holds the record; it is not interrupted anyway.
+          }
+        }
+        await recordStore.save(const DfuRecoveryRecord());
+        _strategyBySession.remove(session.sessionId);
+        return _Observation(
+          derive(
+            const DfuRecoveryEvidence(),
           ).copyWith(deviceId: session.deviceId),
           null,
         );

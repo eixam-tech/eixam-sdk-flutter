@@ -2111,6 +2111,97 @@ void main() {
       },
     );
 
+    test(
+      'F8: a connected TAG reporting a third version is a terminal mismatch',
+      () async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(
+            FirmwareUpdateState.verifyingInstalledVersion,
+          );
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          initialStatus: _readyStatus(firmwareVersion: '9.9.9'),
+        );
+        addTearDown(coordinator.dispose);
+
+        final session = await coordinator.reconcileFirmwareUpdate();
+
+        expect(session?.state, FirmwareUpdateState.failed);
+        expect(session?.nextAction, FirmwareUpdateNextAction.retry);
+        expect(session?.requiresRecovery, isFalse);
+        expect(session?.isInstalledVersionMismatch, isTrue);
+        expect(store.value?.isInstalledVersionMismatch, isTrue);
+        // Terminal: a later reconcile leaves it alone (no "waiting" loop).
+        final again = await coordinator.reconcileFirmwareUpdate();
+        expect(again?.isInstalledVersionMismatch, isTrue);
+        expect(again?.nextAction, FirmwareUpdateNextAction.retry);
+      },
+    );
+
+    test('F8: an unread version is still waiting, not a mismatch', () async {
+      final store = _MemoryFirmwareStore()
+        ..value = _durableFirmwareSession(
+          FirmwareUpdateState.verifyingInstalledVersion,
+        );
+      final coordinator = buildCoordinator(
+        sessionStore: store,
+        initialStatus: _readyStatus(firmwareVersion: null),
+      );
+      addTearDown(coordinator.dispose);
+
+      final session = await coordinator.reconcileFirmwareUpdate();
+
+      expect(session?.isInstalledVersionMismatch, isFalse);
+      expect(session?.nextAction, FirmwareUpdateNextAction.waitForDevice);
+    });
+
+    test('F8: retry after a mismatch is a fresh session behind the same '
+        'acknowledgement rule', () async {
+      final mismatch = _durableFirmwareSession(FirmwareUpdateState.failed)
+          .copyWith(
+            failureCode: FirmwareUpdateSession.installedVersionMismatchCode,
+            nextAction: FirmwareUpdateNextAction.retry,
+            requiresRecovery: false,
+          );
+      expect(mismatch.isInstalledVersionMismatch, isTrue);
+      final store = _MemoryFirmwareStore()..value = mismatch;
+      final coordinator = buildCoordinator(
+        sessionStore: store,
+        initialStatus: _readyStatus(firmwareVersion: '9.9.9'),
+      );
+      addTearDown(coordinator.dispose);
+
+      await expectLater(
+        coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+        ),
+        throwsA(
+          isA<FirmwareUpdateException>().having(
+            (e) => e.code,
+            'code',
+            'interruptionWarningNotAcknowledged',
+          ),
+        ),
+      );
+      expect(store.value?.sessionId, 'fw-restored');
+
+      FirmwareUpdateSession? result;
+      try {
+        result = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
+        );
+      } on FirmwareUpdateException catch (error) {
+        expect(error.code, isNot('firmwareUpdateResumeRequired'));
+      }
+      expect(result?.failureCode, isNot('firmwareUpdateResumeRequired'));
+      expect(store.value?.sessionId, isNot('fw-restored'));
+    });
+
     test('restart reconnect with wrong version is not completed', () async {
       final store = _MemoryFirmwareStore()
         ..value = _durableFirmwareSession(

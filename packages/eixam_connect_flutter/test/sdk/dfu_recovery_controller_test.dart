@@ -816,6 +816,160 @@ void main() {
     });
   });
 
+  group('E1 only while AdaDFU is observed (F7)', () {
+    // The connected TAG answers with its intact old application: the
+    // reconcile read the old version (installed-version mismatch, old app
+    // valid -> retry the transfer).
+    FirmwareUpdateSession oldAppRunning() => _interrupted().copyWith(
+      state: FirmwareUpdateState.readyToTransfer,
+      requiresRecovery: false,
+      nextAction: FirmwareUpdateNextAction.retryTransfer,
+      reconciliationOutcome:
+          FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+      failureCode: FirmwareUpdateSession.installedVersionMismatchCode,
+    );
+
+    test(
+      'cut before the erase (Start not yet acknowledged): TAG back on its '
+      'old app -> record cleared, no recovery card, nothing started',
+      () async {
+        final h = _Harness(
+          session: _interrupted(
+            state: FirmwareUpdateState.transferring,
+          ).copyWith(requiresRecovery: false),
+        );
+        h.ble.scans = [_eixamApp()];
+        h.firmware.onReconcile = oldAppRunning;
+        final status = await h.controller.getDfuRecoveryStatus();
+        expect(status.state, DfuRecoveryState.unknown);
+        expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+        expect(status.availableAction, DfuRecoveryAction.none);
+        expect(h.firmware.superseded, ['session-1']);
+        expect(h.store.record.interruptedAt, isNull);
+        expect(h.firmware.starts, 0);
+        await expectRefused(
+          h.controller.prepareCableRecovery(),
+          DfuPreflightFailure.noInterruptedUpdate,
+        );
+      },
+    );
+
+    test(
+      'TAG healthy with an interruption record (E1 shown earlier, the '
+      'deliberate reset booted the intact app): cleared, never Ready',
+      () async {
+        final h = _Harness();
+        var status = await h.controller.getDfuRecoveryStatus();
+        expect(status.state, DfuRecoveryState.resumable);
+        expect(h.store.record.interruptedAt, isNotNull);
+        // One tap; the Reset boots the intact old application instead of UF2.
+        h.firmware.onStart = (interrupted) {
+          h.ble.scans = [_eixamApp()];
+          return interrupted.copyWith(
+            remoteRecoveryAttempts: interrupted.remoteRecoveryAttempts + 1,
+            remoteRecoveryFailed: true,
+          );
+        };
+        h.firmware.onReconcile = oldAppRunning;
+        status = await h.controller.prepareCableRecovery();
+        expect(h.firmware.physicalCalls, 0, reason: 'not a cable case');
+        expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+        expect(status.state, isNot(DfuRecoveryState.recovered));
+        expect(h.firmware.superseded, ['session-1']);
+        expect(h.store.record.interruptedAt, isNull);
+        expect(h.store.record.recoveredAt, isNull);
+      },
+    );
+
+    test('TAG advertising its app but not connected yet: no card action, '
+        'record kept until the version is read', () async {
+      final h = _Harness();
+      h.ble.scans = [_eixamApp()];
+      h.firmware.onReconcile = () =>
+          _interrupted(state: FirmwareUpdateState.reconnecting);
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.awaitingEvidence);
+      expect(status.availableAction, DfuRecoveryAction.none);
+      expect(h.firmware.superseded, isEmpty);
+    });
+
+    test('TAG AdaDFU now: E1 offered; a card left over after the TAG changed '
+        'mode is refused at the tap', () async {
+      final h = _Harness();
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.availableAction, DfuRecoveryAction.prepareCableRecovery);
+      for (final now in <List<BleScanResult>>[
+        <BleScanResult>[],
+        [_eixamApp()],
+      ]) {
+        h.ble.scans = now;
+        await expectRefused(
+          h.controller.prepareCableRecovery(),
+          DfuPreflightFailure.actionNotAvailable,
+        );
+      }
+      expect(h.firmware.starts, 0);
+    });
+
+    test('TAG silent: never the E1 action, E2 after the window', () async {
+      final h = _Harness();
+      h.ble.scans = [];
+      var status = await h.controller.getDfuRecoveryStatus();
+      expect(status.availableAction, DfuRecoveryAction.none);
+      h.now = h.now.add(const Duration(minutes: 3));
+      status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.silentNeedsCable);
+      expect(status.availableAction, DfuRecoveryAction.none);
+      expect(h.firmware.starts, 0);
+    });
+
+    test('TAG on an old version after relaunch: cleared; the firmware card '
+        'offers the normal update', () async {
+      final h = _Harness();
+      h.ble.scans = [_eixamApp()];
+      h.firmware.onReconcile = oldAppRunning;
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.firmware.session, isNull, reason: 'superseded');
+      final next = await h.controller.getDfuRecoveryStatus();
+      expect(next.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.ble.scanCalls, 1, reason: 'nothing left to observe');
+    });
+  });
+
+  group('verified version mismatch (F8) is not an interrupted update', () {
+    FirmwareUpdateSession mismatch() => _interrupted().copyWith(
+      state: FirmwareUpdateState.failed,
+      requiresRecovery: false,
+      nextAction: FirmwareUpdateNextAction.retry,
+      failureCode: FirmwareUpdateSession.installedVersionMismatchCode,
+      reconciliationOutcome:
+          FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+    );
+
+    test('terminal mismatch session: no recovery card, no scan', () async {
+      final h = _Harness(session: mismatch());
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.ble.scanCalls, 0);
+      expect(h.firmware.superseded, isEmpty);
+    });
+
+    test('reconcile turns it into a mismatch: kept for the firmware card, '
+        'no recovery card', () async {
+      final h = _Harness();
+      h.ble.scans = [_eixamApp()];
+      h.firmware.onReconcile = () {
+        h.firmware.session = mismatch();
+        return h.firmware.session;
+      };
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.firmware.superseded, isEmpty);
+      expect(h.firmware.session?.isInstalledVersionMismatch, isTrue);
+    });
+  });
+
   group('iOS stale link (UNVERIFIED on hardware)', () {
     test(
       'stale bond + advertising TAG -> iosStaleLink, forget action',

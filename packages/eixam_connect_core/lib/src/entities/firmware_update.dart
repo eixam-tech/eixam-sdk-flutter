@@ -286,6 +286,19 @@ class FirmwareUpdateSession {
 
   bool get isCompleted => state == FirmwareUpdateState.completed;
 
+  /// Terminal: the TAG is running again and reported a firmware version, but
+  /// not the one this session installed (the exact candidate was not
+  /// verified). Waiting cannot change it and nothing is retried by itself; a
+  /// host offers a fresh, user-started update (same warning and pre-flight
+  /// rules) and a way to contact support. Not an interrupted update.
+  bool get isInstalledVersionMismatch =>
+      state == FirmwareUpdateState.failed &&
+      failureCode == installedVersionMismatchCode &&
+      // Version not read yet: still waiting for the TAG, not terminal.
+      nextAction != FirmwareUpdateNextAction.waitForDevice;
+
+  static const String installedVersionMismatchCode = 'installedVersionMismatch';
+
   bool get canCancel =>
       !nativeTransferEngaged && _firmwarePreparationCanCancel(state);
 
