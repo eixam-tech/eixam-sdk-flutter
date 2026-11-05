@@ -53,6 +53,10 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       startDfu(arguments: call.arguments as? [String: Any], result: result)
     case "cancelDfu":
       cancelDfu(arguments: call.arguments as? [String: Any], result: result)
+    case "phoneBattery":
+      result(Self.readPhoneBattery())
+    case "screenAwake":
+      result(UIApplication.shared.applicationState == .active)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -129,6 +133,23 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
     }
   }
 
+  /// Phone battery for DFU pre-flight (percent is nil when iOS cannot report it).
+  private static func readPhoneBattery() -> [String: Any] {
+    let device = UIDevice.current
+    let wasMonitoring = device.isBatteryMonitoringEnabled
+    device.isBatteryMonitoringEnabled = true
+    defer { device.isBatteryMonitoringEnabled = wasMonitoring }
+    let level = device.batteryLevel
+    let percent: Int? = level < 0 ? nil : Int((level * 100).rounded())
+    let charging: Any = device.batteryState == .unknown
+      ? NSNull()
+      : (device.batteryState == .charging || device.batteryState == .full)
+    return ["percent": percent ?? NSNull(), "charging": charging]
+  }
+
+  /// Only reachable before the transfer engaged: the Dart layer never cancels an
+  /// engaged transfer because abort() makes the Nordic library send Reset
+  /// (Op Code 6), which strands the TAG in USB/UF2-only mode.
   private func cancelDfu(arguments: [String: Any]?, result: @escaping FlutterResult) {
     let sessionId = (arguments?["sessionId"] as? String)?.trimmed
     guard let activeSession,
@@ -193,6 +214,9 @@ final class FirmwareDfuBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
       // lever; PRN=8 is the fast end of the guidance and matches Android. Step
       // down (6, then 4) if error 6 reappears.
       initiator.packetReceiptNotificationParameter = 8
+      // The post-erase reconnect can take seconds (the legacy bootloader erases
+      // the application on Start); the library default (10 s) is too tight.
+      initiator.connectionTimeout = 30
       emit(sessionId: pending.sessionId, state: "transferring", message: "DFU transfer queued.")
       dfuController = initiator.with(firmware: firmware).start(target: peripheral)
     } catch {
