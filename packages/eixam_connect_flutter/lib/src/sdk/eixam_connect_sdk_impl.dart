@@ -4730,7 +4730,17 @@ class EixamConnectSdkImpl
       );
       _bleAutoReconnectCoordinator.setAppForeground(true);
     }
-    await _bleAutoReconnectCoordinator.tryAutoConnectOnResume();
+    // Start the reconnect but do not wait for it: the transfer outcome is
+    // known now. After a successful update the installed-version check below
+    // joins the same campaign. After a cable-recovery preparation the TAG has
+    // reset into USB/UF2 mode and is silent, so awaiting here held the result
+    // (and the E2 screen) for the whole 10-attempt campaign (~2 min on
+    // Android, P5 F3).
+    unawaited(
+      _bleAutoReconnectCoordinator.tryAutoConnectOnResume().catchError(
+        (Object _) {},
+      ),
+    );
   }
 
   Future<DeviceStatus> refreshFirmwareDfuInstalledVersionStatus({

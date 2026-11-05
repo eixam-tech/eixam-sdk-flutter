@@ -126,4 +126,34 @@ void main() {
       expect(all, isNot(contains('maxRecoveryReconciliations);\n')));
     });
   });
+
+  test('the BLE restore after a DFU does not wait for the reconnect '
+      'campaign (P5 F3: cable preparation held E2 for ~2 min)', () {
+    final impl = code(
+      File('lib/src/sdk/eixam_connect_sdk_impl.dart').readAsStringSync(),
+    );
+    final restore = impl.substring(
+      impl.indexOf('Future<void> restoreBleAfterFirmwareDfuTransfer('),
+      impl.indexOf(
+        'Future<DeviceStatus> refreshFirmwareDfuInstalledVersionStatus(',
+      ),
+    );
+    expect(restore, contains('tryAutoConnectOnResume()'));
+    expect(
+      restore,
+      isNot(
+        contains('await _bleAutoReconnectCoordinator.tryAutoConnectOnResume'),
+      ),
+    );
+    // The post-DFU version check still waits for the reconnect.
+    final verify = impl.substring(
+      impl.indexOf(
+        'Future<DeviceStatus> refreshFirmwareDfuInstalledVersionStatus(',
+      ),
+    );
+    expect(
+      verify.substring(0, 400),
+      contains('await _bleAutoReconnectCoordinator.tryAutoConnectOnResume()'),
+    );
+  });
 }
