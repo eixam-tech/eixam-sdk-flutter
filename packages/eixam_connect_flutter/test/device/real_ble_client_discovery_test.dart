@@ -127,6 +127,47 @@ void main() {
       expect(await old, isEmpty);
     });
 
+    test('F13: adverts the superseding scan received are kept as sightings, '
+        'while the superseded scan() keeps returning []', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+      addTearDown(events.close);
+      var starts = 0;
+      final client = _buildRealBleClient(
+        scanResultsProvider: () => events.stream,
+        startScan: (_) async {
+          // Only the second (superseding) scan receives the AdaDFU advert,
+          // like the late watcher cancelling the DFU recovery tap's scan.
+          if (starts++ == 1) {
+            events.add([
+              _nativeScanResult(
+                deviceId: 'tag',
+                observedAt: DateTime.now(),
+                name: 'AdaDFU',
+                services: [Guid('00001530-1212-efde-1523-785feabcd123')],
+              ),
+            ]);
+          }
+        },
+      );
+      await client.initialize();
+      final before = DateTime.now().subtract(const Duration(seconds: 1));
+      final superseded = client.scan(timeout: const Duration(milliseconds: 50));
+      await Future<void>.delayed(Duration.zero);
+      final newer = await client.scan(timeout: Duration.zero);
+      expect(newer.single.deviceId, 'tag');
+      expect(await superseded, isEmpty);
+      final seen = client.advertisementsSince(before);
+      expect(seen.single.deviceId, 'tag');
+      expect(seen.single.toPublic().isDfuBootloader, isTrue);
+      expect(
+        client.advertisementsSince(
+          DateTime.now().add(const Duration(seconds: 1)),
+        ),
+        isEmpty,
+      );
+    });
+
     test('fresh advertisement wins over a conflicting system name', () async {
       debugDefaultTargetPlatformOverride = platform;
       final events = StreamController<List<ScanResult>>.broadcast(sync: true);

@@ -43,6 +43,7 @@ BleScanResult _scan(
   String? hw = _hw,
   String name = 'x',
   BleDiscoveredDeviceBrand brand = BleDiscoveredDeviceBrand.unknown,
+  DateTime? at,
 }) => BleScanResult(
   deviceId: id,
   canonicalHardwareId: hw,
@@ -51,11 +52,16 @@ BleScanResult _scan(
   connectable: true,
   advertisedServiceUuids: services,
   brandClassification: brand,
-  discoveredAt: DateTime.utc(2026, 1, 1),
+  discoveredAt: at ?? DateTime.utc(2026, 1, 1),
 );
 
-BleScanResult _adaDfu({String id = _id, String? hw = _hw}) =>
-    _scan(const ['00001530-1212-efde-1523-785feabcd123'], id: id, hw: hw);
+BleScanResult _adaDfu({String id = _id, String? hw = _hw, DateTime? at}) =>
+    _scan(
+      const ['00001530-1212-efde-1523-785feabcd123'],
+      id: id,
+      hw: hw,
+      at: at,
+    );
 
 BleScanResult _eixamApp() => _scan(
   const [EixamBleProtocol.serviceUuid],
@@ -70,11 +76,17 @@ class _NoRemote implements SdkFirmwareRemoteDataSource {
   dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError();
 }
 
-class _Ble implements BleClient {
+class _Ble implements BleClient, BleAdvertisementSightingSource {
   List<BleScanResult> scans = <BleScanResult>[];
   BleAdapterState adapter = BleAdapterState.poweredOn;
   int scanCalls = 0;
   Object? scanError;
+
+  /// Per-call results of our own scan; consumed first, then [scans].
+  final List<List<BleScanResult>> script = <List<BleScanResult>>[];
+
+  /// Latest adverts any scan (watcher, discovery, ours) received.
+  List<BleScanResult> sightings = <BleScanResult>[];
 
   @override
   Future<List<BleScanResult>> scan({
@@ -82,8 +94,14 @@ class _Ble implements BleClient {
   }) async {
     scanCalls++;
     if (scanError != null) throw scanError!;
+    if (script.isNotEmpty) return script.removeAt(0);
     return List<BleScanResult>.of(scans);
   }
+
+  @override
+  List<BleScanResult> advertisementsSince(DateTime since) => sightings
+      .where((scan) => !scan.discoveredAt.isBefore(since))
+      .toList(growable: false);
 
   @override
   Future<BleAdapterState> getAdapterState() async => adapter;
@@ -678,6 +696,108 @@ void main() {
       await run;
       await sub.cancel();
       await h.controller.dispose();
+    });
+  });
+
+  group('F13: tap-time scan superseded by another scan', () {
+    FirmwareUpdateSession resetLeavesAir(_Harness h, FirmwareUpdateSession i) {
+      h.ble.scans = [];
+      return i.copyWith(
+        remoteRecoveryAttempts: i.remoteRecoveryAttempts + 1,
+        remoteRecoveryFailed: true,
+      );
+    }
+
+    test(
+      'AdaDFU seen 10 s ago by another scan (ours superseded, returns []): '
+      'accepted without a fresh scan; that pre-run sighting never undoes E2',
+      () async {
+        final h = _Harness();
+        h.ble.scans = [];
+        h.ble.sightings = [
+          _adaDfu(at: h.now.subtract(const Duration(seconds: 10))),
+        ];
+        var scansAtStart = -1;
+        h.firmware.onStart = (interrupted) {
+          scansAtStart = h.ble.scanCalls;
+          return resetLeavesAir(h, interrupted);
+        };
+        final status = await h.controller.prepareCableRecovery();
+        expect(h.firmware.starts, 1);
+        expect(h.firmware.startedOn, [_id]);
+        expect(scansAtStart, 0);
+        // The sighting predates the run (iOS reaches E2 inside the window).
+        expect(status.state, DfuRecoveryState.silentNeedsCable);
+        expect(status.reason, DfuRecoveryReason.cableRecoveryPrepared);
+      },
+    );
+
+    test('not seen for longer than the window (31 s > observe interval 30 s): '
+        'bounded fresh scans (30 s / 8 s = 4), then refused, no DFU', () async {
+      final h = _Harness();
+      h.ble.scans = [];
+      h.ble.sightings = [
+        _adaDfu(at: h.now.subtract(const Duration(seconds: 31))),
+      ];
+      await expectRefused(
+        h.controller.prepareCableRecovery(),
+        DfuPreflightFailure.actionNotAvailable,
+      );
+      expect(h.ble.scanCalls, 4);
+      expect(h.firmware.starts, 0);
+    });
+
+    test(
+      'no sighting: the fresh-scan fallback retries before refusing',
+      () async {
+        final h = _Harness();
+        h.ble.script.addAll([<BleScanResult>[], <BleScanResult>[]]);
+        h.firmware.onStart = (i) => resetLeavesAir(h, i);
+        final status = await h.controller.prepareCableRecovery();
+        expect(h.firmware.starts, 1);
+        expect(status.state, DfuRecoveryState.silentNeedsCable);
+      },
+    );
+
+    test('no E2 while the TAG sits in the bootloader and only other scans '
+        'receive its advert, however long', () async {
+      final h = _Harness();
+      h.ble.scans = [];
+      for (var i = 0; i < 8; i++) {
+        h.ble.sightings = [
+          _adaDfu(at: h.now.subtract(const Duration(seconds: 5))),
+        ];
+        final status = await h.controller.getDfuRecoveryStatus();
+        expect(status.state, DfuRecoveryState.resumable);
+        h.now = h.now.add(const Duration(seconds: 40));
+      }
+      expect(h.firmware.physicalCalls, 0);
+      // Control: truly silent for the window -> E2.
+      h.ble.sightings = [];
+      await h.controller.getDfuRecoveryStatus();
+      h.now = h.now.add(const Duration(minutes: 3));
+      final silent = await h.controller.getDfuRecoveryStatus();
+      expect(silent.state, DfuRecoveryState.silentNeedsCable);
+      expect(silent.reason, DfuRecoveryReason.deviceSilent);
+    });
+
+    test('E2 only after the recovery run reset the TAG: AdaDFU seen by another '
+        'scan after the run is not claimed as cable', () async {
+      final h = _Harness();
+      h.firmware.onStart = (interrupted) {
+        h.ble.scans = [];
+        // Received after the post-reset settle: the TAG did not leave.
+        h.ble.sightings = [_adaDfu(at: h.now.add(const Duration(seconds: 7)))];
+        return interrupted.copyWith(
+          remoteRecoveryAttempts: interrupted.remoteRecoveryAttempts + 1,
+          remoteRecoveryFailed: true,
+        );
+      };
+      final status = await h.controller.prepareCableRecovery();
+      expect(h.firmware.starts, 1);
+      expect(status.state, DfuRecoveryState.resumable);
+      expect(h.firmware.physicalCalls, 0);
+      expect((await h.store.load()).cablePreparedAt, isNull);
     });
   });
 

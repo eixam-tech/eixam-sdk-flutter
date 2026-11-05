@@ -299,7 +299,26 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     }
     _actionLock = true;
     try {
-      final observation = await _observe(force: true);
+      // F7 still holds: the action needs the TAG observed as AdaDFU. Any
+      // scan's sighting within one observe interval counts (the card's offer
+      // has the same freshness); a fresh scan is only the fallback, retried
+      // within that same horizon before refusing (F13).
+      var observation = await _observe(sightingsOnly: true);
+      final scans = scanTimeout <= Duration.zero
+          ? 1
+          : (config.observeInterval.inMicroseconds / scanTimeout.inMicroseconds)
+                .ceil();
+      for (
+        var attempt = 0;
+        attempt < scans &&
+            observation.session != null &&
+            observation.status.availableAction != action &&
+            (observation.status.reason == DfuRecoveryReason.awaitingEvidence ||
+                observation.status.reason == DfuRecoveryReason.deviceSilent);
+        attempt++
+      ) {
+        observation = await _observe(force: true);
+      }
       if (observation.status.reason == DfuRecoveryReason.updateInProgress) {
         throw DfuRecoveryException(DfuPreflightFailure.operationInProgress);
       }
@@ -317,6 +336,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
 
       final attemptsBefore = session.remoteRecoveryAttempts;
       _running = true;
+      _sightingFloor = _clock();
       _progress = 0;
       _publish(
         observation.status.copyWith(
@@ -383,7 +403,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
   /// bootloader); the phone cannot see the UF2 drive itself.
   Future<void> _confirmCablePreparation() async {
     await _delay(postResetSettle);
-    final scans = await _scan(force: true);
+    final scans = await _scan(force: true, sightingWindow: Duration.zero);
     if (scans == null) return;
     final session = await firmware.getActiveFirmwareUpdate();
     if (session == null) return;
@@ -482,8 +502,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
         throw DfuRecoveryException(DfuPreflightFailure.deviceBatteryLow);
       }
     }
-    final scans = await _scan(force: true);
-    final matches =
+    List<BleScanResult> bootloaderMatches(List<BleScanResult>? scans) =>
         scans
             ?.where(
               (scan) =>
@@ -497,6 +516,11 @@ final class DfuRecoveryController implements DfuRecoveryControl {
             )
             .toList(growable: false) ??
         const <BleScanResult>[];
+    var scans = await _scan(sightingsOnly: true);
+    if (bootloaderMatches(scans).length != 1) {
+      scans = await _scan(force: true);
+    }
+    final matches = bootloaderMatches(scans);
     final bootloaders =
         scans?.where((scan) => scan.toPublic().isDfuBootloader).length ?? 0;
     if (matches.length != 1 || bootloaders != 1) {
@@ -505,8 +529,38 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     return (bootloader: matches.single, warnings: warnings);
   }
 
-  Future<List<BleScanResult>?> _scan({bool force = false}) async {
+  /// Adverts received before this instant never count (set when a recovery
+  /// DFU starts: the TAG may have left the bootloader since).
+  DateTime? _sightingFloor;
+
+  /// Latest advert per device that ANY scan of the client received (watcher,
+  /// discovery, our own) within one observe interval, the same freshness the
+  /// card's offer has (F13). Empty when the client cannot tell.
+  List<BleScanResult> _sightings(DateTime since) {
+    final client = bleClient;
+    if (client is! BleAdvertisementSightingSource) {
+      return const <BleScanResult>[];
+    }
+    final floor = _sightingFloor;
+    final from = floor != null && floor.isAfter(since) ? floor : since;
+    return (client as BleAdvertisementSightingSource).advertisementsSince(from);
+  }
+
+  /// [sightingsOnly]: no native scan; recent bootloader sightings, or null
+  /// (no evidence) so the caller falls back to a fresh scan.
+  /// [sightingWindow]: how far before our scan a sighting may be.
+  Future<List<BleScanResult>?> _scan({
+    bool force = false,
+    bool sightingsOnly = false,
+    Duration? sightingWindow,
+  }) async {
     final now = _clock();
+    if (sightingsOnly) {
+      final recent = _sightings(now.subtract(config.observeInterval));
+      return recent.any((scan) => scan.toPublic().isDfuBootloader)
+          ? recent
+          : null;
+    }
     final at = _scanCacheAt;
     if (!force &&
         _scanCache != null &&
@@ -515,7 +569,16 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       return _scanCache;
     }
     try {
-      final scans = await bleClient.scan(timeout: scanTimeout);
+      // A newer scan by another subsystem supersedes ours and makes it return
+      // nothing, although the phone kept receiving adverts (F13).
+      final own = await bleClient.scan(timeout: scanTimeout);
+      final ids = own.map((scan) => scan.deviceId).toSet();
+      final scans = <BleScanResult>[
+        ...own,
+        ..._sightings(
+          now.subtract(sightingWindow ?? config.observeInterval),
+        ).where((scan) => !ids.contains(scan.deviceId)),
+      ];
       _scanCache = scans;
       _scanCacheAt = _clock();
       return scans;
@@ -526,13 +589,19 @@ final class DfuRecoveryController implements DfuRecoveryControl {
 
   List<DfuPreflightWarning> _warnings = const <DfuPreflightWarning>[];
 
-  Future<_Observation> _observe({bool force = false}) async {
-    final raw = await _observeRaw(force: force);
+  Future<_Observation> _observe({
+    bool force = false,
+    bool sightingsOnly = false,
+  }) async {
+    final raw = await _observeRaw(force: force, sightingsOnly: sightingsOnly);
     if (_warnings.isEmpty) return raw;
     return _Observation(raw.status.copyWith(warnings: _warnings), raw.session);
   }
 
-  Future<_Observation> _observeRaw({bool force = false}) async {
+  Future<_Observation> _observeRaw({
+    bool force = false,
+    bool sightingsOnly = false,
+  }) async {
     final active = await firmware.getActiveFirmwareUpdate();
     // A verified version mismatch is a running TAG, not an interrupted update:
     // the firmware card owns it (retry / contact support), no recovery card.
@@ -613,7 +682,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       return _Observation(derive(evidence()), session);
     }
 
-    final scans = await _scan(force: force);
+    final scans = await _scan(force: force, sightingsOnly: sightingsOnly);
     if (scans == null) {
       final silentFor = record.firstMissAt == null
           ? null
