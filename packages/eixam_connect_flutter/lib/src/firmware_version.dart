@@ -53,6 +53,13 @@ bool eixamFirmwareVersionsMatch(String? installed, String? target) {
   return false;
 }
 
+/// Whether [version] reads as an application firmware version (`2.7.50`,
+/// `2.7.50.<hash>`, `v50`, `50`). The RAK/Adafruit bootloader's DIS revision
+/// (`0.4.3 s140 6.1.1`, read when a connection reaches the TAG while it is
+/// AdaDFU) and any other free text do not.
+bool isEixamApplicationFirmwareVersion(String? version) =>
+    _firmwareOrderParts(version) != null;
+
 /// Negative if [left] is older than [right], positive if newer, zero if the
 /// same image. Null when neither side yields a comparable number.
 int? compareEixamFirmwareVersions(String? left, String? right) {

@@ -682,6 +682,30 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       return _Observation(derive(evidence()), session);
     }
 
+    // The TAG runs its EIXAM application again and the connected TAG reported
+    // its old version (for example the cut came before the erase, or the
+    // deliberate reset booted the intact old application). Nothing to
+    // recover: no recovery card, ever. An older version shows the normal
+    // update card. A connected TAG stops advertising, so this must not wait
+    // for an advert: silence never counts for it (no E2, F15/M2).
+    Future<_Observation> clearHealthyTag() async {
+      try {
+        await firmware.supersedeInterruptedFirmwareUpdate(session.sessionId);
+      } on FirmwareUpdateException {
+        // Another owner holds the record; it is not interrupted anyway.
+      }
+      await recordStore.save(const DfuRecoveryRecord());
+      _strategyBySession.remove(session.sessionId);
+      return _Observation(
+        derive(
+          const DfuRecoveryEvidence(),
+        ).copyWith(deviceId: session.deviceId),
+        null,
+      );
+    }
+
+    if (_oldApplicationRead(session)) return clearHealthyTag();
+
     final scans = await _scan(force: force, sightingsOnly: sightingsOnly);
     if (scans == null) {
       final silentFor = record.firstMissAt == null
@@ -783,33 +807,20 @@ final class DfuRecoveryController implements DfuRecoveryControl {
           null,
         );
       }
-      if (settled != null &&
-          settled.sessionId == session.sessionId &&
-          settled.reconciliationOutcome ==
-              FirmwareUpdateReconciliationOutcome.installedVersionMismatch) {
-        // The TAG runs its EIXAM application again and the connected TAG
-        // reported its version (for example the cut came before the erase,
-        // or the deliberate reset booted the intact old application). Nothing
-        // to recover: no recovery card, ever. An older version shows the
-        // normal update card; a verified mismatch stays with the firmware
-        // card (terminal, retry / contact support).
-        if (!settled.isInstalledVersionMismatch) {
-          try {
-            await firmware.supersedeInterruptedFirmwareUpdate(
-              session.sessionId,
-            );
-          } on FirmwareUpdateException {
-            // Another owner holds the record; it is not interrupted anyway.
-          }
+      if (settled != null && settled.sessionId == session.sessionId) {
+        if (_oldApplicationRead(settled)) return clearHealthyTag();
+        if (settled.isInstalledVersionMismatch) {
+          // A verified app-version mismatch stays with the firmware card
+          // (terminal, retry / contact support); no recovery card.
+          await recordStore.save(const DfuRecoveryRecord());
+          _strategyBySession.remove(session.sessionId);
+          return _Observation(
+            derive(
+              const DfuRecoveryEvidence(),
+            ).copyWith(deviceId: session.deviceId),
+            null,
+          );
         }
-        await recordStore.save(const DfuRecoveryRecord());
-        _strategyBySession.remove(session.sessionId);
-        return _Observation(
-          derive(
-            const DfuRecoveryEvidence(),
-          ).copyWith(deviceId: session.deviceId),
-          null,
-        );
       }
     }
 
@@ -844,6 +855,19 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     }
     return _Observation(status, stockObserved ? null : session);
   }
+
+  /// The last reconciliation read the OLD application version from the
+  /// connected TAG (the SDK sets these states only for that read; a restore
+  /// rewrites nextAction to waitForDevice, so this is fresh evidence). A
+  /// bootloader or unread version is `failed/waitForDevice`, never this.
+  static bool _oldApplicationRead(FirmwareUpdateSession session) =>
+      session.reconciliationOutcome ==
+          FirmwareUpdateReconciliationOutcome.installedVersionMismatch &&
+      !session.requiresRecovery &&
+      (session.state == FirmwareUpdateState.readyToTransfer ||
+          session.state == FirmwareUpdateState.checking) &&
+      (session.nextAction == FirmwareUpdateNextAction.retryTransfer ||
+          session.nextAction == FirmwareUpdateNextAction.retryDownload);
 
   Future<E1RecoveryStrategy> _strategyFor(
     FirmwareUpdateSession session,

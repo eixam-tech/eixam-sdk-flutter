@@ -978,11 +978,17 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         status.firmwareVersion,
         current.fromVersion,
       );
-      final versionRead = status.firmwareVersion?.trim().isNotEmpty == true;
+      // Only an application version counts as read. A connection that reached
+      // the TAG while it is AdaDFU reports the bootloader revision
+      // (`0.4.3 s140 6.1.1`): that is not an installed app, so it keeps
+      // waiting (E1 recovery stays offered), never a terminal mismatch (M1).
+      final versionRead = isEixamApplicationFirmwareVersion(
+        status.firmwareVersion,
+      );
       if (!oldApplicationValid && versionRead) {
-        // The TAG runs and reports a version that is neither the old nor the
-        // target one. Waiting cannot change that: terminal mismatch (retry =
-        // a new user-started update), never an endless "waiting for device".
+        // The TAG runs and reports an app version that is neither the old nor
+        // the target one. Waiting cannot change that: terminal mismatch (retry
+        // = a new user-started update), never an endless "waiting for device".
         return _settleReconciliation(
           current,
           state: FirmwareUpdateState.failed,

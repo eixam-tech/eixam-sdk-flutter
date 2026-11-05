@@ -1057,6 +1057,116 @@ void main() {
     });
   });
 
+  group('connected healthy TAG that does not advertise (F15/M2)', () {
+    // What the SDK reconcile leaves after it read the OLD app version from the
+    // connected TAG. A connected TAG stops advertising.
+    FirmwareUpdateSession oldAppRead() => _interrupted().copyWith(
+      state: FirmwareUpdateState.readyToTransfer,
+      requiresRecovery: false,
+      nextAction: FirmwareUpdateNextAction.retryTransfer,
+      reconciliationOutcome:
+          FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+      failureCode: FirmwareUpdateSession.installedVersionMismatchCode,
+    );
+
+    test('silence already counting, then the app reconnect reads the old '
+        'version: record cleared, never E2 or physical recovery', () async {
+      final h = _Harness(
+        session: _interrupted(
+          state: FirmwareUpdateState.transferring,
+        ).copyWith(requiresRecovery: false),
+      );
+      h.ble.scans = [];
+      var status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.awaitingEvidence);
+      expect(h.store.record.firstMissAt, isNotNull);
+      // The saved-device reconnect wins and the app's reconcile reads 2.0.0.
+      h.firmware.session = oldAppRead();
+      h.now = h.now.add(const Duration(minutes: 3));
+      status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, isNot(DfuRecoveryState.silentNeedsCable));
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(status.availableAction, DfuRecoveryAction.none);
+      expect(h.firmware.physicalCalls, 0);
+      expect(h.firmware.superseded, ['session-1']);
+      expect(h.store.record.firstMissAt, isNull);
+      expect(h.store.record.interruptedAt, isNull);
+      expect(h.firmware.starts, 0);
+    });
+
+    test('old version read before the first tick: cleared without a scan; '
+        'still nothing after the silence window', () async {
+      final h = _Harness(session: oldAppRead());
+      h.ble.scans = [];
+      var status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.ble.scanCalls, 0);
+      h.now = h.now.add(const Duration(minutes: 3));
+      status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, isNot(DfuRecoveryState.silentNeedsCable));
+      expect(h.firmware.physicalCalls, 0);
+    });
+
+    test(
+      'truly silent TAG, no connection (no version read): E2 as before',
+      () async {
+        final h = _Harness(
+          session: _interrupted().copyWith(
+            state: FirmwareUpdateState.reconnecting,
+            reconciliationOutcome:
+                FirmwareUpdateReconciliationOutcome.deviceMissing,
+          ),
+        );
+        h.ble.scans = [];
+        await h.controller.getDfuRecoveryStatus();
+        h.now = h.now.add(const Duration(minutes: 3));
+        final status = await h.controller.getDfuRecoveryStatus();
+        expect(status.state, DfuRecoveryState.silentNeedsCable);
+        expect(h.firmware.physicalCalls, greaterThan(0));
+        expect(h.firmware.superseded, isEmpty);
+      },
+    );
+  });
+
+  group('bootloader version string is not app evidence (M1)', () {
+    // What the SDK reconcile now leaves after a reconnect campaign connected to
+    // the TAG while it is AdaDFU and read "0.4.3 s140 6.1.1".
+    FirmwareUpdateSession bootloaderRead() => _interrupted().copyWith(
+      state: FirmwareUpdateState.failed,
+      requiresRecovery: false,
+      nextAction: FirmwareUpdateNextAction.waitForDevice,
+      reconciliationOutcome:
+          FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+      failureCode: 'installedVersionMismatch',
+    );
+
+    test('AdaDFU visible: E1 card stays, nothing superseded', () async {
+      final h = _Harness(session: bootloaderRead());
+      expect(h.firmware.session?.isInstalledVersionMismatch, isFalse);
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.resumable);
+      expect(status.availableAction, DfuRecoveryAction.prepareCableRecovery);
+      expect(h.firmware.superseded, isEmpty);
+      expect(h.firmware.starts, 0);
+    });
+
+    test(
+      'a stale app advert next to it: not cleared (no app version read)',
+      () async {
+        final h = _Harness();
+        h.ble.scans = [_eixamApp()];
+        h.firmware.onReconcile = () {
+          h.firmware.session = bootloaderRead();
+          return h.firmware.session;
+        };
+        final status = await h.controller.getDfuRecoveryStatus();
+        expect(status.reason, DfuRecoveryReason.awaitingEvidence);
+        expect(h.firmware.superseded, isEmpty);
+        expect(h.firmware.session, isNotNull);
+      },
+    );
+  });
+
   group('verified version mismatch (F8) is not an interrupted update', () {
     FirmwareUpdateSession mismatch() => _interrupted().copyWith(
       state: FirmwareUpdateState.failed,

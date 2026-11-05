@@ -13,6 +13,7 @@ import 'package:eixam_connect_flutter/src/data/dtos/sdk_firmware_dto.dart';
 import 'package:eixam_connect_flutter/src/device/ble_client.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
+import 'package:eixam_connect_flutter/src/firmware_version.dart';
 import 'package:eixam_connect_flutter/src/sdk/dfu_preflight.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_dfu_transport.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_update_coordinator.dart';
@@ -2137,6 +2138,69 @@ void main() {
         expect(again?.nextAction, FirmwareUpdateNextAction.retry);
       },
     );
+
+    for (final state in <FirmwareUpdateState>[
+      FirmwareUpdateState.recoveryRequired,
+      FirmwareUpdateState.reconnecting,
+      FirmwareUpdateState.verifyingInstalledVersion,
+    ]) {
+      test(
+        'M1: a bootloader version read over an AdaDFU connection '
+        '(${state.name}) is not a mismatch: keeps waiting, supersedable',
+        () async {
+          final store = _MemoryFirmwareStore()
+            ..value = _durableFirmwareSession(state);
+          final coordinator = buildCoordinator(
+            sessionStore: store,
+            initialStatus: _readyStatus(firmwareVersion: '0.4.3 s140 6.1.1'),
+          );
+          addTearDown(coordinator.dispose);
+
+          final session = await coordinator.reconcileFirmwareUpdate();
+
+          expect(session?.isInstalledVersionMismatch, isFalse);
+          expect(session?.nextAction, FirmwareUpdateNextAction.waitForDevice);
+          expect(session?.requiresRecovery, isFalse);
+          expect(store.value?.isInstalledVersionMismatch, isFalse);
+          // Not terminal: a later reconcile still re-checks the TAG.
+          final again = await coordinator.reconcileFirmwareUpdate();
+          expect(again?.isInstalledVersionMismatch, isFalse);
+          // The post-UF2 stock migration may still supersede it.
+          await coordinator.supersedeInterruptedFirmwareUpdate('fw-restored');
+          expect(store.value, isNull);
+        },
+      );
+    }
+
+    test('M1: only application version strings count as read', () {
+      for (final version in <String>[
+        '2.7.69.4bdc077',
+        '2.7.50',
+        'v2.7.50',
+        '50',
+        '9.9.9',
+      ]) {
+        expect(
+          isEixamApplicationFirmwareVersion(version),
+          isTrue,
+          reason: version,
+        );
+      }
+      for (final version in <String?>[
+        '0.4.3 s140 6.1.1',
+        '0.4.3 S140 6.1.1',
+        'unknown',
+        '',
+        '   ',
+        null,
+      ]) {
+        expect(
+          isEixamApplicationFirmwareVersion(version),
+          isFalse,
+          reason: '$version',
+        );
+      }
+    });
 
     test('F8: an unread version is still waiting, not a mismatch', () async {
       final store = _MemoryFirmwareStore()

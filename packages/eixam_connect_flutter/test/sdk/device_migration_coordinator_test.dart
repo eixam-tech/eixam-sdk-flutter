@@ -1131,6 +1131,45 @@ void main() {
     expect(store.value?.candidate.stableIdentity, selectedId);
   });
 
+  test('M1: a record that read the bootloader version (not a terminal '
+      'mismatch) is still superseded by verified stock after UF2', () async {
+    final original = _durableSession(DeviceMigrationState.waitingForDevice);
+    final store = _MemoryMigrationStore()..value = original;
+    // The reconcile shape after a campaign connected to AdaDFU and read
+    // "0.4.3 s140 6.1.1" (firmware_update_coordinator_test M1).
+    final firmware = _FakeMigrationFirmwareService(
+      activeFirmware: FirmwareUpdateSession(
+        sessionId: 'engaged',
+        deviceId: selectedId,
+        hardwareId: selectedId,
+        releaseId: 'release-1',
+        fromVersion: '2.4.0',
+        targetVersion: '3.0.0',
+        state: FirmwareUpdateState.failed,
+        startedAt: DateTime.now(),
+        nativeTransferEngaged: true,
+        requiresRecovery: false,
+        nextAction: FirmwareUpdateNextAction.waitForDevice,
+        reconciliationOutcome:
+            FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+        failureCode: 'installedVersionMismatch',
+      ),
+    );
+    expect(firmware.activeFirmware?.isInstalledVersionMismatch, isFalse);
+    final coordinator = build(
+      probe: _FakeProbe(_probe(model: 105)),
+      store: store,
+      firmware: firmware,
+    );
+    final result = await coordinator.migrate(
+      original.candidate,
+      interruptionWarningAcknowledged: true,
+    );
+    expect(firmware.superseded, ['engaged']);
+    expect(result.failureCode, isNot('firmwareUpdateResumeRequired'));
+    expect(firmware.startCalls, 1);
+  });
+
   for (final scenario in <({String name, int model, String? record})>[
     (name: 'wrong hardware model', model: 9, record: selectedId),
     (name: 'another physical device', model: 105, record: '11:22:33:44:55:66'),
