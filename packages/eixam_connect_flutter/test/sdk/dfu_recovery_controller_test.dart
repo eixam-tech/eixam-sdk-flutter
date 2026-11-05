@@ -133,6 +133,14 @@ class _Firmware extends FirmwareUpdateCoordinator {
   Stream<FirmwareUpdateProgress> watchProgress({String? deviceId}) =>
       progress.stream;
 
+  // Test-lifetime stream.
+  // ignore: close_sinks
+  final StreamController<FirmwareUpdateSession> sessions =
+      StreamController<FirmwareUpdateSession>.broadcast();
+
+  @override
+  Stream<FirmwareUpdateSession> watchFirmwareUpdate() => sessions.stream;
+
   @override
   Future<FirmwareUpdateSession> startBootloaderRecoveryDfu({
     required String bootloaderDeviceId,
@@ -398,6 +406,138 @@ void main() {
         DfuRecoveryState.unknown,
         DfuRecoveryState.silentNeedsCable,
       ]);
+      await sub.cancel();
+      await h.controller.dispose();
+    });
+  });
+
+  group('recovered after cable recovery + migration (F2)', () {
+    FirmwareUpdateSession migrationSession({
+      String? hw = _hw,
+      String id = _id,
+      FirmwareUpdateState state = FirmwareUpdateState.completed,
+    }) => FirmwareUpdateSession(
+      sessionId: 'migration-firmware-1',
+      deviceId: id,
+      hardwareId: hw,
+      releaseId: 'release-2',
+      fromVersion: '2.7.26',
+      targetVersion: '3.0.0',
+      state: state,
+      startedAt: DateTime.utc(2026, 1, 1),
+      nativeTransferEngaged: true,
+      migrationOwned: true,
+      nextAction: state == FirmwareUpdateState.completed
+          ? FirmwareUpdateNextAction.completed
+          : FirmwareUpdateNextAction.waitForDevice,
+    );
+
+    Future<void> settle() =>
+        Future<void>.delayed(const Duration(milliseconds: 10));
+
+    test('E2 -> stock superseded -> migration verified: recovered, then '
+        'dismiss clears it', () async {
+      final h = _Harness();
+      final seen = <DfuRecoveryStatus>[];
+      final sub = h.controller.watchDfuRecovery().listen(seen.add);
+      await settle();
+      expect(seen.last.state, DfuRecoveryState.resumable);
+      expect(h.store.record.interruptedAt, isNotNull);
+      // UF2 restore: TAG back as stock, the controller supersedes the record.
+      h.ble.scans = [_stock()];
+      h.now = h.now.add(const Duration(minutes: 1));
+      var status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.physicalRecoveryCompleted);
+      expect(h.store.record.deviceId, _id);
+      expect(h.store.record.hardwareId, _hw);
+      status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      // A migration session that is not finished yet changes nothing.
+      h.firmware.sessions.add(
+        migrationSession(state: FirmwareUpdateState.verifyingInstalledVersion),
+      );
+      await settle();
+      expect(seen.last.state, isNot(DfuRecoveryState.recovered));
+      // Migration installs EIXAM and verifies the version.
+      h.firmware.sessions.add(migrationSession());
+      await settle();
+      expect(seen.last.state, DfuRecoveryState.recovered);
+      expect(seen.last.reason, DfuRecoveryReason.versionVerified);
+      expect(h.firmware.starts, 0, reason: 'nothing is started');
+      status = await h.controller.dismissDfuRecovery();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.store.record.interruptedAt, isNull);
+      await sub.cancel();
+      await h.controller.dispose();
+    });
+
+    test(
+      'migration supersedes the record itself (controller never saw '
+      'stock): the marker survives the new session and still latches',
+      () async {
+        final h = _Harness();
+        final seen = <DfuRecoveryStatus>[];
+        final sub = h.controller.watchDfuRecovery().listen(seen.add);
+        await settle();
+        expect(h.store.record.interruptedAt, isNotNull);
+        // The migration superseded the interrupted session and now owns a new
+        // engaged session on the same TAG (between its BLE phases).
+        h.firmware.session = migrationSession(
+          state: FirmwareUpdateState.reconnecting,
+        );
+        h.ble.scans = [];
+        await h.controller.getDfuRecoveryStatus();
+        expect(h.store.record.sessionId, 'migration-firmware-1');
+        expect(h.store.record.interruptedAt, isNotNull);
+        h.firmware.session = null;
+        h.firmware.sessions.add(migrationSession());
+        await settle();
+        expect(seen.last.state, DfuRecoveryState.recovered);
+        await sub.cancel();
+        await h.controller.dispose();
+      },
+    );
+
+    test(
+      'an ordinary update that completes is never reported as recovered',
+      () async {
+        final h = _Harness();
+        h.firmware.busy = true; // a normal OTA is running
+        final seen = <DfuRecoveryStatus>[];
+        final sub = h.controller.watchDfuRecovery().listen(seen.add);
+        await settle();
+        expect(seen.last.reason, DfuRecoveryReason.updateInProgress);
+        expect(h.store.record.interruptedAt, isNull);
+        h.firmware.busy = false;
+        h.firmware.session = null;
+        h.firmware.sessions.add(
+          _interrupted(state: FirmwareUpdateState.completed),
+        );
+        await settle();
+        final status = await h.controller.getDfuRecoveryStatus();
+        expect(status.state, isNot(DfuRecoveryState.recovered));
+        expect(
+          seen.map((s) => s.state),
+          isNot(contains(DfuRecoveryState.recovered)),
+        );
+        await sub.cancel();
+        await h.controller.dispose();
+      },
+    );
+
+    test('a verified install on another TAG is not this recovery', () async {
+      final h = _Harness();
+      final sub = h.controller.watchDfuRecovery().listen((_) {});
+      await settle();
+      h.ble.scans = [_stock()];
+      h.now = h.now.add(const Duration(minutes: 1));
+      await h.controller.getDfuRecoveryStatus();
+      h.firmware.sessions.add(
+        migrationSession(id: 'other', hw: '11:22:33:44:55:66'),
+      );
+      await settle();
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, isNot(DfuRecoveryState.recovered));
       await sub.cancel();
       await h.controller.dispose();
     });

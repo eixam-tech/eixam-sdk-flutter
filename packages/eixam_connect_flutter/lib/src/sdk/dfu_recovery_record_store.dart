@@ -12,6 +12,9 @@ class DfuRecoveryRecord {
     this.dismissedSessionId,
     this.staleLinkDeviceId,
     this.staleLinkAt,
+    this.deviceId,
+    this.hardwareId,
+    this.interruptedAt,
   });
 
   /// Interrupted firmware session the timestamps below belong to.
@@ -31,6 +34,17 @@ class DfuRecoveryRecord {
   final String? staleLinkDeviceId;
   final DateTime? staleLinkAt;
 
+  /// Identity of the interrupted TAG. Kept after the interrupted session is
+  /// superseded so a later verified install on the same TAG (the stock ->
+  /// EIXAM migration after a cable recovery) can be reported as recovered.
+  final String? deviceId;
+  final String? hardwareId;
+
+  /// The user was shown an interrupted-update state (E1, E2, iOS stale link)
+  /// or the TAG came back as stock. Never set for an update that simply ran
+  /// to completion.
+  final DateTime? interruptedAt;
+
   DfuRecoveryRecord copyWith({
     String? sessionId,
     DateTime? firstMissAt,
@@ -43,6 +57,9 @@ class DfuRecoveryRecord {
     String? staleLinkDeviceId,
     DateTime? staleLinkAt,
     bool clearStaleLink = false,
+    String? deviceId,
+    String? hardwareId,
+    DateTime? interruptedAt,
   }) {
     return DfuRecoveryRecord(
       sessionId: sessionId ?? this.sessionId,
@@ -56,6 +73,9 @@ class DfuRecoveryRecord {
           ? null
           : (staleLinkDeviceId ?? this.staleLinkDeviceId),
       staleLinkAt: clearStaleLink ? null : (staleLinkAt ?? this.staleLinkAt),
+      deviceId: deviceId ?? this.deviceId,
+      hardwareId: hardwareId ?? this.hardwareId,
+      interruptedAt: interruptedAt ?? this.interruptedAt,
     );
   }
 
@@ -65,7 +85,8 @@ class DfuRecoveryRecord {
       cablePreparedAt == null &&
       recoveredAt == null &&
       dismissedSessionId == null &&
-      staleLinkDeviceId == null;
+      staleLinkDeviceId == null &&
+      interruptedAt == null;
 }
 
 abstract interface class DfuRecoveryRecordStore {
@@ -109,6 +130,9 @@ final class SharedPrefsDfuRecoveryRecordStore
       dismissedSessionId: json['dismissedSessionId'] as String?,
       staleLinkDeviceId: json['staleLinkDeviceId'] as String?,
       staleLinkAt: time('staleLinkAt'),
+      deviceId: json['deviceId'] as String?,
+      hardwareId: json['hardwareId'] as String?,
+      interruptedAt: time('interruptedAt'),
     );
   }
 
@@ -126,6 +150,9 @@ final class SharedPrefsDfuRecoveryRecordStore
       'dismissedSessionId': record.dismissedSessionId,
       'staleLinkDeviceId': record.staleLinkDeviceId,
       'staleLinkAt': record.staleLinkAt?.toUtc().toIso8601String(),
+      'deviceId': record.deviceId,
+      'hardwareId': record.hardwareId,
+      'interruptedAt': record.interruptedAt?.toUtc().toIso8601String(),
     });
   }
 }

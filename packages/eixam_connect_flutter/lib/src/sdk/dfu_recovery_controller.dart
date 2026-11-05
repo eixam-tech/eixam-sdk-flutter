@@ -98,6 +98,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
   List<BleScanResult>? _scanCache;
   DateTime? _scanCacheAt;
   Timer? _timer;
+  StreamSubscription<FirmwareUpdateSession>? _completionSub;
   bool _refreshing = false;
   bool _forceNextEmit = false;
   StreamController<DfuRecoveryStatus>? _streamController;
@@ -121,11 +122,53 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     _timer = Timer.periodic(config.observeInterval, (_) {
       unawaited(_refreshAndEmit());
     });
+    _completionSub ??= firmware.watchFirmwareUpdate().listen(
+      (session) => unawaited(_noteFirmwareSession(session)),
+      onError: (Object _, StackTrace _) {},
+    );
   }
 
   void _stopWatching() {
     _timer?.cancel();
     _timer = null;
+    unawaited(_completionSub?.cancel());
+    _completionSub = null;
+  }
+
+  /// A verified install (state completed = reconnect + installed version
+  /// verified) on the TAG whose update was interrupted. After a cable recovery
+  /// the interrupted session is superseded and the stock -> EIXAM migration
+  /// installs and verifies the firmware in a new session; this is what turns
+  /// that into the `recovered` ("Ready") state. Only for a TAG that was shown
+  /// an interrupted state, never for an ordinary update.
+  Future<void> _noteFirmwareSession(FirmwareUpdateSession session) async {
+    if (session.state != FirmwareUpdateState.completed) return;
+    try {
+      final record = await recordStore.load();
+      final deviceId = record.deviceId;
+      if (record.interruptedAt == null ||
+          record.recoveredAt != null ||
+          deviceId == null ||
+          !_sameIdentity(
+            session.deviceId,
+            session.hardwareId,
+            deviceId,
+            record.hardwareId,
+          )) {
+        return;
+      }
+      await recordStore.save(
+        DfuRecoveryRecord(
+          recoveredAt: _clock(),
+          deviceId: deviceId,
+          hardwareId: record.hardwareId,
+        ),
+      );
+      _scanCacheAt = null;
+      await _refreshAndEmit();
+    } catch (_) {
+      // Best-effort: the TAG works; only the success card is missed.
+    }
   }
 
   Future<void> _refreshAndEmit() async {
@@ -499,10 +542,31 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     final now = _clock();
 
     if (session != null && record.sessionId != session.sessionId) {
+      // A new session on the same TAG (for example the migration after a
+      // cable recovery) keeps the interruption marker.
+      final previousDeviceId = record.deviceId;
+      final sameTag =
+          record.interruptedAt != null &&
+          previousDeviceId != null &&
+          _sameIdentity(
+            session.deviceId,
+            session.hardwareId,
+            previousDeviceId,
+            record.hardwareId,
+          );
       record = DfuRecoveryRecord(
         sessionId: session.sessionId,
         staleLinkDeviceId: record.staleLinkDeviceId,
         staleLinkAt: record.staleLinkAt,
+        deviceId: session.deviceId,
+        hardwareId: session.hardwareId,
+        interruptedAt: sameTag ? record.interruptedAt : null,
+      );
+      await recordStore.save(record);
+    } else if (session != null && record.deviceId == null) {
+      record = record.copyWith(
+        deviceId: session.deviceId,
+        hardwareId: session.hardwareId,
       );
       await recordStore.save(record);
     }
@@ -615,7 +679,15 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       if (stockObserved) {
         try {
           await firmware.supersedeInterruptedFirmwareUpdate(session.sessionId);
-          await recordStore.save(const DfuRecoveryRecord());
+          // Keep who was recovered: the migration's verified install on this
+          // TAG is reported as `recovered` (see _noteFirmwareSession).
+          await recordStore.save(
+            DfuRecoveryRecord(
+              deviceId: session.deviceId,
+              hardwareId: session.hardwareId,
+              interruptedAt: record.interruptedAt ?? now,
+            ),
+          );
         } on FirmwareUpdateException {
           // Another owner holds the record; the migration will supersede it.
         }
@@ -659,6 +731,12 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       silentFor: silentFor,
     );
     final status = derive(built);
+    if (record.interruptedAt == null &&
+        (status.state == DfuRecoveryState.resumable ||
+            status.state == DfuRecoveryState.silentNeedsCable ||
+            status.state == DfuRecoveryState.iosStaleLink)) {
+      await recordStore.save(record.copyWith(interruptedAt: now));
+    }
     if (status.state == DfuRecoveryState.silentNeedsCable) {
       await firmware.requirePhysicalRecovery();
     }

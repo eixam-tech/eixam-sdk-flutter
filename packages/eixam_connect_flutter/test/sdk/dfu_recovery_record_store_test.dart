@@ -16,6 +16,9 @@ void main() {
         cablePreparedAt: at,
         staleLinkDeviceId: 'tag',
         staleLinkAt: at,
+        deviceId: 'tag',
+        hardwareId: 'AA:BB',
+        interruptedAt: at,
       ),
     );
     final loaded = await SharedPrefsDfuRecoveryRecordStore().load();
@@ -23,6 +26,12 @@ void main() {
     expect(loaded.firstMissAt, at);
     expect(loaded.cablePreparedAt, at);
     expect(loaded.staleLinkDeviceId, 'tag');
+    expect(loaded.deviceId, 'tag');
+    expect(loaded.hardwareId, 'AA:BB');
+    expect(loaded.interruptedAt, at);
+    // The recovery marker alone keeps the record.
+    await store.save(DfuRecoveryRecord(interruptedAt: at));
+    expect((await store.load()).isEmpty, isFalse);
     await store.save(const DfuRecoveryRecord());
     expect((await store.load()).isEmpty, isTrue);
   });
