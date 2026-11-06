@@ -532,6 +532,28 @@ void main() {
       );
     });
 
+    test(
+      'F11: a bootloader revision never becomes the firmware version',
+      () async {
+        final paired = await _pairDemoDevice(runtimeProvider);
+        expect(paired.inDfuBootloader, isFalse);
+        // A connection that reached the TAG while it is AdaDFU reads the
+        // bootloader's DIS revision.
+        bleClient.firmwareVersion = '0.4.3 s140 6.1.1';
+        final read = await runtimeProvider.refresh(
+          paired,
+          forceFirmwareRead: true,
+        );
+        expect(read.firmwareVersion, isNull);
+        expect(read.inDfuBootloader, isTrue);
+
+        bleClient.firmwareVersion = '2.7.68.f9a277c';
+        final recovered = await runtimeProvider.refresh(read);
+        expect(recovered.firmwareVersion, '2.7.68.f9a277c');
+        expect(recovered.inDfuBootloader, isFalse);
+      },
+    );
+
     test('overlapping 0x23 callers join the in-flight reply', () async {
       await _pairDemoDevice(runtimeProvider);
       bleClient.runtimeStatusReplyDelay = const Duration(milliseconds: 80);

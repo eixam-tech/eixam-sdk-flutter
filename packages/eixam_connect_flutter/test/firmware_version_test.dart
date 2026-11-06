@@ -80,4 +80,18 @@ void main() {
     expect(compareEixamFirmwareVersions('2.7.50', '50'), 0);
     expect(compareEixamFirmwareVersions('2.7.50', '2.7.45'), greaterThan(0));
   });
+  test('F11: only the bootloader DIS revision is a bootloader revision', () {
+    expect(isDfuBootloaderRevision('0.4.3 s140 6.1.1'), isTrue);
+    expect(isDfuBootloaderRevision(' 0.4.4 S140 6.1.1 '), isTrue);
+    for (final value in <String?>[
+      null,
+      '',
+      '2.7.68.f9a277c',
+      '2.7.26.9f8d3f1',
+      'v68',
+      'unknown',
+    ]) {
+      expect(isDfuBootloaderRevision(value), isFalse, reason: '$value');
+    }
+  });
 }

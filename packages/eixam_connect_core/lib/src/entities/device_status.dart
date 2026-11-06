@@ -29,6 +29,7 @@ class DeviceStatus {
     this.signalQuality,
     this.lifecycleState = DeviceLifecycleState.unpaired,
     this.provisioningError,
+    this.inDfuBootloader = false,
   });
   final String deviceId;
   final int? nodeId;
@@ -61,6 +62,12 @@ class DeviceStatus {
   final int? signalQuality;
   final DeviceLifecycleState lifecycleState;
   final String? provisioningError;
+
+  /// The last firmware read reached the TAG while it ran its DFU bootloader
+  /// (for example after an interrupted update). [firmwareVersion] is then
+  /// null: the bootloader's revision is not a firmware version and must not be
+  /// shown or used as one. Hosts show a recovery state instead.
+  final bool inDfuBootloader;
 
   /// Returns `true` when the device can be considered operational for safety
   /// workflows such as location tracking and SOS triggering.
@@ -96,6 +103,8 @@ class DeviceStatus {
     DeviceLifecycleState? lifecycleState,
     String? provisioningError,
     bool clearProvisioningError = false,
+    bool? inDfuBootloader,
+    bool clearFirmwareVersion = false,
   }) {
     return DeviceStatus(
       deviceId: deviceId ?? this.deviceId,
@@ -121,7 +130,9 @@ class DeviceStatus {
       batterySource: identical(batterySource, _unset)
           ? this.batterySource
           : batterySource as DeviceBatterySource?,
-      firmwareVersion: firmwareVersion ?? this.firmwareVersion,
+      firmwareVersion: clearFirmwareVersion
+          ? null
+          : (firmwareVersion ?? this.firmwareVersion),
       lastSeen: lastSeen ?? this.lastSeen,
       lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
       signalQuality: signalQuality ?? this.signalQuality,
@@ -129,6 +140,7 @@ class DeviceStatus {
       provisioningError: clearProvisioningError
           ? null
           : (provisioningError ?? this.provisioningError),
+      inDfuBootloader: inDfuBootloader ?? this.inDfuBootloader,
     );
   }
 }
