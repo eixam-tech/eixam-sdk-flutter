@@ -706,6 +706,54 @@ final class DfuRecoveryController implements DfuRecoveryControl {
 
     if (_oldApplicationRead(session)) return clearHealthyTag();
 
+    // The user finished (or is finishing) a cable recovery: the EIXAM firmware
+    // UF2 puts a complete EIXAM application on the TAG, so a TAG that comes
+    // back running EIXAM firmware ENDS the interruption. Whatever application
+    // version it reports is the recovered one: it is never a "version
+    // mismatch" and never an offer to update (an older version only shows the
+    // normal, non-blocking update card later).
+    final physicalRecovery =
+        record.cablePreparedAt != null ||
+        session.state == FirmwareUpdateState.physicalRecoveryRequired ||
+        session.manualRecoveryRequired;
+
+    Future<bool> supersedeAfterCable() async {
+      try {
+        await firmware.supersedeInterruptedFirmwareUpdate(session.sessionId);
+        _strategyBySession.remove(session.sessionId);
+        return true;
+      } on FirmwareUpdateException {
+        // Another owner holds the record; the next observation retries.
+        return false;
+      }
+    }
+
+    if (physicalRecovery) {
+      // A connected TAG stops advertising, so read it instead of waiting for an
+      // advert. Reading never starts a transfer.
+      final read = await firmware.readConnectedApplicationVersion();
+      if (read != null) {
+        if (read.isOldApplication) return clearHealthyTag();
+        if (await supersedeAfterCable()) {
+          await recordStore.save(
+            DfuRecoveryRecord(
+              recoveredAt: now,
+              deviceId: session.deviceId,
+              hardwareId: session.hardwareId,
+            ),
+          );
+          return _Observation(
+            deriveDfuRecoveryStatus(
+              const DfuRecoveryEvidence(recoveredLatched: true),
+              strategy: strategy,
+              silenceWindow: config.silenceWindow,
+            ).copyWith(deviceId: session.deviceId),
+            null,
+          );
+        }
+      }
+    }
+
     final scans = await _scan(force: force, sightingsOnly: sightingsOnly);
     if (scans == null) {
       final silentFor = record.firstMissAt == null
@@ -792,9 +840,27 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       }
     }
 
+    // EIXAM application advertising again after a cable recovery: the physical
+    // part is over. Clear the interruption (no verification is claimed: the TAG
+    // is not connected yet); pairing / provisioning / the normal version check
+    // continue in the regular device flows, and a recovered-but-older version
+    // only ever shows the normal update card.
+    var appObservedAfterCable = false;
+    if (physicalRecovery &&
+        !stockObserved &&
+        appVisible.isNotEmpty &&
+        bootloaderCount == 0 &&
+        await supersedeAfterCable()) {
+      appObservedAfterCable = true;
+      await recordStore.save(const DfuRecoveryRecord());
+    }
+
     // App-mode TAG back: success only through the existing reconnect + version
     // verification.
-    if (!stockObserved && appVisible.isNotEmpty && bootloaderCount == 0) {
+    if (!stockObserved &&
+        !appObservedAfterCable &&
+        appVisible.isNotEmpty &&
+        bootloaderCount == 0) {
       final settled = await firmware.reconcileFirmwareUpdate();
       if (settled != null && settled.state == FirmwareUpdateState.completed) {
         await recordStore.save(DfuRecoveryRecord(recoveredAt: now));
@@ -839,7 +905,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     }
     final built = evidence(
       bootloaderMatches: bootloaderCount,
-      stockObserved: stockObserved,
+      stockObserved: stockObserved || appObservedAfterCable,
       staleSuspected: staleSuspected,
       silentFor: silentFor,
     );
@@ -853,7 +919,10 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     if (status.state == DfuRecoveryState.silentNeedsCable) {
       await firmware.requirePhysicalRecovery();
     }
-    return _Observation(status, stockObserved ? null : session);
+    return _Observation(
+      status,
+      stockObserved || appObservedAfterCable ? null : session,
+    );
   }
 
   /// The last reconciliation read the OLD application version from the

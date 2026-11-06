@@ -615,74 +615,82 @@ void main() {
       }) => coordinator.startFirmwareUpdate(
         deviceId: 'demo-device',
         releaseId: 'fw-1',
-        policy: FirmwareUpdatePolicy(interruptionWarningAcknowledged: acknowledged),
+        policy: FirmwareUpdatePolicy(
+          interruptionWarningAcknowledged: acknowledged,
+        ),
       );
 
-      test('start without the acknowledgement is refused, nothing started', () async {
-        final transport = _RetryingRecoveryTransport(0);
-        final store = _MemoryFirmwareStore();
-        final coordinator = buildCoordinator(
-          transport: transport,
-          sessionStore: store,
-        );
-        addTearDown(coordinator.dispose);
-        await expectLater(
-          start(coordinator, acknowledged: false),
-          throwsA(
-            isA<FirmwareUpdateException>().having(
-              (e) => e.code,
-              'code',
-              'interruptionWarningNotAcknowledged',
+      test(
+        'start without the acknowledgement is refused, nothing started',
+        () async {
+          final transport = _RetryingRecoveryTransport(0);
+          final store = _MemoryFirmwareStore();
+          final coordinator = buildCoordinator(
+            transport: transport,
+            sessionStore: store,
+          );
+          addTearDown(coordinator.dispose);
+          await expectLater(
+            start(coordinator, acknowledged: false),
+            throwsA(
+              isA<FirmwareUpdateException>().having(
+                (e) => e.code,
+                'code',
+                'interruptionWarningNotAcknowledged',
+              ),
             ),
-          ),
-        );
-        expect(transport.starts, 0);
-        expect(store.value, isNull);
-        expect(remote.downloadCallCount, 0);
-      });
+          );
+          expect(transport.starts, 0);
+          expect(store.value, isNull);
+          expect(remote.downloadCallCount, 0);
+        },
+      );
 
-      for (final scenario in <({
-        String name,
-        String code,
-        BleAdapterStateProvider? adapter,
-        PhoneBatteryProvider? battery,
-        ScreenAwakeProvider? screen,
-        AppLifecycleStateProvider? lifecycle,
-      })>[
-        (
-          name: 'Bluetooth off',
-          code: 'bluetoothOff',
-          adapter: () async => BleAdapterState.poweredOff,
-          battery: null,
-          screen: null,
-          lifecycle: null,
-        ),
-        (
-          name: 'app backgrounded',
-          code: 'appNotForeground',
-          adapter: null,
-          battery: null,
-          screen: null,
-          lifecycle: () => AppLifecycleState.paused,
-        ),
-        (
-          name: 'screen off',
-          code: 'screenNotAwake',
-          adapter: null,
-          battery: null,
-          screen: () async => false,
-          lifecycle: null,
-        ),
-        (
-          name: 'phone battery below threshold',
-          code: 'phoneBatteryLow',
-          adapter: null,
-          battery: () async =>
-              const PhoneBatteryReading(percent: 29, charging: false),
-          screen: null,
-          lifecycle: null,
-        ),
-      ]) {
+      for (final scenario
+          in <
+            ({
+              String name,
+              String code,
+              BleAdapterStateProvider? adapter,
+              PhoneBatteryProvider? battery,
+              ScreenAwakeProvider? screen,
+              AppLifecycleStateProvider? lifecycle,
+            })
+          >[
+            (
+              name: 'Bluetooth off',
+              code: 'bluetoothOff',
+              adapter: () async => BleAdapterState.poweredOff,
+              battery: null,
+              screen: null,
+              lifecycle: null,
+            ),
+            (
+              name: 'app backgrounded',
+              code: 'appNotForeground',
+              adapter: null,
+              battery: null,
+              screen: null,
+              lifecycle: () => AppLifecycleState.paused,
+            ),
+            (
+              name: 'screen off',
+              code: 'screenNotAwake',
+              adapter: null,
+              battery: null,
+              screen: () async => false,
+              lifecycle: null,
+            ),
+            (
+              name: 'phone battery below threshold',
+              code: 'phoneBatteryLow',
+              adapter: null,
+              battery: () async =>
+                  const PhoneBatteryReading(percent: 29, charging: false),
+              screen: null,
+              lifecycle: null,
+            ),
+          ]) {
         test('blocks with a typed reason: ${scenario.name}', () async {
           final transport = _RetryingRecoveryTransport(0);
           final coordinator = buildCoordinator(
@@ -751,7 +759,9 @@ void main() {
         final transport = _RetryingRecoveryTransport(0);
         final coordinator = buildCoordinator(
           transport: transport,
-          initialStatus: _readyStatus(batteryState: DeviceBatteryLevel.critical),
+          initialStatus: _readyStatus(
+            batteryState: DeviceBatteryLevel.critical,
+          ),
         );
         addTearDown(coordinator.dispose);
         final session = await start(coordinator);
@@ -759,74 +769,74 @@ void main() {
         expect(transport.starts, 0);
       });
 
-      test('unreadable phone battery and screen state warn but start', () async {
-        final transport = _RetryingRecoveryTransport(0);
-        final coordinator = buildCoordinator(
-          transport: transport,
-          phoneBatteryProvider: () async => null,
-          screenAwakeProvider: () async => null,
-          adapterStateProvider: () async => BleAdapterState.unknown,
-          postDfuVerificationTimeout: Duration.zero,
-        );
-        addTearDown(coordinator.dispose);
-        final session = await start(coordinator);
-        expect(transport.starts, 1);
-        expect(
-          session.preflightWarnings,
-          containsAll(<DfuPreflightWarning>[
-            DfuPreflightWarning.phoneBatteryUnknown,
-            DfuPreflightWarning.screenStateUnknown,
-            DfuPreflightWarning.bluetoothStateUnknown,
-          ]),
-        );
-      });
-
       test(
-        'post-recovery stock -> EIXAM: unreadable TAG battery starts and '
-        'carries the warning',
+        'unreadable phone battery and screen state warn but start',
         () async {
           final transport = _RetryingRecoveryTransport(0);
           final coordinator = buildCoordinator(
             transport: transport,
-            phoneBatteryProvider: () async =>
-                const PhoneBatteryReading(percent: 85, charging: false),
+            phoneBatteryProvider: () async => null,
+            screenAwakeProvider: () async => null,
+            adapterStateProvider: () async => BleAdapterState.unknown,
             postDfuVerificationTimeout: Duration.zero,
           );
           addTearDown(coordinator.dispose);
-          final session = await coordinator.startMigrationFirmwareUpdate(
-            // Stock Meshtastic firmware: no TAG battery can be read.
-            sourceStatus: _readyStatus(
-              batteryState: null,
-            ).copyWith(model: 'EIXAM R1'),
-            release: FirmwareRelease(
-              releaseId: 'candidate',
-              version: '3.0.0',
-              hardwareModel: 'EIXAM R1',
-              sha256Hash: _sha256(remote.artifactBytes),
-              fileSizeBytes: remote.artifactBytes.length,
-            ),
-            postMigrationStatusRefresh:
-                ({
-                  required deviceId,
-                  required attempt,
-                  required targetVersion,
-                }) async => _readyStatus(
-                  firmwareVersion: '3.0.0',
-                ).copyWith(model: 'EIXAM R1'),
-            policy: const FirmwareUpdatePolicy(
-              supportedHardwareModels: <String>['EIXAM R1'],
-              requireKnownDeviceBattery: false,
-              interruptionWarningAcknowledged: true,
-            ),
-          );
+          final session = await start(coordinator);
           expect(transport.starts, 1);
-          expect(session.state, isNot(FirmwareUpdateState.blocked));
           expect(
             session.preflightWarnings,
-            contains(DfuPreflightWarning.deviceBatteryUnknown),
+            containsAll(<DfuPreflightWarning>[
+              DfuPreflightWarning.phoneBatteryUnknown,
+              DfuPreflightWarning.screenStateUnknown,
+              DfuPreflightWarning.bluetoothStateUnknown,
+            ]),
           );
         },
       );
+
+      test('post-recovery stock -> EIXAM: unreadable TAG battery starts and '
+          'carries the warning', () async {
+        final transport = _RetryingRecoveryTransport(0);
+        final coordinator = buildCoordinator(
+          transport: transport,
+          phoneBatteryProvider: () async =>
+              const PhoneBatteryReading(percent: 85, charging: false),
+          postDfuVerificationTimeout: Duration.zero,
+        );
+        addTearDown(coordinator.dispose);
+        final session = await coordinator.startMigrationFirmwareUpdate(
+          // Stock Meshtastic firmware: no TAG battery can be read.
+          sourceStatus: _readyStatus(
+            batteryState: null,
+          ).copyWith(model: 'EIXAM R1'),
+          release: FirmwareRelease(
+            releaseId: 'candidate',
+            version: '3.0.0',
+            hardwareModel: 'EIXAM R1',
+            sha256Hash: _sha256(remote.artifactBytes),
+            fileSizeBytes: remote.artifactBytes.length,
+          ),
+          postMigrationStatusRefresh:
+              ({
+                required deviceId,
+                required attempt,
+                required targetVersion,
+              }) async => _readyStatus(
+                firmwareVersion: '3.0.0',
+              ).copyWith(model: 'EIXAM R1'),
+          policy: const FirmwareUpdatePolicy(
+            supportedHardwareModels: <String>['EIXAM R1'],
+            requireKnownDeviceBattery: false,
+            interruptionWarningAcknowledged: true,
+          ),
+        );
+        expect(transport.starts, 1);
+        expect(session.state, isNot(FirmwareUpdateState.blocked));
+        expect(
+          session.preflightWarnings,
+          contains(DfuPreflightWarning.deviceBatteryUnknown),
+        );
+      });
 
       test('migration start without the acknowledgement is refused', () async {
         final transport = _RetryingRecoveryTransport(0);
@@ -1494,28 +1504,25 @@ void main() {
       },
     );
 
-    test(
-      'startBootloaderRecoveryDfu runs one explicit fresh session and '
-      'reaches reconnecting',
-      () async {
-        final interrupted = _durableFirmwareSession(
-          FirmwareUpdateState.transferring,
-        );
-        final coordinator = buildCoordinator(
-          sessionStore: _MemoryFirmwareStore()..value = interrupted,
-          transport: _SuccessfulDfuTransport(),
-        );
-        addTearDown(coordinator.dispose);
+    test('startBootloaderRecoveryDfu runs one explicit fresh session and '
+        'reaches reconnecting', () async {
+      final interrupted = _durableFirmwareSession(
+        FirmwareUpdateState.transferring,
+      );
+      final coordinator = buildCoordinator(
+        sessionStore: _MemoryFirmwareStore()..value = interrupted,
+        transport: _SuccessfulDfuTransport(),
+      );
+      addTearDown(coordinator.dispose);
 
-        final session = await coordinator.startBootloaderRecoveryDfu(
-          bootloaderDeviceId: 'bootloader-addr',
-          interrupted: interrupted,
-        );
+      final session = await coordinator.startBootloaderRecoveryDfu(
+        bootloaderDeviceId: 'bootloader-addr',
+        interrupted: interrupted,
+      );
 
-        expect(session.state, FirmwareUpdateState.reconnecting);
-        expect(session.failureCode, isNull);
-      },
-    );
+      expect(session.state, FirmwareUpdateState.reconnecting);
+      expect(session.failureCode, isNull);
+    });
 
     test(
       'startBootloaderRecoveryDfu stays recovery-required when the flash fails',
@@ -1677,35 +1684,38 @@ void main() {
       expect(session.state, FirmwareUpdateState.recoveryRequired);
     });
 
-    test('startBootloaderRecoveryDfu suppresses auto-reconnect for the transfer '
-        'window (release/restore hooks)', () async {
-      final calls = <String>[];
-      final interrupted = _durableFirmwareSession(
-        FirmwareUpdateState.transferring,
-      );
-      final coordinator = buildCoordinator(
-        sessionStore: _MemoryFirmwareStore()..value = interrupted,
-        transport: _SuccessfulDfuTransport(),
-        releaseBleForDfuTransfer: ({required String deviceId}) async {
-          calls.add('release:$deviceId');
-        },
-        restoreBleAfterDfuTransfer: ({required String deviceId}) async {
-          calls.add('restore:$deviceId');
-        },
-      );
-      addTearDown(coordinator.dispose);
+    test(
+      'startBootloaderRecoveryDfu suppresses auto-reconnect for the transfer '
+      'window (release/restore hooks)',
+      () async {
+        final calls = <String>[];
+        final interrupted = _durableFirmwareSession(
+          FirmwareUpdateState.transferring,
+        );
+        final coordinator = buildCoordinator(
+          sessionStore: _MemoryFirmwareStore()..value = interrupted,
+          transport: _SuccessfulDfuTransport(),
+          releaseBleForDfuTransfer: ({required String deviceId}) async {
+            calls.add('release:$deviceId');
+          },
+          restoreBleAfterDfuTransfer: ({required String deviceId}) async {
+            calls.add('restore:$deviceId');
+          },
+        );
+        addTearDown(coordinator.dispose);
 
-      final session = await coordinator.startBootloaderRecoveryDfu(
-        bootloaderDeviceId: 'bootloader-addr',
-        interrupted: interrupted,
-      );
+        final session = await coordinator.startBootloaderRecoveryDfu(
+          bootloaderDeviceId: 'bootloader-addr',
+          interrupted: interrupted,
+        );
 
-      expect(session.state, FirmwareUpdateState.reconnecting);
-      expect(calls, <String>[
-        'release:bootloader-addr',
-        'restore:bootloader-addr',
-      ]);
-    });
+        expect(session.state, FirmwareUpdateState.reconnecting);
+        expect(calls, <String>[
+          'release:bootloader-addr',
+          'restore:bootloader-addr',
+        ]);
+      },
+    );
 
     // ── Full-chain "e2e-in-a-test" ──────────────────────────────────────────
     // These drive the REAL coordinator through the entire OTA pipeline against
@@ -2171,6 +2181,73 @@ void main() {
         },
       );
     }
+
+    group('readConnectedApplicationVersion (cable recovery probe)', () {
+      Future<({String version, bool isOldApplication})?> probe(
+        DeviceStatus status, {
+        FirmwareUpdateState state =
+            FirmwareUpdateState.physicalRecoveryRequired,
+      }) async {
+        final store = _MemoryFirmwareStore()
+          ..value = _durableFirmwareSession(state);
+        final coordinator = buildCoordinator(
+          sessionStore: store,
+          initialStatus: status,
+        );
+        addTearDown(coordinator.dispose);
+        final read = await coordinator.readConnectedApplicationVersion();
+        // Read-only: nothing settled, nothing superseded.
+        expect(store.value, isNotNull);
+        expect(store.value?.isInstalledVersionMismatch, isFalse);
+        expect((await coordinator.getActiveFirmwareUpdate())?.state, state);
+        return read;
+      }
+
+      test('third application version: read, not old', () async {
+        final read = await probe(_readyStatus(firmwareVersion: '2.7.68'));
+        expect(read?.version, '2.7.68');
+        expect(read?.isOldApplication, isFalse);
+      });
+
+      test('the version the update started from is flagged old', () async {
+        final read = await probe(_readyStatus(firmwareVersion: '1.0.0'));
+        expect(read?.isOldApplication, isTrue);
+      });
+
+      test(
+        'the target version is read as a normal application version',
+        () async {
+          final read = await probe(_readyStatus(firmwareVersion: '2.0.0'));
+          expect(read?.version, '2.0.0');
+          expect(read?.isOldApplication, isFalse);
+        },
+      );
+
+      test('bootloader revision is not an application version', () async {
+        expect(
+          await probe(_readyStatus(firmwareVersion: '0.4.3 s140 6.1.1')),
+          isNull,
+        );
+      });
+
+      test('not connected: null', () async {
+        expect(
+          await probe(
+            _readyStatus(firmwareVersion: '2.7.68').copyWith(connected: false),
+          ),
+          isNull,
+        );
+      });
+
+      test('no active session: null', () async {
+        final coordinator = buildCoordinator(
+          sessionStore: _MemoryFirmwareStore(),
+          initialStatus: _readyStatus(firmwareVersion: '2.7.68'),
+        );
+        addTearDown(coordinator.dispose);
+        expect(await coordinator.readConnectedApplicationVersion(), isNull);
+      });
+    });
 
     test('M1: only application version strings count as read', () {
       for (final version in <String>[

@@ -1302,6 +1302,40 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     return _requireManualRecovery(current);
   }
 
+  /// The application firmware version read from the CONNECTED TAG when it is
+  /// the one of the active (interrupted) session, or null when the TAG is not
+  /// connected, is another device, or reports no application version (for
+  /// example the bootloader revision, M1). Read-only: it settles nothing and
+  /// never starts a transfer. [isOldApplication] is true when the version is the
+  /// one the interrupted update started from.
+  Future<({String version, bool isOldApplication})?>
+  readConnectedApplicationVersion() async {
+    await _restore();
+    final current = _activeSession;
+    if (current == null || current.isCompleted || _operationInProgress) {
+      return null;
+    }
+    try {
+      final status = await _refreshFirmwareStatus();
+      final version = status.firmwareVersion;
+      if (!status.connected ||
+          !_statusMatchesSession(status, current) ||
+          version == null ||
+          !isEixamApplicationFirmwareVersion(version)) {
+        return null;
+      }
+      return (
+        version: version,
+        isOldApplication: eixamFirmwareVersionsMatch(
+          version,
+          current.fromVersion,
+        ),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Clears a persisted interrupted update whose TAG has been physically
   /// recovered (it reappeared as stock firmware). The caller owns the identity
   /// and hardware verification; this only refuses a session that is running or

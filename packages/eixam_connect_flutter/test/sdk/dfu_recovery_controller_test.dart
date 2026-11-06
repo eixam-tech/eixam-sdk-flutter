@@ -138,6 +138,10 @@ class _Firmware extends FirmwareUpdateCoordinator {
         remoteRecoveryFailed: true,
       );
   FirmwareUpdateSession? Function() onReconcile = () => null;
+
+  /// What the connected TAG reports (null = not connected / no app version).
+  ({String version, bool isOldApplication})? connectedRead;
+  int connectedReads = 0;
   final StreamController<FirmwareUpdateProgress> progress =
       StreamController<FirmwareUpdateProgress>.broadcast();
 
@@ -176,6 +180,13 @@ class _Firmware extends FirmwareUpdateCoordinator {
   Future<FirmwareUpdateSession?> requirePhysicalRecovery() async {
     physicalCalls++;
     return session;
+  }
+
+  @override
+  Future<({String version, bool isOldApplication})?>
+  readConnectedApplicationVersion() async {
+    connectedReads++;
+    return connectedRead;
   }
 
   @override
@@ -1126,6 +1137,105 @@ void main() {
         expect(h.firmware.superseded, isEmpty);
       },
     );
+  });
+
+  group('EIXAM UF2 cable recovery: the TAG comes back as EIXAM', () {
+    FirmwareUpdateSession cable() =>
+        _interrupted(state: FirmwareUpdateState.physicalRecoveryRequired);
+
+    test('connected TAG reports a third (older/newer) app version: recovered, '
+        'session superseded, no mismatch, no update started', () async {
+      final h = _Harness(session: cable());
+      h.ble.scans = [];
+      h.firmware.connectedRead = (
+        version: '2.7.68.f9a277c',
+        isOldApplication: false,
+      );
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.recovered);
+      expect(status.reason, DfuRecoveryReason.versionVerified);
+      expect(status.availableAction, DfuRecoveryAction.none);
+      expect(h.firmware.superseded, ['session-1']);
+      expect(h.store.record.recoveredAt, isNotNull);
+      expect(h.firmware.starts, 0);
+      expect(h.ble.scanCalls, 0);
+    });
+
+    test('the cable preparation marker alone (session not yet marked) counts '
+        'as a cable recovery', () async {
+      final h = _Harness();
+      h.ble.scans = [];
+      await h.store.save(
+        DfuRecoveryRecord(sessionId: 'session-1', cablePreparedAt: h.now),
+      );
+      h.firmware.connectedRead = (version: '3.0.0', isOldApplication: false);
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.recovered);
+      expect(h.firmware.superseded, ['session-1']);
+    });
+
+    test('connected TAG on the OLD app version is healthy: cleared, no '
+        '"Ready"', () async {
+      final h = _Harness(session: cable());
+      h.ble.scans = [];
+      h.firmware.connectedRead = (version: '2.0.0', isOldApplication: true);
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, isNot(DfuRecoveryState.recovered));
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.firmware.superseded, ['session-1']);
+      expect(h.store.record.recoveredAt, isNull);
+      expect(h.firmware.starts, 0);
+    });
+
+    test('EIXAM app advertising, not connected (unpaired / flash erased): '
+        'interruption cleared, nothing verified, nothing started', () async {
+      final h = _Harness(session: cable());
+      h.ble.scans = [_eixamApp()];
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.physicalRecoveryCompleted);
+      expect(status.availableAction, DfuRecoveryAction.none);
+      expect(h.firmware.superseded, ['session-1']);
+      expect(h.store.record.recoveredAt, isNull);
+      expect(h.store.record.interruptedAt, isNull);
+      expect(h.firmware.starts, 0);
+      // Next observation: nothing interrupted any more, no E2, no scan needed.
+      h.ble.scanCalls = 0;
+      final next = await h.controller.getDfuRecoveryStatus();
+      expect(next.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.ble.scanCalls, 0);
+    });
+
+    test('not a cable recovery (plain E1 session): an app advert does not '
+        'clear the record by itself', () async {
+      final h = _Harness();
+      h.ble.scans = [_eixamApp()];
+      await h.controller.getDfuRecoveryStatus();
+      expect(h.firmware.superseded, isEmpty);
+      expect(h.firmware.connectedReads, 0);
+      expect(h.firmware.starts, 0);
+    });
+
+    test('bootloader still visible: a cable session is not cleared', () async {
+      final h = _Harness(session: cable());
+      h.ble.scans = [_adaDfu(), _eixamApp()];
+      await h.controller.getDfuRecoveryStatus();
+      expect(h.firmware.superseded, isEmpty);
+    });
+
+    test('another TAG advertising EIXAM does not end this recovery', () async {
+      final h = _Harness(session: cable());
+      h.ble.scans = [
+        _scan(
+          const [EixamBleProtocol.serviceUuid],
+          id: 'other',
+          hw: '11:22:33:44:55:66',
+          name: 'EIXAM_11223344',
+          brand: BleDiscoveredDeviceBrand.eixam,
+        ),
+      ];
+      await h.controller.getDfuRecoveryStatus();
+      expect(h.firmware.superseded, isEmpty);
+    });
   });
 
   group('bootloader version string is not app evidence (M1)', () {
