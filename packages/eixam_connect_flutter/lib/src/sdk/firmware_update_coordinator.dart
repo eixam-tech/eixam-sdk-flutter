@@ -1316,7 +1316,11 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       return null;
     }
     try {
-      final status = await _refreshFirmwareStatus();
+      // Bounded: the recovery observer calls this on every tick and a hanging
+      // refresh must not freeze its status.
+      final status = await _refreshFirmwareStatus().timeout(
+        const Duration(seconds: 15),
+      );
       final version = status.firmwareVersion;
       if (!status.connected ||
           !_statusMatchesSession(status, current) ||
