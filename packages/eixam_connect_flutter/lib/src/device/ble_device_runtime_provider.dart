@@ -166,7 +166,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       currentStatus.canonicalHardwareId,
     ]);
     return scans.any((scan) {
-      if (!scan.connectable) {
+      if (!scan.connectable || _isPositivelyNotEixamAppMode(scan)) {
         return false;
       }
       final scanKeys = _normalizedReconnectKeys(<String?>[
@@ -176,6 +176,23 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return scanKeys.any(knownKeys.contains);
     });
   }
+
+  /// The saved TAG's address advertising as the DFU bootloader (AdaDFU) or as
+  /// stock Meshtastic after a cable recovery cannot be reconnected as an EIXAM
+  /// TAG. Counting it as "available" restarted a 10-attempt reconnect campaign
+  /// about every minute against the stock TAG (P5 F4) and connected to the
+  /// bootloader (P5 F5). An advert without service information still counts.
+  static bool _isPositivelyNotEixamAppMode(BleScanResult scan) {
+    final public = scan.toPublic();
+    if (public.isDfuBootloader) return true;
+    if (public.isEixamDevice) return false;
+    return scan.advertisedServiceUuids.any(
+      (uuid) => uuid.trim().toLowerCase() == _meshtasticStockServiceUuid,
+    );
+  }
+
+  static const String _meshtasticStockServiceUuid =
+      '6ba1b218-15a8-461f-9fa8-5dcae273eafd';
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
   static const Duration _iosSignalQualityThrottleWindow = Duration(seconds: 5);

@@ -1,3 +1,5 @@
+import 'dfu_recovery.dart';
+
 /// Normal catalog compatibility or immutable physical QA image identity.
 enum FirmwareVerificationPolicy { normal, exactCandidate }
 
@@ -84,9 +86,15 @@ class FirmwareUpdatePolicy {
     this.supportedHardwareModels = const <String>[],
     this.allowDowngrade = false,
     this.targetReleaseId,
+    this.interruptionWarningAcknowledged = false,
   });
 
   final int minDeviceBatteryPercentage;
+
+  /// Deprecated in effect: an unreadable TAG battery no longer blocks (for
+  /// example stock firmware right after a cable recovery). It is reported as
+  /// `DfuPreflightWarning.deviceBatteryUnknown`. Only a battery that was read
+  /// and is below [minDeviceBatteryPercentage] blocks.
   final bool requireKnownDeviceBattery;
   final bool requireForeground;
 
@@ -103,6 +111,11 @@ class FirmwareUpdatePolicy {
   /// latest/previous selection but still enforces device, model, safety,
   /// artifact and scope checks. Intended for controlled development tooling.
   final String? targetReleaseId;
+
+  /// The host showed the user the warning that an interrupted update can leave
+  /// the TAG needing a computer (cable recovery) and the user confirmed. A start
+  /// without it fails with `interruptionWarningNotAcknowledged`.
+  final bool interruptionWarningAcknowledged;
 }
 
 class DeviceFirmwareInfo {
@@ -158,11 +171,16 @@ class FirmwareUpdateEligibility {
     required this.eligible,
     this.blockers = const <FirmwareUpdateBlocker>[],
     this.messages = const <String>[],
+    this.warnings = const <DfuPreflightWarning>[],
   });
 
   final bool eligible;
   final List<FirmwareUpdateBlocker> blockers;
   final List<String> messages;
+
+  /// Checks whose value could not be read. They never block; the host should
+  /// show them.
+  final List<DfuPreflightWarning> warnings;
 
   static const eligibleResult = FirmwareUpdateEligibility(eligible: true);
 }
@@ -214,6 +232,7 @@ class FirmwareUpdateSession {
     this.remoteRecoveryFailed = false,
     this.recoveryReconciliationAttempts = 0,
     this.remoteRecoveryExhausted = false,
+    this.preflightWarnings = const <DfuPreflightWarning>[],
   });
 
   static const int currentSchemaVersion = 1;
@@ -253,6 +272,9 @@ class FirmwareUpdateSession {
   final int recoveryReconciliationAttempts;
   final bool remoteRecoveryExhausted;
 
+  /// Pre-flight checks that could not be read when this session started.
+  final List<DfuPreflightWarning> preflightWarnings;
+
   bool get manualRecoveryRequired =>
       !isCompleted &&
       requiresRecovery &&
@@ -263,6 +285,19 @@ class FirmwareUpdateSession {
       remoteRecoveryExhausted;
 
   bool get isCompleted => state == FirmwareUpdateState.completed;
+
+  /// Terminal: the TAG is running again and reported a firmware version, but
+  /// not the one this session installed (the exact candidate was not
+  /// verified). Waiting cannot change it and nothing is retried by itself; a
+  /// host offers a fresh, user-started update (same warning and pre-flight
+  /// rules) and a way to contact support. Not an interrupted update.
+  bool get isInstalledVersionMismatch =>
+      state == FirmwareUpdateState.failed &&
+      failureCode == installedVersionMismatchCode &&
+      // Version not read yet: still waiting for the TAG, not terminal.
+      nextAction != FirmwareUpdateNextAction.waitForDevice;
+
+  static const String installedVersionMismatchCode = 'installedVersionMismatch';
 
   bool get canCancel =>
       !nativeTransferEngaged && _firmwarePreparationCanCancel(state);
@@ -289,8 +324,10 @@ class FirmwareUpdateSession {
     DateTime? updatedAt,
     FirmwareUpdateNextAction? nextAction,
     FirmwareUpdateReconciliationOutcome? reconciliationOutcome,
+    List<DfuPreflightWarning>? preflightWarnings,
   }) {
     return FirmwareUpdateSession(
+      preflightWarnings: preflightWarnings ?? this.preflightWarnings,
       recoveryDeviceMatched:
           recoveryDeviceMatched ?? this.recoveryDeviceMatched,
       remoteRecoveryAttempts:

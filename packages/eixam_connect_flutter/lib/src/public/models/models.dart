@@ -26,6 +26,7 @@ export 'package:eixam_connect_core/src/entities/eixam_notification_intent.dart';
 export 'package:eixam_connect_core/src/entities/emergency_contact.dart';
 export 'package:eixam_connect_core/src/entities/app_feedback.dart';
 export 'package:eixam_connect_core/src/entities/firmware_update.dart';
+export 'package:eixam_connect_core/src/entities/dfu_recovery.dart';
 export 'package:eixam_connect_core/src/entities/permission_state.dart';
 export 'package:eixam_connect_core/src/entities/permission_disclosure.dart';
 export 'package:eixam_connect_core/src/entities/preferred_device.dart';

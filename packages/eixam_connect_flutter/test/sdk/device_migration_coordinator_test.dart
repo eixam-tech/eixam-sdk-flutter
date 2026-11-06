@@ -305,7 +305,10 @@ void main() {
           ios: true,
         );
         final candidate = await coordinator.inspect(deviceId: selectedId);
-        final result = await coordinator.migrate(candidate);
+        final result = await coordinator.migrate(
+          candidate,
+          interruptionWarningAcknowledged: true,
+        );
         expect(result.outcome, DeviceMigrationOutcome.recoveryRequired);
         expect(
           store.value?.state,
@@ -694,7 +697,10 @@ void main() {
         );
         expect(ble.connectedTargets, ['new-ios-uuid']);
         expect(
-          (await restored.migrate(store.value!.candidate)).succeeded,
+          (await restored.migrate(
+            store.value!.candidate,
+            interruptionWarningAcknowledged: true,
+          )).succeeded,
           isFalse,
         );
         ble.notifyError = null;
@@ -805,7 +811,7 @@ void main() {
         deviceId: '11:22:33:44:55:66',
       );
       await expectLater(
-        coordinator.migrate(replacement),
+        coordinator.migrate(replacement, interruptionWarningAcknowledged: true),
         throwsA(isA<FirmwareUpdateException>()),
       );
       expect(store.value?.candidate.deviceId, selectedId);
@@ -822,7 +828,7 @@ void main() {
         isNull,
       );
       final other = (await coordinator.inspect(deviceId: '11:22:33:44:55:66'));
-      await coordinator.migrate(other);
+      await coordinator.migrate(other, interruptionWarningAcknowledged: true);
       expect(
         (await coordinator.getActiveSession())?.candidate.deviceId,
         other.deviceId,
@@ -879,7 +885,10 @@ void main() {
         store: store,
       );
       final candidate = await coordinator.inspect(deviceId: selectedId);
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(result.outcome, DeviceMigrationOutcome.failed);
       expect(store.value?.outcome, result.outcome);
       expect(store.value?.failureCode, result.failureCode);
@@ -913,7 +922,10 @@ void main() {
           stableIdentity: selectedId,
           inspectedAt: DateTime.now(),
         );
-        final result = await coordinator.migrate(candidate);
+        final result = await coordinator.migrate(
+          candidate,
+          interruptionWarningAcknowledged: true,
+        );
         expect(store.value?.failureCode, result.failureCode);
         expect(store.value?.outcome, result.outcome);
         expect(
@@ -946,6 +958,7 @@ void main() {
       );
       final result = await coordinator.migrate(
         _durableSession(DeviceMigrationState.prepared).candidate,
+        interruptionWarningAcknowledged: true,
       );
       expect(result.outcome, DeviceMigrationOutcome.failed);
       expect(
@@ -972,7 +985,10 @@ void main() {
         ),
       );
       final candidate = await coordinator.inspect(deviceId: selectedId);
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(store.value?.failureCode, result.failureCode);
       expect(store.value?.state, DeviceMigrationState.failed);
       expect(store.value?.nextAction, DeviceMigrationNextAction.retry);
@@ -1043,7 +1059,10 @@ void main() {
       final store = _MemoryMigrationStore()..value = original;
       final probe = _FakeProbe(_probe(model: 105, mac: '11:22:33:44:55:66'));
       final coordinator = build(probe: probe, store: store);
-      final result = await coordinator.migrate(original.candidate);
+      final result = await coordinator.migrate(
+        original.candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(result.failureCode, 'migrationIdentityChanged');
       expect(result.candidate.stableIdentity, selectedId);
       expect(store.value?.candidate.stableIdentity, selectedId);
@@ -1062,7 +1081,10 @@ void main() {
       final store = _MemoryMigrationStore();
       final coordinator = build(probe: probe, ble: ble, store: store);
       final unsupported = await coordinator.inspect(deviceId: selectedId);
-      await coordinator.migrate(unsupported);
+      await coordinator.migrate(
+        unsupported,
+        interruptionWarningAcknowledged: true,
+      );
       final verdict = store.value;
       expect(
         (await coordinator.reconcile())?.candidate.compatibility,
@@ -1074,9 +1096,50 @@ void main() {
     },
   );
 
-  test('firmware resume rejection persists matching operation truth', () async {
+  test(
+    'stale interrupted firmware record is superseded by verified stock',
+    () async {
+      final original = _durableSession(DeviceMigrationState.waitingForDevice);
+      final store = _MemoryMigrationStore()..value = original;
+      final firmware = _FakeMigrationFirmwareService(
+        activeFirmware: FirmwareUpdateSession(
+          sessionId: 'engaged',
+          deviceId: selectedId,
+          hardwareId: selectedId,
+          releaseId: 'release-1',
+          fromVersion: '2.4.0',
+          targetVersion: '3.0.0',
+          state: FirmwareUpdateState.reconnecting,
+          startedAt: DateTime.now(),
+          nativeTransferEngaged: true,
+          requiresRecovery: true,
+        ),
+      );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        firmware: firmware,
+      );
+      final result = await coordinator.migrate(
+        original.candidate,
+        interruptionWarningAcknowledged: true,
+      );
+      // Physical (cable) recovery completed: the stock hardware model 105 was
+      // freshly re-verified for the same device, so the stale record is cleared
+      // and the migration continues instead of failing firmwareUpdateResumeRequired.
+      expect(firmware.superseded, ['engaged']);
+      expect(result.failureCode, isNot('firmwareUpdateResumeRequired'));
+      expect(firmware.startCalls, 1);
+      expect(store.value?.candidate.stableIdentity, selectedId);
+    },
+  );
+
+  test('M1: a record that read the bootloader version (not a terminal '
+      'mismatch) is still superseded by verified stock after UF2', () async {
     final original = _durableSession(DeviceMigrationState.waitingForDevice);
     final store = _MemoryMigrationStore()..value = original;
+    // The reconcile shape after a campaign connected to AdaDFU and read
+    // "0.4.3 s140 6.1.1" (firmware_update_coordinator_test M1).
     final firmware = _FakeMigrationFirmwareService(
       activeFirmware: FirmwareUpdateSession(
         sessionId: 'engaged',
@@ -1085,24 +1148,89 @@ void main() {
         releaseId: 'release-1',
         fromVersion: '2.4.0',
         targetVersion: '3.0.0',
-        state: FirmwareUpdateState.reconnecting,
+        state: FirmwareUpdateState.failed,
         startedAt: DateTime.now(),
         nativeTransferEngaged: true,
-        requiresRecovery: true,
+        requiresRecovery: false,
+        nextAction: FirmwareUpdateNextAction.waitForDevice,
+        reconciliationOutcome:
+            FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+        failureCode: 'installedVersionMismatch',
       ),
     );
+    expect(firmware.activeFirmware?.isInstalledVersionMismatch, isFalse);
     final coordinator = build(
       probe: _FakeProbe(_probe(model: 105)),
       store: store,
       firmware: firmware,
     );
-    final result = await coordinator.migrate(original.candidate);
-    expect(result.failureCode, 'firmwareUpdateResumeRequired');
-    expect(store.value?.state, DeviceMigrationState.failed);
-    expect(store.value?.nextAction, DeviceMigrationNextAction.retry);
-    expect(store.value?.outcome, result.outcome);
-    expect(store.value?.candidate.stableIdentity, selectedId);
+    final result = await coordinator.migrate(
+      original.candidate,
+      interruptionWarningAcknowledged: true,
+    );
+    expect(firmware.superseded, ['engaged']);
+    expect(result.failureCode, isNot('firmwareUpdateResumeRequired'));
+    expect(firmware.startCalls, 1);
   });
+
+  for (final scenario in <({String name, int model, String? record})>[
+    (name: 'wrong hardware model', model: 9, record: selectedId),
+    (name: 'another physical device', model: 105, record: '11:22:33:44:55:66'),
+  ]) {
+    test('stale firmware record stays fail-closed: ${scenario.name}', () async {
+      final original = _durableSession(DeviceMigrationState.waitingForDevice);
+      final firmware = _FakeMigrationFirmwareService(
+        activeFirmware: FirmwareUpdateSession(
+          sessionId: 'engaged',
+          deviceId: scenario.record!,
+          hardwareId: scenario.record,
+          releaseId: 'release-1',
+          fromVersion: '2.4.0',
+          targetVersion: '3.0.0',
+          state: FirmwareUpdateState.recoveryRequired,
+          startedAt: DateTime.now(),
+          nativeTransferEngaged: true,
+          requiresRecovery: true,
+        ),
+      );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: scenario.model)),
+        store: _MemoryMigrationStore()..value = original,
+        firmware: firmware,
+      );
+      try {
+        final result = await coordinator.migrate(
+          original.candidate,
+          interruptionWarningAcknowledged: true,
+        );
+        expect(result.outcome, DeviceMigrationOutcome.blocked);
+      } on FirmwareUpdateException catch (error) {
+        expect(error.code, 'firmwareUpdateActiveForAnotherDevice');
+      }
+      expect(firmware.superseded, isEmpty);
+      expect(firmware.startCalls, 0);
+    });
+  }
+
+  test(
+    'migration without the interruption acknowledgement starts nothing',
+    () async {
+      final original = _durableSession(DeviceMigrationState.waitingForDevice);
+      final firmware = _FakeMigrationFirmwareService();
+      final probe = _FakeProbe(_probe(model: 105));
+      final coordinator = build(
+        probe: probe,
+        store: _MemoryMigrationStore()..value = original,
+        firmware: firmware,
+      );
+      final result = await coordinator.migrate(original.candidate);
+      expect(result.outcome, DeviceMigrationOutcome.blocked);
+      expect(result.failureCode, 'interruptionWarningNotAcknowledged');
+      expect(firmware.startCalls, 0);
+      expect(firmware.resolveCalls, 0);
+      expect(probe.calls, 0);
+    },
+  );
 
   test(
     'temporary retry inspection cannot erase known supported recovery context',
@@ -1117,7 +1245,10 @@ void main() {
         ),
         store: store,
       );
-      final result = await coordinator.migrate(original.candidate);
+      final result = await coordinator.migrate(
+        original.candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(
         result.candidate.compatibility,
         DeviceMigrationCompatibility.unableToVerify,
@@ -1160,7 +1291,10 @@ void main() {
         ble: ble,
       );
       final candidate = await coordinator.inspect(deviceId: selectedId);
-      final operation = coordinator.migrate(candidate);
+      final operation = coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
       await entered.future;
       final before = await coordinator.getActiveSession();
       await expectLater(
@@ -1227,7 +1361,10 @@ void main() {
       final recovery = coordinator.reconcile(attemptRecovery: true);
       gate.complete();
       await passive;
-      expect((await recovery)?.state, DeviceMigrationState.completed);
+      // attemptRecovery never starts a DFU: the action stays available.
+      final settled = await recovery;
+      expect(settled?.state, DeviceMigrationState.recoveryRequired);
+      expect(settled?.nextAction, DeviceMigrationNextAction.recover);
     },
   );
 
@@ -1251,7 +1388,10 @@ void main() {
     final candidate = await coordinator.inspect(deviceId: selectedId);
     final passive = coordinator.reconcile();
     await Future<void>.delayed(Duration.zero);
-    final migration = coordinator.migrate(candidate);
+    final migration = coordinator.migrate(
+      candidate,
+      interruptionWarningAcknowledged: true,
+    );
     expect(firmware.resolveCalls, 0);
     scanGate.complete();
     await passive;
@@ -1290,12 +1430,55 @@ void main() {
         store: _MemoryMigrationStore()
           ..value = _durableSession(DeviceMigrationState.prepared),
       );
-      await coordinator.reconcile(attemptRecovery: true);
+      final restored = await coordinator.reconcile(attemptRecovery: true);
+      // M3: the app was killed between the user's confirmation and the start of
+      // the transfer. Restoring (even with attemptRecovery) only observes: it
+      // finds the source and waits for a new explicit migrate().
       expect(probe.calls, 1);
+      expect(firmware.resolveCalls, 0);
+      expect(firmware.startCalls, 0);
+      expect(restored?.nextAction, DeviceMigrationNextAction.continueMigration);
+      expect(restored?.state, DeviceMigrationState.prepared);
+      // The acknowledgement is mandatory for the explicit tap.
+      final refused = await coordinator.migrate(restored!.candidate);
+      expect(refused.outcome, DeviceMigrationOutcome.blocked);
+      expect(firmware.resolveCalls, 0);
+      expect(firmware.startCalls, 0);
+      // A new tap that acknowledged the warning starts it (pre-flight runs in
+      // the firmware coordinator's start).
+      await coordinator.migrate(
+        restored.candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(firmware.resolveCalls, 1);
       await coordinator.dispose();
     },
   );
+
+  test('M3: repeated restores and check-again never start a confirmed but '
+      'unstarted migration', () async {
+    final firmware = _FakeMigrationFirmwareService();
+    final coordinator = build(
+      probe: _FakeProbe(_probe(model: 105)),
+      firmware: firmware,
+      ble: _MigrationBleClient(
+        scanBatches: [
+          [_sourceScan(selectedId)],
+          [_sourceScan(selectedId)],
+          [_sourceScan(selectedId)],
+        ],
+      ),
+      store: _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.prepared),
+    );
+    for (var i = 0; i < 3; i++) {
+      final session = await coordinator.reconcile(attemptRecovery: i.isOdd);
+      expect(session?.nextAction, DeviceMigrationNextAction.continueMigration);
+    }
+    expect(firmware.resolveCalls, 0);
+    expect(firmware.startCalls, 0);
+    await coordinator.dispose();
+  });
 
   for (final model in [0, 9, 105]) {
     test(
@@ -1323,7 +1506,10 @@ void main() {
               : DeviceMigrationCompatibility.unsupportedHardware,
         );
         if (model != 105) {
-          final result = await coordinator.migrate(candidate);
+          final result = await coordinator.migrate(
+            candidate,
+            interruptionWarningAcknowledged: true,
+          );
           expect(
             result.outcome,
             model == 0
@@ -1442,6 +1628,7 @@ void main() {
             identityKind: DeviceMigrationIdentityKind.none,
             inspectedAt: DateTime.now(),
           ),
+          interruptionWarningAcknowledged: true,
         );
 
     expect(result.outcome, DeviceMigrationOutcome.failed);
@@ -1453,7 +1640,7 @@ void main() {
     final coordinator = build(probe: probe);
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    await coordinator.migrate(candidate);
+    await coordinator.migrate(candidate, interruptionWarningAcknowledged: true);
 
     expect(probe.calls, 2);
   });
@@ -1477,7 +1664,10 @@ void main() {
         TagPairingCodeCorrelator.verifyLegacy(lookup, candidate).state,
         TagPairingCodeMatchState.matched,
       );
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(result.outcome, DeviceMigrationOutcome.completed);
       expect(result.migratedDevice!.deviceId, selectedId);
       expect(probe.inspectedDeviceIds, everyElement(selectedId));
@@ -1492,7 +1682,10 @@ void main() {
     final coordinator = build(probe: _FakeProbe(_probe(model: 105)), ble: ble);
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    final result = await coordinator.migrate(candidate);
+    final result = await coordinator.migrate(
+      candidate,
+      interruptionWarningAcknowledged: true,
+    );
 
     expect(result.outcome, DeviceMigrationOutcome.completed);
     expect(result.migratedDevice?.deviceId, selectedId);
@@ -1573,7 +1766,10 @@ void main() {
     final coordinator = build(probe: _FakeProbe(_probe(model: 105)), ble: ble);
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    final result = await coordinator.migrate(candidate);
+    final result = await coordinator.migrate(
+      candidate,
+      interruptionWarningAcknowledged: true,
+    );
 
     expect(result.outcome, DeviceMigrationOutcome.failed);
     expect(result.failureCode, 'installedVersionMismatch');
@@ -1601,7 +1797,10 @@ void main() {
       );
       final candidate = await coordinator.inspect(deviceId: iosId);
 
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
 
       expect(
         result.outcome,
@@ -1625,7 +1824,10 @@ void main() {
       );
       final candidate = await coordinator.inspect(deviceId: iosId);
 
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
 
       expect(result.outcome, DeviceMigrationOutcome.completed);
       expect(result.migratedDevice?.deviceId, 'new-platform-id');
@@ -1647,7 +1849,10 @@ void main() {
       );
       final candidate = await coordinator.inspect(deviceId: iosId);
 
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
 
       expect(result.outcome, DeviceMigrationOutcome.completed);
       expect(calls, [
@@ -1677,7 +1882,10 @@ void main() {
       );
       final candidate = await coordinator.inspect(deviceId: selectedId);
 
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
 
       expect(result.outcome, DeviceMigrationOutcome.completed);
       expect(result.migratedDevice?.deviceId, selectedId);
@@ -1696,7 +1904,10 @@ void main() {
       );
       final candidate = await coordinator.inspect(deviceId: selectedId);
 
-      final result = await coordinator.migrate(candidate);
+      final result = await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
 
       expect(result.outcome, isNot(DeviceMigrationOutcome.completed));
       expect(calls, 0);
@@ -1711,7 +1922,10 @@ void main() {
     final coordinator = build(probe: _FakeProbe(_probe(model: 105)), ble: ble);
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    final result = await coordinator.migrate(candidate);
+    final result = await coordinator.migrate(
+      candidate,
+      interruptionWarningAcknowledged: true,
+    );
 
     expect(result.outcome, DeviceMigrationOutcome.failed);
     expect(result.failureCode, 'installedVersionMismatch');
@@ -1728,7 +1942,10 @@ void main() {
     );
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    final result = await coordinator.migrate(candidate);
+    final result = await coordinator.migrate(
+      candidate,
+      interruptionWarningAcknowledged: true,
+    );
     final session = await coordinator.getActiveSession();
 
     expect(result.outcome, DeviceMigrationOutcome.failed);
@@ -1748,7 +1965,10 @@ void main() {
     );
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
-    final result = await coordinator.migrate(candidate);
+    final result = await coordinator.migrate(
+      candidate,
+      interruptionWarningAcknowledged: true,
+    );
     final session = await coordinator.getActiveSession();
 
     expect(result.outcome, DeviceMigrationOutcome.recoveryRequired);
@@ -1792,7 +2012,7 @@ void main() {
     );
 
     await expectLater(
-      coordinator.migrate(other),
+      coordinator.migrate(other, interruptionWarningAcknowledged: true),
       throwsA(
         isA<FirmwareUpdateException>().having(
           (e) => e.code,
@@ -1826,7 +2046,10 @@ void main() {
       final coordinator = build(probe: probe, firmware: firmware);
       final candidate = await coordinator.inspect(deviceId: selectedId);
 
-      await coordinator.migrate(candidate);
+      await coordinator.migrate(
+        candidate,
+        interruptionWarningAcknowledged: true,
+      );
 
       expect(probe.inspectedDeviceIds, [selectedId, selectedId]);
       expect(firmware.resolveCalls, 1);
@@ -1854,7 +2077,7 @@ void main() {
     final candidate = await coordinator.inspect(deviceId: selectedId);
 
     await expectLater(
-      coordinator.migrate(candidate),
+      coordinator.migrate(candidate, interruptionWarningAcknowledged: true),
       throwsA(
         isA<FirmwareUpdateException>().having(
           (e) => e.code,
@@ -2040,56 +2263,6 @@ void main() {
     },
   );
 
-  test(
-    'typed recovery rejection remains an explicit recoverable session',
-    () async {
-      final coordinator = build(
-        probe: _FakeProbe(_probe(model: 105)),
-        firmware: _FakeMigrationFirmwareService(
-          recoveryError: const FirmwareUpdateException(
-            'firmwareUpdateResumeRequired',
-            'Resume required',
-          ),
-        ),
-        store: _MemoryMigrationStore()
-          ..value = _durableSession(DeviceMigrationState.recoveryRequired),
-        ble: _MigrationBleClient(scans: [_dfuScan(selectedId, selectedId)]),
-      );
-      final session = await coordinator.reconcile(attemptRecovery: true);
-      expect(session?.state, DeviceMigrationState.recoveryRequired);
-      expect(session?.nextAction, DeviceMigrationNextAction.recover);
-      expect(session?.failureCode, 'firmwareUpdateResumeRequired');
-    },
-  );
-
-  test(
-    'recovery publishes firmware progress into the durable migration',
-    () async {
-      final gate = Completer<void>();
-      final firmware = _FakeMigrationFirmwareService(recoveryGate: gate);
-      final coordinator = build(
-        probe: _FakeProbe(_probe(model: 105)),
-        firmware: firmware,
-        store: _MemoryMigrationStore()
-          ..value = _durableSession(DeviceMigrationState.recoveryRequired),
-        ble: _MigrationBleClient(
-          scanBatches: [
-            [_dfuScan(selectedId, selectedId)],
-            [_eixamScan(selectedId, selectedId)],
-          ],
-        ),
-      );
-      final operation = coordinator.reconcile(attemptRecovery: true);
-      await Future<void>.delayed(Duration.zero);
-      final active = await coordinator.getActiveSession();
-      expect(active?.state, DeviceMigrationState.transferring);
-      expect(active?.firmwareSession?.nativeTransferEngaged, isTrue);
-      expect(active?.nextAction, DeviceMigrationNextAction.waitForDevice);
-      gate.complete();
-      expect((await operation)?.state, DeviceMigrationState.completed);
-    },
-  );
-
   test('multiple unproven DFU candidates are ambiguous', () async {
     final store = _MemoryMigrationStore()
       ..value = _durableSession(DeviceMigrationState.transferring);
@@ -2128,10 +2301,12 @@ void main() {
         ),
       );
 
-      final session = await coordinator.reconcile(attemptRecovery: true);
+      final pending = await coordinator.reconcile(attemptRecovery: true);
+      expect(pending?.state, DeviceMigrationState.recoveryRequired);
+      expect(pending?.nextAction, DeviceMigrationNextAction.recover);
 
+      final session = await coordinator.reconcile();
       expect(session?.state, DeviceMigrationState.completed);
-      expect(session?.firmwareSession?.state, FirmwareUpdateState.completed);
       expect(session?.migratedDevice?.deviceId, 'new-id');
     },
   );
@@ -2238,8 +2413,6 @@ final class _FakeMigrationFirmwareService
     this.activeFirmware,
     this.transferGate,
     this.transferEntered,
-    this.recoveryError,
-    this.recoveryGate,
     this.releaseUnavailable = false,
     this.startError,
     this.evidenceAfterStartOnly = false,
@@ -2249,8 +2422,6 @@ final class _FakeMigrationFirmwareService
   final bool evidenceAfterStartOnly;
   final FirmwareUpdateException? startError;
   final Completer<void>? transferGate;
-  final FirmwareUpdateException? recoveryError;
-  final Completer<void>? recoveryGate;
   final Completer<void>? transferEntered;
   final FirmwareUpdateState? forcedState;
   final bool forcedNativeEngaged;
@@ -2278,45 +2449,24 @@ final class _FakeMigrationFirmwareService
 
   @override
   Future<FirmwareUpdateSession?> getActiveMigrationFirmwareUpdate() async =>
-      evidenceAfterStartOnly && startCalls == 0 ? null : activeFirmware;
+      supersedeFlag || (evidenceAfterStartOnly && startCalls == 0)
+      ? null
+      : activeFirmware;
 
   @override
   Stream<FirmwareUpdateProgress> watchMigrationFirmwareProgress({
     required String deviceId,
   }) => _progress.stream.where((progress) => progress.deviceId == deviceId);
 
+  final List<String> superseded = <String>[];
+
   @override
-  Future<FirmwareUpdateSession> recoverMigrationFirmwareUpdate({
-    required String bootloaderDeviceId,
-    required String releaseId,
-    required String targetVersion,
-  }) async {
-    recoveryCalls++;
-    if (recoveryError != null) throw recoveryError!;
-    if (recoveryGate != null) {
-      _progress.add(
-        FirmwareUpdateProgress(
-          sessionId: 'recovery-1',
-          deviceId: bootloaderDeviceId,
-          state: FirmwareUpdateState.transferring,
-          nativeTransferEngaged: true,
-          requiresRecovery: true,
-          updatedAt: DateTime.now(),
-        ),
-      );
-      await recoveryGate!.future;
-    }
-    return FirmwareUpdateSession(
-      sessionId: 'recovery-1',
-      deviceId: bootloaderDeviceId,
-      releaseId: releaseId,
-      fromVersion: '',
-      targetVersion: targetVersion,
-      state: FirmwareUpdateState.completed,
-      startedAt: DateTime.now(),
-      completedAt: DateTime.now(),
-    );
+  Future<void> supersedeInterruptedFirmwareUpdate(String sessionId) async {
+    superseded.add(sessionId);
+    supersedeFlag = true;
   }
+
+  bool supersedeFlag = false;
 
   @override
   Future<FirmwareRelease?> resolveMigrationRelease({

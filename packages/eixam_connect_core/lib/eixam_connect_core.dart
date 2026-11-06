@@ -27,6 +27,7 @@ export 'src/entities/app_feedback.dart';
 export 'src/entities/backend_registered_device.dart';
 export 'src/entities/background_location.dart';
 export 'src/entities/firmware_update.dart';
+export 'src/entities/dfu_recovery.dart';
 export 'src/entities/preferred_device.dart';
 export 'src/entities/preferred_device_reconnect_result.dart';
 export 'src/entities/preferred_device_connection_suspension_result.dart';
@@ -108,6 +109,7 @@ export 'src/errors/activity_session_exception.dart';
 
 export 'src/entities/activity_availability.dart';
 export 'src/interfaces/activity_availability_control.dart';
+export 'src/interfaces/dfu_recovery_control.dart';
 export 'src/errors/activity_availability_exception.dart';
 
 export 'src/entities/activity_recording.dart';

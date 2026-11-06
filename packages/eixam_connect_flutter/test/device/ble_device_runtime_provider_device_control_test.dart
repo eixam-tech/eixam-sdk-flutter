@@ -7,6 +7,7 @@ import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
 import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dart';
 import 'package:eixam_connect_flutter/src/device/ble_transport_observation.dart';
 import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
+import 'package:eixam_connect_flutter/src/device/ble_scan_result_brand_classifier.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_notification.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
@@ -200,6 +201,66 @@ void main() {
       );
 
       expect(observed, isTrue);
+    });
+
+    test('preferred availability ignores the same address as AdaDFU or as '
+        'stock Meshtastic (P5 F4/F5), an EIXAM or bare advert still counts',
+        () async {
+      for (final scenario in <({List<String> uuids, String name, bool seen})>[
+        (
+          uuids: const ['00001530-1212-efde-1523-785feabcd123'],
+          name: 'AdaDFU',
+          seen: false,
+        ),
+        (
+          uuids: const ['6ba1b218-15a8-461f-9fa8-5dcae273eafd'],
+          name: 'Meshtastic_1a2b',
+          seen: false,
+        ),
+        (
+          uuids: const [EixamBleProtocol.serviceUuid],
+          name: 'EIXAM_1A2B',
+          seen: true,
+        ),
+        (uuids: const <String>[], name: '', seen: true),
+      ]) {
+        final client = _ScriptedScanBleClient([
+          BleScanResult(
+            deviceId: MockBleClient.demoDeviceId,
+            canonicalHardwareId: MockBleClient.demoCanonicalHardwareId,
+            name: scenario.name,
+            rssi: -40,
+            connectable: true,
+            advertisedServiceUuids: scenario.uuids,
+            brandClassification: classifyBleDiscoveredDeviceBrand(
+              name: scenario.name,
+              advertisedServiceUuids: scenario.uuids,
+            ),
+            discoveredAt: DateTime.utc(2026, 9, 23),
+          ),
+        ]);
+        final provider = BleDeviceRuntimeProvider(
+          bleClient: client,
+          isIosPlatform: () => false,
+        );
+        final observed = await provider.isPreferredDeviceAdvertising(
+          preferredDevice: PreferredDevice(
+            deviceId: MockBleClient.demoDeviceId,
+            displayName: 'EIXAM R1 Demo',
+            lastConnectedAt: DateTime.utc(2026, 9, 23),
+          ),
+          currentStatus: buildDeviceStatus(
+            deviceId: MockBleClient.demoDeviceId,
+            canonicalHardwareId: MockBleClient.demoCanonicalHardwareId,
+            paired: true,
+            connected: false,
+          ),
+          scanTimeout: const Duration(milliseconds: 10),
+        );
+        expect(observed, scenario.seen, reason: scenario.name);
+        await provider.dispose();
+        await client.dispose();
+      }
     });
 
     test('sets notification volume through the command channel', () async {
@@ -1250,4 +1311,15 @@ class _ResetAwareBleClient extends MockBleClient
         commandCharacteristicPresent: cmdPresent,
         shortCommandCharacteristicPresent: true,
       );
+}
+
+final class _ScriptedScanBleClient extends MockBleClient {
+  _ScriptedScanBleClient(this.results);
+
+  final List<BleScanResult> results;
+
+  @override
+  Future<List<BleScanResult>> scan({
+    Duration timeout = const Duration(seconds: 8),
+  }) async => List<BleScanResult>.of(results);
 }

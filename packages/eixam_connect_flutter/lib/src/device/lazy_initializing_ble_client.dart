@@ -9,12 +9,25 @@ import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
 
 final class LazyInitializingBleClient
-    implements BleClient, BleTransportObservationSource {
+    implements
+        BleClient,
+        BleTransportObservationSource,
+        BleAdvertisementSightingSource {
   LazyInitializingBleClient(this._delegate) {
     BleDebugRegistry.instance.registerScanner(scan);
   }
 
   final BleClient _delegate;
+
+  @override
+  List<BleScanResult> advertisementsSince(DateTime since) {
+    final delegate = _delegate;
+    return delegate is BleAdvertisementSightingSource
+        ? (delegate as BleAdvertisementSightingSource).advertisementsSince(
+            since,
+          )
+        : const <BleScanResult>[];
+  }
 
   @override
   BleTransportObservation transportObservation(String deviceId) {

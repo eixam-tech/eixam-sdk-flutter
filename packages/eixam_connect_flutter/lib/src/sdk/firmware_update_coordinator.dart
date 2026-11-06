@@ -10,6 +10,7 @@ import '../device/ble_client.dart';
 import '../device/ble_debug_registry.dart';
 import '../device/canonical_hardware_id.dart';
 import '../firmware_version.dart';
+import 'dfu_preflight.dart';
 import 'firmware_dfu_transport.dart';
 import 'firmware_update_session_store.dart';
 import 'firmware_artifact_cache.dart';
@@ -47,6 +48,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     this.restoreBleAfterDfuTransfer,
     this.postDfuStatusRefresh,
     this.physicalRecoveryEvidenceProvider,
+    this.adapterStateProvider,
+    this.phoneBatteryProvider,
+    this.screenAwakeProvider,
     Duration dfuStallTimeout = _defaultDfuStallTimeout,
     Duration dfuFirstUploadDeadline = _defaultDfuFirstUploadDeadline,
     Duration postDfuVerificationTimeout = _defaultPostDfuVerificationTimeout,
@@ -83,6 +87,29 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   final FirmwareDfuConnectionHook? releaseBleForDfuTransfer;
   final FirmwareDfuConnectionHook? restoreBleAfterDfuTransfer;
   final FirmwareDfuStatusRefreshHook? postDfuStatusRefresh;
+
+  /// DFU pre-flight inputs (see [runDfuPreflight]). Null skips that check.
+  final BleAdapterStateProvider? adapterStateProvider;
+  final PhoneBatteryProvider? phoneBatteryProvider;
+  final ScreenAwakeProvider? screenAwakeProvider;
+
+  /// Typed refusal (a [FirmwareUpdateException] whose code is a
+  /// [DfuPreflightFailure] name) when the phone cannot safely carry a DFU:
+  /// Bluetooth off, app not in the foreground, screen off, phone battery low.
+  Future<List<DfuPreflightWarning>> preflightDfuStart() => runDfuPreflight(
+    adapterState: adapterStateProvider,
+    appForeground: appLifecycleStateProvider == null
+        ? null
+        : () {
+            final state = appLifecycleStateProvider!.call();
+            return state == null ? null : state == AppLifecycleState.resumed;
+          },
+    screenAwake: screenAwakeProvider,
+    phoneBattery: phoneBatteryProvider,
+  );
+
+  /// A firmware operation (update, recovery) currently owns the device.
+  bool get operationInProgress => _operationInProgress;
 
   /// SDK platform evidence only; never a host timeout or user-facing retry
   /// policy. Mobile BLE implementations may have no evidence while absent.
@@ -323,6 +350,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required String releaseId,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
   }) async {
+    _requireInterruptionAcknowledgement(policy);
+    final preflightWarnings = await preflightDfuStart();
     await _restore();
     final initialStatus = await deviceRepository.getDeviceStatus();
     final intentTime = DateTime.now();
@@ -341,7 +370,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     );
     _ensureMayStart(intent);
     final priorIntent = _activeSession;
-    if (priorIntent != null && priorIntent.releaseId == releaseId) {
+    if (priorIntent != null &&
+        priorIntent.releaseId == releaseId &&
+        !priorIntent.isInstalledVersionMismatch) {
       intent = priorIntent.copyWith(
         state: FirmwareUpdateState.checking,
         clearCompletedAt: true,
@@ -386,6 +417,10 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       hardwareId: check.device.hardwareId,
       updatedAt: now,
       nextAction: FirmwareUpdateNextAction.retry,
+      preflightWarnings: _mergeWarnings(
+        preflightWarnings,
+        check.eligibility.warnings,
+      ),
     );
     _ensureMayStart(session);
     final previous = _activeSession;
@@ -410,6 +445,12 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         remoteRecoveryExhausted: false,
       );
     }
+    session = session.copyWith(
+      preflightWarnings: _mergeWarnings(
+        preflightWarnings,
+        check.eligibility.warnings,
+      ),
+    );
     _restoredSessions.remove(session.sessionId);
     _sessions[session.sessionId] = session;
     await _persist(session);
@@ -433,6 +474,24 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     );
     await _persistTail;
     return result;
+  }
+
+  List<DfuPreflightWarning> _mergeWarnings(
+    List<DfuPreflightWarning> first,
+    List<DfuPreflightWarning> second,
+  ) => List<DfuPreflightWarning>.unmodifiable(<DfuPreflightWarning>{
+    ...first,
+    ...second,
+  });
+
+  void _requireInterruptionAcknowledgement(FirmwareUpdatePolicy policy) {
+    if (policy.interruptionWarningAcknowledged) return;
+    throw FirmwareUpdateException(
+      DfuPreflightFailure.interruptionWarningNotAcknowledged.name,
+      'The host must show the interruption warning (an interrupted update can '
+      'need a computer to recover) and set '
+      'FirmwareUpdatePolicy.interruptionWarningAcknowledged.',
+    );
   }
 
   /// Resolves an active, model-specific catalog artifact for a stock-firmware
@@ -499,6 +558,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required FirmwareDfuStatusRefreshHook postMigrationStatusRefresh,
     FirmwareUpdatePolicy policy = const FirmwareUpdatePolicy(),
   }) async {
+    _requireInterruptionAcknowledgement(policy);
+    final preflightWarnings = await preflightDfuStart();
     await _restore();
     final eligibility = await evaluateEligibility(
       status: sourceStatus,
@@ -519,6 +580,10 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       hardwareId: sourceStatus.canonicalHardwareId,
       updatedAt: now,
       nextAction: FirmwareUpdateNextAction.retry,
+      preflightWarnings: _mergeWarnings(
+        preflightWarnings,
+        eligibility.warnings,
+      ),
     );
     _ensureMayStart(session, verifiedMigrationSource: true);
     final previous = _activeSession;
@@ -543,6 +608,12 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         remoteRecoveryExhausted: false,
       );
     }
+    session = session.copyWith(
+      preflightWarnings: _mergeWarnings(
+        preflightWarnings,
+        eligibility.warnings,
+      ),
+    );
     _restoredSessions.remove(session.sessionId);
     _sessions[session.sessionId] = session;
     await _persist(session);
@@ -663,9 +734,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   ///   null-percentage validating/disconnecting tail after 100% — so a slow but
   ///   live finalization is not mistaken for a stall, while the bare
   ///   reconnect-retry churn before the first byte still cannot keep it alive.
-  /// - On a watchdog fire the still-pending native transfer is cancelled so it
-  ///   does not keep flashing unawaited (and a later recovery is not rejected
-  ///   with `alreadyRunning`).
+  /// - On a watchdog fire the still-pending native transfer is NOT cancelled
+  ///   (abort sends Reset and strands the TAG in USB/UF2 mode); only the Dart
+  ///   session fails.
   ///
   /// [onEngaged] fires the first time the native side emits any event, i.e. the
   /// device actually engaged — used to decide recovery-vs-failed routing.
@@ -690,12 +761,14 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         'Native firmware transfer is unavailable.',
       );
     }
+    // Typed refusal before anything is sent or marked engaged.
+    // Warnings were already recorded on the session at start.
+    await preflightDfuStart();
     final stall = Completer<void>();
     Timer? stallTimer;
     Timer? firstUploadTimer;
     var uploadStarted = false;
     var nativeInvocationStarted = false;
-    var nativeCompleted = false;
     void failStalled(String message) {
       if (!stall.isCompleted) {
         stall.completeError(FirmwareUpdateException('dfuStalled', message));
@@ -773,19 +846,16 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         dfuTransport.start(request),
         stall.future,
       ]);
-      nativeCompleted = true;
     } finally {
       stallTimer?.cancel();
       firstUploadTimer?.cancel();
       await dfuSub.cancel();
-      // A watchdog fired but the native transfer future is still pending: cancel
-      // it so it does not keep flashing behind our back and a subsequent
-      // recovery is not rejected with 'alreadyRunning'.
-      if (nativeInvocationStarted && !nativeCompleted) {
-        // The transport's cancellation future acknowledges native cleanup.
-        // Failure to acknowledge must stop recovery, never trigger a retry.
-        await dfuTransport.cancel(request.sessionId);
-      }
+      // A watchdog may have fired while the native transfer is still pending.
+      // It is deliberately NOT cancelled: Nordic's abort() makes the legacy
+      // implementation send Reset (Op Code 6), which reboots the bootloader
+      // (application already erased) into USB/UF2-only mode. The Dart session
+      // fails (the native service ends on its own terminal error/timeout) and a
+      // later start is refused by the native `alreadyRunning` guard meanwhile.
       // Restore is best-effort cleanup: a failure here (e.g. the BLE ownership
       // reclaim throwing) must NOT override the transfer's real outcome — a
       // throw out of this finally would mask a SUCCESSFUL transfer as a failure
@@ -873,7 +943,13 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   }) async {
     await _restore();
     final current = _activeSession;
-    if (current == null || current.isCompleted) return current;
+    // A verified version mismatch is terminal: only a new user-started update
+    // replaces it (see FirmwareUpdateSession.isInstalledVersionMismatch).
+    if (current == null ||
+        current.isCompleted ||
+        current.isInstalledVersionMismatch) {
+      return current;
+    }
 
     DeviceStatus status;
     try {
@@ -902,6 +978,26 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
         status.firmwareVersion,
         current.fromVersion,
       );
+      // Only an application version counts as read. A connection that reached
+      // the TAG while it is AdaDFU reports the bootloader revision
+      // (`0.4.3 s140 6.1.1`): that is not an installed app, so it keeps
+      // waiting (E1 recovery stays offered), never a terminal mismatch (M1).
+      final versionRead = isEixamApplicationFirmwareVersion(
+        status.firmwareVersion,
+      );
+      if (!oldApplicationValid && versionRead) {
+        // The TAG runs and reports an app version that is neither the old nor
+        // the target one. Waiting cannot change that: terminal mismatch (retry
+        // = a new user-started update), never an endless "waiting for device".
+        return _settleReconciliation(
+          current,
+          state: FirmwareUpdateState.failed,
+          outcome: FirmwareUpdateReconciliationOutcome.installedVersionMismatch,
+          nextAction: FirmwareUpdateNextAction.retry,
+          requiresRecovery: false,
+          failureCode: FirmwareUpdateSession.installedVersionMismatchCode,
+        );
+      }
       return _settleReconciliation(
         current,
         state: oldApplicationValid
@@ -960,25 +1056,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
                 matched.remoteRecoveryAttempts >= maxRemoteRecoveryAttempts)) {
           return _requireManualRecovery(matched);
         }
-        if (attemptRecovery) {
-          final recovered = await recoverFirmwareUpdate(
-            bootloaderDeviceId: matching.single.deviceId,
-            releaseId: current.releaseId,
-            targetVersion: current.targetVersion,
-            hardwareId: current.hardwareId,
-            replacingSession: matched,
-          );
-          await _persistTail;
-          if (recovered.state == FirmwareUpdateState.completed) {
-            return _settleReconciliation(
-              recovered,
-              state: FirmwareUpdateState.reconnecting,
-              outcome: FirmwareUpdateReconciliationOutcome.recoveryDeviceFound,
-              nextAction: FirmwareUpdateNextAction.waitForDevice,
-            );
-          }
-          return recovered;
-        }
+        // [attemptRecovery] never starts a DFU: BLE recovery of an interrupted
+        // legacy update is not possible with bootloader 0.4.3 and nothing may
+        // start a DFU without an explicit user action (DfuRecoveryControl).
         return _settleReconciliation(
           matched,
           state: FirmwareUpdateState.recoveryRequired,
@@ -1144,38 +1224,6 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     required String deviceId,
   }) => watchProgress(deviceId: deviceId);
 
-  @override
-  Future<FirmwareUpdateSession> recoverMigrationFirmwareUpdate({
-    required String bootloaderDeviceId,
-    required String releaseId,
-    required String targetVersion,
-  }) async {
-    await _restore();
-    final active = _activeSession;
-    final matchingInterrupted =
-        active != null &&
-        !active.isCompleted &&
-        (active.nativeTransferEngaged || active.requiresRecovery) &&
-        active.releaseId == releaseId &&
-        firmwareIdentityMatches(
-          active.targetVersion,
-          targetVersion,
-          policy: active.verificationPolicy,
-        ) &&
-        _sameIdentity(
-          active.deviceId,
-          active.hardwareId,
-          bootloaderDeviceId,
-          null,
-        );
-    return recoverFirmwareUpdate(
-      bootloaderDeviceId: bootloaderDeviceId,
-      releaseId: releaseId,
-      targetVersion: targetVersion,
-      replacingSession: matchingInterrupted ? active : null,
-    );
-  }
-
   Future<void> cancelFirmwareUpdate(String sessionId) async {
     // Once flashing has begun the bootloader has already erased the running
     // app, so aborting cannot restore the previous firmware — it only strands
@@ -1215,140 +1263,111 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     }
   }
 
-  /// Re-flashes a device stranded in the DFU bootloader (e.g. after an
-  /// interrupted transfer, which erased the previous application).
+  /// One user-started, fresh DFU session against a device that is visible as
+  /// the DFU bootloader after an interrupted update ([interrupted] is the
+  /// persisted session). Never retried, never looped, never automatic.
   ///
-  /// [bootloaderDeviceId] is the address the device advertises while in
-  /// bootloader mode. The flash is forced because the device no longer exposes
-  /// the buttonless entry service. On a successful transfer the device reboots
-  /// into the freshly installed application and leaves DFU mode on its own;
-  /// eligibility and app-mode version verification are intentionally skipped.
-  Future<FirmwareUpdateSession> recoverFirmwareUpdate({
+  /// With bootloader 0.4.3 the bootloader answers the Start with INVALID_STATE
+  /// and the Nordic library sends Reset 108-245 ms later, so the expected
+  /// outcome is a failed session and a TAG in USB/UF2-only mode. On a
+  /// bootloader that stays in OTA mode the transfer completes and the caller
+  /// must still verify the installed version ([reconcileFirmwareUpdate]).
+  Future<FirmwareUpdateSession> startBootloaderRecoveryDfu({
     required String bootloaderDeviceId,
-    required String releaseId,
-    String targetVersion = '',
-    String? hardwareId,
-    FirmwareUpdateSession? replacingSession,
-  }) => _exclusive(
-    () => _recoverFirmwareUpdate(
+    required FirmwareUpdateSession interrupted,
+  }) => _exclusive(() async {
+    final result = await _recoverFirmwareUpdateOnce(
       bootloaderDeviceId: bootloaderDeviceId,
-      releaseId: releaseId,
-      targetVersion: targetVersion,
-      hardwareId: hardwareId,
-      replacingSession: replacingSession,
-    ),
-  );
-
-  Future<FirmwareUpdateSession> _recoverFirmwareUpdate({
-    required String bootloaderDeviceId,
-    required String releaseId,
-    String targetVersion = '',
-    String? hardwareId,
-    FirmwareUpdateSession? replacingSession,
-  }) async {
-    await _restore();
-    var current = replacingSession;
-    // Migration already matched its candidate; independently establish native
-    // recovery capability against the canonical firmware identity here.
-    if (current != null &&
-        bleClient != null &&
-        !current.recoveryDeviceMatched) {
-      final scans = await bleClient!.scan(timeout: const Duration(seconds: 8));
-      final matches = scans.where(
-        (scan) =>
-            scan.toPublic().isDfuBootloader &&
-            _scanMatchesSession(
-              scan.deviceId,
-              scan.canonicalHardwareId,
-              current!,
-            ),
-      );
-      if (matches.length == 1 &&
-          dfuTransport is! UnsupportedFirmwareDfuTransport) {
-        current = current.copyWith(recoveryDeviceMatched: true);
-        await _persistRecoveryEvidence(current);
-        bootloaderDeviceId = matches.single.deviceId;
-      } else {
-        return _settleReconciliation(
-          current,
-          state: current.state,
-          outcome: FirmwareUpdateReconciliationOutcome.deviceMissing,
-          nextAction: FirmwareUpdateNextAction.waitForDevice,
-        );
-      }
-    }
-    if (current?.manualRecoveryRequired == true) {
-      return _requireManualRecovery(current!);
-    }
-    if (current != null &&
-        current.nativeTransferEngaged &&
-        current.recoveryDeviceMatched &&
-        current.remoteRecoveryFailed &&
-        current.remoteRecoveryAttempts >= maxRemoteRecoveryAttempts) {
-      return _requireManualRecovery(current);
-    }
-    var address = bootloaderDeviceId;
-    var active = await _recoverFirmwareUpdateOnce(
-      bootloaderDeviceId: address,
-      releaseId: releaseId,
-      targetVersion: targetVersion,
-      hardwareId: hardwareId,
-      replacingSession: current,
+      releaseId: interrupted.releaseId,
+      targetVersion: interrupted.targetVersion,
+      hardwareId: interrupted.hardwareId,
+      replacingSession: interrupted,
     );
-    for (
-      var opportunity = 0;
-      opportunity < maxRecoveryReconciliations;
-      opportunity++
-    ) {
-      await _persistTail;
-      if (!active.remoteRecoveryFailed ||
-          !active.recoveryDeviceMatched ||
-          active.nextAction == FirmwareUpdateNextAction.waitForDevice) {
-        return active;
-      }
-      // Each terminal native operation has fully released ownership before
-      // inspecting the returned application or a fresh recovery advertisement.
-      for (var scan = 0; scan < maxRecoveryReconciliations; scan++) {
-        final reconciled = await _reconcileFirmwareUpdate();
-        if (reconciled == null) return active;
-        active = reconciled;
-        if (active.nextAction != FirmwareUpdateNextAction.waitForDevice) {
-          break;
-        }
-      }
-      if (active.nextAction != FirmwareUpdateNextAction.retryRemoteRecovery &&
-          active.nextAction != FirmwareUpdateNextAction.recover) {
-        return active;
-      }
-      final scans = await bleClient!.scan(timeout: const Duration(seconds: 8));
-      final identity = active;
-      final matches = scans.where(
-        (scan) =>
-            scan.toPublic().isDfuBootloader &&
-            _scanMatchesSession(
-              scan.deviceId,
-              scan.canonicalHardwareId,
-              identity,
-            ),
+    await _persistTail;
+    return result;
+  });
+
+  /// Records that this interrupted update can only be finished physically
+  /// (cable). Lets the stock migration treat the later stock boot as a
+  /// completed physical recovery.
+  Future<FirmwareUpdateSession?> requirePhysicalRecovery() async {
+    await _restore();
+    final current = _activeSession;
+    if (current == null || current.isCompleted || _operationInProgress) {
+      return current;
+    }
+    if (current.state == FirmwareUpdateState.physicalRecoveryRequired) {
+      return current;
+    }
+    return _requireManualRecovery(current);
+  }
+
+  /// The application firmware version read from the CONNECTED TAG when it is
+  /// the one of the active (interrupted) session, or null when the TAG is not
+  /// connected, is another device, or reports no application version (for
+  /// example the bootloader revision, M1). Read-only: it settles nothing and
+  /// never starts a transfer. [isOldApplication] is true when the version is the
+  /// one the interrupted update started from.
+  Future<({String version, bool isOldApplication})?>
+  readConnectedApplicationVersion() async {
+    await _restore();
+    final current = _activeSession;
+    if (current == null || current.isCompleted || _operationInProgress) {
+      return null;
+    }
+    try {
+      // Bounded: the recovery observer calls this on every tick and a hanging
+      // refresh must not freeze its status.
+      final status = await _refreshFirmwareStatus().timeout(
+        const Duration(seconds: 15),
       );
-      if (matches.length != 1) {
-        return _settleReconciliation(
-          active,
-          state: active.state,
-          outcome: FirmwareUpdateReconciliationOutcome.deviceMissing,
-          nextAction: FirmwareUpdateNextAction.waitForDevice,
-        );
+      final version = status.firmwareVersion;
+      if (!status.connected ||
+          !_statusMatchesSession(status, current) ||
+          version == null ||
+          !isEixamApplicationFirmwareVersion(version)) {
+        return null;
       }
-      address = matches.single.deviceId;
-      active = await _recoverFirmwareUpdateOnce(
-        bootloaderDeviceId: address,
-        releaseId: releaseId,
-        targetVersion: targetVersion,
-        hardwareId: hardwareId,
-        replacingSession: active,
+      return (
+        version: version,
+        isOldApplication: eixamFirmwareVersionsMatch(
+          version,
+          current.fromVersion,
+        ),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Clears a persisted interrupted update whose TAG has been physically
+  /// recovered (it reappeared as stock firmware). The caller owns the identity
+  /// and hardware verification; this only refuses a session that is running or
+  /// was never interrupted.
+  @override
+  Future<void> supersedeInterruptedFirmwareUpdate(String sessionId) async {
+    await _restore();
+    final active = _activeSession;
+    if (active == null || active.sessionId != sessionId) return;
+    if (_operationInProgress ||
+        _reconciliationFuture != null ||
+        active.isCompleted ||
+        !active.nativeTransferEngaged) {
+      throw const FirmwareUpdateException(
+        'firmwareOperationOwned',
+        'The firmware record is not an interrupted update that can be '
+            'superseded.',
       );
     }
-    return active;
+    _operationInProgress = true;
+    try {
+      await _persistTail;
+      await sessionStore.clear();
+      _sessions.remove(active.sessionId);
+      _activeSession = null;
+    } finally {
+      _operationInProgress = false;
+    }
   }
 
   Future<FirmwareUpdateSession> _recoverFirmwareUpdateOnce({
@@ -1425,6 +1444,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
           deviceId: bootloaderDeviceId,
           release: release,
           artifactBytes: artifactBytes,
+          // Only reached through the explicit, user-started
+          // [startBootloaderRecoveryDfu]; nothing starts it automatically.
           forceDfu: true,
         ),
         stallMessage:
@@ -1483,6 +1504,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   }) async {
     final blockers = <FirmwareUpdateBlocker>[];
     final messages = <String>[];
+    final warnings = <DfuPreflightWarning>[];
 
     void add(FirmwareUpdateBlocker blocker, String message) {
       if (!blockers.contains(blocker)) {
@@ -1502,8 +1524,10 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       );
     }
     final battery = status.approximateBatteryPercentage;
-    if ((battery == null && policy.requireKnownDeviceBattery) ||
-        (battery != null && battery < policy.minDeviceBatteryPercentage)) {
+    if (battery == null) {
+      // Unreadable (stock firmware, bootloader): a warning, never a blocker.
+      warnings.add(DfuPreflightWarning.deviceBatteryUnknown);
+    } else if (battery < policy.minDeviceBatteryPercentage) {
       add(
         FirmwareUpdateBlocker.lowDeviceBattery,
         'Device battery is below the OTA threshold.',
@@ -1606,6 +1630,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       eligible: blockers.isEmpty,
       blockers: List<FirmwareUpdateBlocker>.unmodifiable(blockers),
       messages: List<String>.unmodifiable(messages),
+      warnings: List<DfuPreflightWarning>.unmodifiable(warnings),
     );
   }
 
@@ -1748,7 +1773,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
           );
         }
         if (restored.nativeTransferEngaged &&
-            restored.state != FirmwareUpdateState.physicalRecoveryRequired) {
+            restored.state != FirmwareUpdateState.physicalRecoveryRequired &&
+            // A verified mismatch stays terminal across restarts.
+            !restored.isInstalledVersionMismatch) {
           restored = restored.copyWith(
             nextAction: FirmwareUpdateNextAction.waitForDevice,
           );
@@ -1793,6 +1820,9 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
                         )))) ||
             (_restoredSessions.contains(active.sessionId) &&
                 !active.nativeTransferEngaged) ||
+            // The TAG runs and reported its version: a fresh, user-started
+            // update (same warning + pre-flight) may replace the mismatch.
+            active.isInstalledVersionMismatch ||
             active.nextAction == FirmwareUpdateNextAction.retryTransfer ||
             active.nextAction == FirmwareUpdateNextAction.retryDownload ||
             active.nextAction == FirmwareUpdateNextAction.startTransfer)) {

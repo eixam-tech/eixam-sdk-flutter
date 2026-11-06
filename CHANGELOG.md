@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — interrupted DFU recovery and DFU pre-flight
+
+- Optional `DfuRecoveryControl` (status, `watchDfuRecovery`, `prepareCableRecovery`, `restartDfuFromScratch`, `confirmDeviceForgotten`, `dismissDfuRecovery`) with `DfuRecoveryState`, `DfuRecoveryReason`, `DfuRecoveryAction`, `E1RecoveryStrategy` and `resolveE1RecoveryStrategy` (bootloader 0.4.3 and unknown -> cable). BLE resume is not possible with bootloader 0.4.3; recovery is by cable (E1 default: `prepareCableRecovery`).
+- Cable recovery installs the EIXAM firmware UF2 directly. Once a cable recovery is in progress (`prepareCableRecovery` done or `physicalRecoveryRequired`), a TAG that comes back running EIXAM firmware ends the interruption: a connected TAG whose application version can be read (any version) is reported as `recovered`; an advertising EIXAM TAG that is not connected yet (unpaired or erased flash) clears the record with `physicalRecoveryCompleted`. Never a version-mismatch card and never an update offer; an older version only shows the normal update card. New read-only `FirmwareUpdateCoordinator.readConnectedApplicationVersion`.
+- M3: after an app restart a confirmed but not yet started migration or OTA never starts by itself. `DeviceMigrationCoordinator.reconcile` (also with `attemptRecovery`) only observes and returns `continueMigration`; the transfer starts only through a new `migrateDeviceToEixam(..., interruptionWarningAcknowledged: true)` / `startFirmwareUpdate` call, which re-runs the pre-flight checks. The acknowledgement is no longer hard-coded inside the migration.
+- No automatic DFU: Android `setNumberOfRetries(0)`, watchdogs and plugin detach no longer abort an engaged transfer (abort makes Nordic send Reset and strands the TAG in USB/UF2-only mode), `attemptRecovery` and the old forceDfu recovery are gone (`recoverFirmwareUpdate` throws `remoteRecoveryUnsupported`), iOS connection timeout 30 s.
+- Pre-flight before every OTA/migration/recovery start (Bluetooth, foreground, screen, phone battery level and charging); unreadable values are `DfuPreflightWarning`s and never block. BREAKING for hosts: starting needs `FirmwareUpdatePolicy.interruptionWarningAcknowledged` / `migrateDeviceToEixam(interruptionWarningAcknowledged: true)`, otherwise `interruptionWarningNotAcknowledged`.
+- `EixamBootstrapConfig.dfuRecovery` (`silenceWindow`, `observeInterval`). `DeviceMigrationFirmwareService.recoverMigrationFirmwareUpdate` removed.
+- Stock migration supersedes a stale interrupted firmware record when the TAG reappears as verified stock (hardware model 105, same identity) instead of failing `firmwareUpdateResumeRequired`.
+- Native probes `phoneBattery` and `screenAwake`. iOS stale-link detection and the Android task-removal behaviour are unverified on hardware.
+
 ## Unreleased — iOS stale-bond detection independent of language
 
 - `E_BLE_IOS_PAIRING_INFORMATION_REMOVED` is now raised from the CoreBluetooth error code (`CBError.peerRemovedPairingInformation`, 14) on FlutterBluePlus apple `connect` failures, which only carry CBErrorDomain. Before, it matched the English `localizedDescription`, which iOS localizes, so Catalan and Spanish iPhones got a generic connection error. Other operations, where 14 can be `CBATTError.unlikelyError`, keep the English text match as a fallback. No API change.

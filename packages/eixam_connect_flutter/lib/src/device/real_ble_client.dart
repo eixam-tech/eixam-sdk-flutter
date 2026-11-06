@@ -40,7 +40,11 @@ final class _SdkDiscoveryPrecheck {
   final String reason;
 }
 
-class RealBleClient implements BleClient, BleTransportObservationSource {
+class RealBleClient
+    implements
+        BleClient,
+        BleTransportObservationSource,
+        BleAdvertisementSightingSource {
   RealBleClient({
     int? Function(EixamBleChannel channel, List<int> payload)? meshPortResolver,
     @visibleForTesting Future<bool> Function()? isSupportedProvider,
@@ -192,6 +196,51 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
   bool _reportedAmbiguousTelMeshPort = false;
   int _scanGeneration = 0;
 
+  /// Latest advert per device, received by any scan of this client.
+  final Map<String, BleScanResult> _sightings = <String, BleScanResult>{};
+  static const Duration _sightingRetention = Duration(minutes: 5);
+
+  @override
+  List<BleScanResult> advertisementsSince(DateTime since) {
+    final cutoff = DateTime.now().subtract(_sightingRetention);
+    _sightings.removeWhere((_, scan) => scan.discoveredAt.isBefore(cutoff));
+    return _sightings.values
+        .where((scan) => !scan.discoveredAt.isBefore(since))
+        .toList(growable: false);
+  }
+
+  /// The current scan generation's listener records every advert, so an advert
+  /// received for another caller's scan still counts (F13).
+  void _recordSighting(ScanResult r) {
+    final id = r.device.remoteId.str;
+    final services = r.advertisementData.serviceUuids
+        .map((uuid) => uuid.str)
+        .toList(growable: false);
+    final name = r.advertisementData.advName.isNotEmpty
+        ? r.advertisementData.advName
+        : (r.device.platformName.isNotEmpty
+              ? r.device.platformName
+              : 'Unknown');
+    final previous = _sightings[id];
+    if (previous != null && r.timeStamp.isBefore(previous.discoveredAt)) {
+      return;
+    }
+    _sightings[id] = BleScanResult(
+      deviceId: id,
+      canonicalHardwareId: normalizeCanonicalHardwareId(id),
+      name: name,
+      advertisedLocalName: r.advertisementData.advName,
+      rssi: r.rssi,
+      connectable: r.advertisementData.connectable,
+      advertisedServiceUuids: services,
+      brandClassification: classifyBleDiscoveredDeviceBrand(
+        name: name,
+        advertisedServiceUuids: services,
+      ),
+      discoveredAt: r.timeStamp,
+    );
+  }
+
   @override
   Future<void> initialize() async {
     if (await _isSupportedProvider() == false) {
@@ -297,6 +346,7 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
         return;
       }
       for (final r in scanResults) {
+        _recordSighting(r);
         if (r.timeStamp.isBefore(scanStartedAt)) {
           BleDebugRegistry.instance.recordEvent(
             'BLE_SCAN_RESULT_REJECTED reason=stale_generation '
