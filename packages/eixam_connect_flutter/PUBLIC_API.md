@@ -268,6 +268,20 @@ valid old application returns a safe transfer retry; a recovered stock source
 returns `continueMigration`. A different hardware identity cannot complete the
 session. Hosts keep showing the SDK-directed journey until that verdict changes.
 
+Cable recovery installs the EIXAM firmware UF2 directly. Once a cable recovery is
+in progress (`prepareCableRecovery` done or `physicalRecoveryRequired`), a TAG that
+comes back running EIXAM firmware ends the interruption through `DfuRecoveryControl`:
+a connected TAG with a readable application version (any version) becomes
+`recovered`; an advertising EIXAM TAG that is not connected yet clears the record
+with `physicalRecoveryCompleted`. Neither is a version mismatch nor an update
+offer; an older version only shows the normal update card later.
+
+A restored or re-checked migration or OTA never starts by itself. `reconcileDeviceMigration`
+(with or without `attemptRecovery`) only observes and returns `continueMigration`;
+the transfer starts only through a new `migrateDeviceToEixam(...,
+interruptionWarningAcknowledged: true)` / `startFirmwareUpdate` call, which re-runs
+the pre-flight checks.
+
 After native completion, temporary Bluetooth/rediscovery errors stay in bounded
 installed-version verification. They do not turn a completed transfer into a
 failed native operation. If the normal runtime reconnects first, migration
