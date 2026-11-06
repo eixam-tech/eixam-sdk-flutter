@@ -56,6 +56,8 @@ class RealBleClient
     @visibleForTesting NativeBleStartScan? startScan,
     @visibleForTesting NativeBleStopScan? stopScan,
     @visibleForTesting
+    Duration minNativeScanWindow = const Duration(seconds: 20),
+    @visibleForTesting
     Future<List<BluetoothDevice>> Function(List<Guid>)? systemDevicesProvider,
     @visibleForTesting
     Future<List<BluetoothService>> Function(BluetoothDevice)? serviceDiscoverer,
@@ -64,6 +66,7 @@ class RealBleClient
     @visibleForTesting
     Future<void> Function(BluetoothDevice device)? androidGattCacheClearer,
   }) : _meshPortResolver = meshPortResolver,
+       _minNativeScanWindow = minNativeScanWindow,
        _isSupportedProvider =
            isSupportedProvider ?? (() => FlutterBluePlus.isSupported),
        _adapterStateProvider =
@@ -194,7 +197,24 @@ class RealBleClient
 
   bool _initialized = false;
   bool _reportedAmbiguousTelMeshPort = false;
-  int _scanGeneration = 0;
+  int _scanSequence = 0;
+
+  /// Concurrent [scan] calls share one native scan session (F12). Superseding
+  /// an in-flight scan made the late-availability watcher and a foreground
+  /// discovery cancel each other, so both saw nothing for minutes.
+  int _activeScanCount = 0;
+
+  /// Start of the running native scan session; adverts received since then
+  /// belong to every caller that joined it. Null when no native scan runs.
+  DateTime? _nativeScanStartedAt;
+
+  /// When the running native scan stops by its own timeout.
+  DateTime? _nativeScanUntil;
+
+  /// A native scan runs at least this long, so overlapping callers (watcher
+  /// every ~10 s, discovery polls) rarely restart it. Android throttles apps
+  /// that start more than 5 scans in 30 s. The last caller stops it early.
+  final Duration _minNativeScanWindow;
 
   /// Latest advert per device, received by any scan of this client.
   final Map<String, BleScanResult> _sightings = <String, BleScanResult>{};
@@ -306,7 +326,7 @@ class RealBleClient
     Duration timeout = const Duration(seconds: 8),
   }) async {
     _ensureInitialized();
-    final generation = ++_scanGeneration;
+    final generation = ++_scanSequence;
     final isIos = defaultTargetPlatform == TargetPlatform.iOS;
     safeSdkDebugPrint(
       'SDK_DISCOVERY_START_ENTRY '
@@ -338,13 +358,27 @@ class RealBleClient
     }
 
     final Map<String, BleScanResult> deduped = {};
-    final scanStartedAt = DateTime.now();
-    BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
+    final joinedSessionStart = _activeScanCount > 0
+        ? _nativeScanStartedAt
+        : null;
+    // A caller joining a running native scan also owns the adverts that
+    // session already received: the native layer reports a device once per
+    // session (iOS, and FlutterBluePlus without continuousUpdates), so they
+    // are not delivered again.
+    final scanStartedAt = joinedSessionStart ?? DateTime.now();
+    final until = DateTime.now().add(timeout);
+    _activeScanCount++;
+    if (joinedSessionStart != null) {
+      for (final sighting in advertisementsSince(joinedSessionStart)) {
+        if (_devices.containsKey(sighting.deviceId)) {
+          deduped[sighting.deviceId] = sighting;
+        }
+      }
+    } else {
+      BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
+    }
 
     final sub = _scanResultsProvider().listen((scanResults) {
-      if (generation != _scanGeneration) {
-        return;
-      }
       for (final r in scanResults) {
         _recordSighting(r);
         if (r.timeStamp.isBefore(scanStartedAt)) {
@@ -392,9 +426,28 @@ class RealBleClient
     });
 
     try {
-      safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
-      await _startScan(timeout);
-      safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
+      final nativeUntil = _nativeScanUntil;
+      if (nativeUntil == null || until.isAfter(nativeUntil)) {
+        final window = timeout > _minNativeScanWindow
+            ? timeout
+            : _minNativeScanWindow;
+        _nativeScanStartedAt = DateTime.now();
+        _nativeScanUntil = _nativeScanStartedAt!.add(window);
+        if (nativeUntil != null) {
+          safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_SCAN_EXTENDED');
+        }
+        safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
+        try {
+          await _startScan(window);
+        } catch (_) {
+          _nativeScanStartedAt = null;
+          _nativeScanUntil = null;
+          rethrow;
+        }
+        safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
+      } else {
+        safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_SCAN_JOINED');
+      }
       await Future.delayed(timeout);
     } catch (error) {
       safeSdkDebugPrint(
@@ -404,21 +457,20 @@ class RealBleClient
         'SDK_DISCOVERY_ERROR_ORIGIN '
         'origin=flutter_blue_plus_native error=$error',
       );
-      BleDebugRegistry.instance.update(isScanning: false);
+      BleDebugRegistry.instance.update(isScanning: _activeScanCount > 1);
       final sdkError = _mapNativeStateError(error);
       if (sdkError != null) {
         throw sdkError;
       }
       rethrow;
     } finally {
-      if (generation == _scanGeneration) {
+      _activeScanCount--;
+      if (_activeScanCount == 0) {
+        _nativeScanStartedAt = null;
+        _nativeScanUntil = null;
         await _stopScan();
       }
       await sub.cancel();
-    }
-
-    if (generation != _scanGeneration) {
-      return const <BleScanResult>[];
     }
 
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
@@ -430,7 +482,6 @@ class RealBleClient
           Guid(MeshtasticBleProtocol.serviceUuid),
         ]);
         final current = await _systemDevicesProvider([eixamServiceUuid]);
-        if (generation != _scanGeneration) return const <BleScanResult>[];
         final currentIds = current.map((d) => d.remoteId.str).toSet();
         for (final device in stock) {
           final id = device.remoteId.str;
@@ -472,7 +523,6 @@ class RealBleClient
         final connected = await _systemDevicesProvider([
           Guid(MeshtasticBleProtocol.serviceUuid),
         ]);
-        if (generation != _scanGeneration) return const <BleScanResult>[];
         for (final device in connected) {
           final id = device.remoteId.str;
           final name = device.platformName.trim();
@@ -509,13 +559,15 @@ class RealBleClient
         );
       }
     }
-    if (generation != _scanGeneration) return const <BleScanResult>[];
     final results = deduped.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
     BleDebugRegistry.instance.recordEvent(
       'BLE scan completed with ${results.length} discovered device(s)',
     );
-    BleDebugRegistry.instance.update(isScanning: false, scanResults: results);
+    BleDebugRegistry.instance.update(
+      isScanning: _activeScanCount > 0,
+      scanResults: results,
+    );
 
     return results;
   }

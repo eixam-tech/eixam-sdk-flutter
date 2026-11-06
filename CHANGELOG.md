@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — overlapping BLE scans share one native scan (F12)
+
+- `RealBleClient.scan()` callers that overlap now join the running native scan instead of superseding it. Before, every new scan cancelled the one in flight and the cancelled caller got `[]`; the late-availability watcher (8 s scan every ~10 s after an exhausted reconnect campaign) and the pairing list's discovery polls cancelled each other, so "Connect a TAG" -> search nearby showed "No TAG found" for minutes while "Set up another EIXAM" (which suspends the watcher) found the TAG in seconds. A joining caller also receives the adverts the session already reported (iOS reports a device once per scan). A native scan runs at least 20 s and is stopped when the last caller finishes; a caller that ends later extends it with one restart. No API change.
+
 ## Unreleased — interrupted DFU recovery and DFU pre-flight
 
 - Optional `DfuRecoveryControl` (status, `watchDfuRecovery`, `prepareCableRecovery`, `restartDfuFromScratch`, `confirmDeviceForgotten`, `dismissDfuRecovery`) with `DfuRecoveryState`, `DfuRecoveryReason`, `DfuRecoveryAction`, `E1RecoveryStrategy` and `resolveE1RecoveryStrategy` (bootloader 0.4.3 and unknown -> cable). BLE resume is not possible with bootloader 0.4.3; recovery is by cable (E1 default: `prepareCableRecovery`).
