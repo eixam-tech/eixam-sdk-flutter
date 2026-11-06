@@ -261,9 +261,8 @@ final class DeviceMigrationCoordinator {
   }
 
   Future<DeviceMigrationResult> _migrate(
-    DeviceMigrationCandidate candidate, {
-    DeviceMigrationCandidate? verifiedSource,
-  }) async {
+    DeviceMigrationCandidate candidate,
+  ) async {
     await _restore();
     final repair = _session;
     if (repair?.state == DeviceMigrationState.bluetoothRepairRequired) {
@@ -301,12 +300,10 @@ final class DeviceMigrationCoordinator {
 
     // Never trust a caller-constructed or stale candidate. The exact selected
     // platform ID is probed again immediately before artifact selection.
-    final revalidated =
-        verifiedSource ??
-        await inspect(
-          deviceId: candidate.deviceId,
-          advertisedName: candidate.advertisedName,
-        );
+    final revalidated = await inspect(
+      deviceId: candidate.deviceId,
+      advertisedName: candidate.advertisedName,
+    );
     if (!_samePreMigrationIdentity(candidate, revalidated)) {
       return _blocked(candidate, 'migrationIdentityChanged');
     }
@@ -419,8 +416,10 @@ final class DeviceMigrationCoordinator {
       session = await firmwareUpdates.startMigrationFirmwareUpdate(
         sourceStatus: sourceStatus,
         release: release,
-        // Reached only after migrate() verified the warning acknowledgement,
-        // or from reconcile() resuming a flow the user already started.
+        // Reached only through migrate(), which refused to continue without
+        // the user's acknowledgement of the interruption warning. reconcile()
+        // never gets here: a restored or re-checked operation waits for a new
+        // explicit migrate() call (M3).
         policy: const FirmwareUpdatePolicy(
           supportedHardwareModels: <String>[eixamFirmwareCatalogModel],
           requireKnownDeviceBattery: false,
@@ -522,6 +521,8 @@ final class DeviceMigrationCoordinator {
   /// Reconciles a persisted operation using BLE identity and installed-version
   /// evidence. Recovery is attempted only for a bootloader with a strong
   /// identity match and only when [attemptRecovery] is explicitly requested.
+  /// Neither flag ever starts a migration or a firmware transfer: reconcile only
+  /// observes and republishes state (M3).
   Future<DeviceMigrationSession?> reconcile({bool attemptRecovery = false}) {
     safeSdkDebugPrint(
       'MIGRATION_RECONCILIATION_REQUEST recovery=$attemptRecovery '
@@ -756,32 +757,11 @@ final class DeviceMigrationCoordinator {
       final firmware =
           reconciledFirmware ??
           await firmwareUpdates.getActiveMigrationFirmwareUpdate();
-      if (attemptRecovery &&
-          ((firmware != null &&
-                  (!firmware.nativeTransferEngaged ||
-                      firmware.nextAction ==
-                          FirmwareUpdateNextAction.physicalRecovery)) ||
-              current.releaseId.isEmpty)) {
-        _migrationInProgress = true;
-        try {
-          final result = await _migrate(source, verifiedSource: source);
-          if (!result.succeeded &&
-              _session?.state == DeviceMigrationState.reconciling) {
-            return await _reconciled(
-              current,
-              state: DeviceMigrationState.prepared,
-              outcome: DeviceMigrationReconciliationOutcome
-                  .originalSourceDeviceFound,
-              nextAction: DeviceMigrationNextAction.continueMigration,
-              failureCode: result.failureCode,
-              canCancel: true,
-            );
-          }
-          return _session;
-        } finally {
-          _migrationInProgress = false;
-        }
-      }
+      // [attemptRecovery] only renews the reconciliation window. A confirmed
+      // but not yet started migration is never started from here (app restart,
+      // "check again"): the operation goes back to `continueMigration` and
+      // waits for a new explicit migrate() call, which shows the warning again
+      // and re-runs the pre-flight checks (M3).
       return _reconciled(
         current.copyWith(firmwareSession: firmware),
         state: DeviceMigrationState.prepared,

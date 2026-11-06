@@ -324,6 +324,46 @@ void main() {
       );
     }
 
+    for (final phase in [
+      FirmwareUpdateState.downloading,
+      FirmwareUpdateState.verifying,
+      FirmwareUpdateState.readyToTransfer,
+    ]) {
+      test(
+        'M3: killed between confirm and transfer ($phase): restoring and '
+        'reconciling never starts it; a start without the warning is refused',
+        () async {
+          final store = _MemoryFirmwareStore()
+            ..value = _durableFirmwareSession(
+              phase,
+            ).copyWith(nativeTransferEngaged: false);
+          var starts = 0;
+          final coordinator = buildCoordinator(
+            sessionStore: store,
+            transport: _SuccessfulDfuTransport(onStart: () => starts++),
+          );
+          addTearDown(coordinator.dispose);
+          // App relaunch: restore + the passive reconciliations the host runs.
+          expect(await coordinator.getActiveFirmwareUpdate(), isNotNull);
+          await coordinator.reconcileFirmwareUpdate();
+          await coordinator.reconcileFirmwareUpdate(attemptRecovery: true);
+          expect(starts, 0);
+          expect(remote.downloadCallCount, 0);
+          expect(store.value?.nativeTransferEngaged, isFalse);
+          // A new start must carry a fresh acknowledgement of the warning.
+          await expectLater(
+            coordinator.startFirmwareUpdate(
+              deviceId: 'demo-device',
+              releaseId: 'fw-1',
+            ),
+            throwsA(isA<FirmwareUpdateException>()),
+          );
+          expect(starts, 0);
+          expect(remote.downloadCallCount, 0);
+        },
+      );
+    }
+
     test(
       'process death with incomplete download restarts without recovery',
       () async {

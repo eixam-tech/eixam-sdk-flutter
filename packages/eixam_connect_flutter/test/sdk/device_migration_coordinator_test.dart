@@ -1096,40 +1096,43 @@ void main() {
     },
   );
 
-  test('stale interrupted firmware record is superseded by verified stock', () async {
-    final original = _durableSession(DeviceMigrationState.waitingForDevice);
-    final store = _MemoryMigrationStore()..value = original;
-    final firmware = _FakeMigrationFirmwareService(
-      activeFirmware: FirmwareUpdateSession(
-        sessionId: 'engaged',
-        deviceId: selectedId,
-        hardwareId: selectedId,
-        releaseId: 'release-1',
-        fromVersion: '2.4.0',
-        targetVersion: '3.0.0',
-        state: FirmwareUpdateState.reconnecting,
-        startedAt: DateTime.now(),
-        nativeTransferEngaged: true,
-        requiresRecovery: true,
-      ),
-    );
-    final coordinator = build(
-      probe: _FakeProbe(_probe(model: 105)),
-      store: store,
-      firmware: firmware,
-    );
-    final result = await coordinator.migrate(
-      original.candidate,
-      interruptionWarningAcknowledged: true,
-    );
-    // Physical (cable) recovery completed: the stock hardware model 105 was
-    // freshly re-verified for the same device, so the stale record is cleared
-    // and the migration continues instead of failing firmwareUpdateResumeRequired.
-    expect(firmware.superseded, ['engaged']);
-    expect(result.failureCode, isNot('firmwareUpdateResumeRequired'));
-    expect(firmware.startCalls, 1);
-    expect(store.value?.candidate.stableIdentity, selectedId);
-  });
+  test(
+    'stale interrupted firmware record is superseded by verified stock',
+    () async {
+      final original = _durableSession(DeviceMigrationState.waitingForDevice);
+      final store = _MemoryMigrationStore()..value = original;
+      final firmware = _FakeMigrationFirmwareService(
+        activeFirmware: FirmwareUpdateSession(
+          sessionId: 'engaged',
+          deviceId: selectedId,
+          hardwareId: selectedId,
+          releaseId: 'release-1',
+          fromVersion: '2.4.0',
+          targetVersion: '3.0.0',
+          state: FirmwareUpdateState.reconnecting,
+          startedAt: DateTime.now(),
+          nativeTransferEngaged: true,
+          requiresRecovery: true,
+        ),
+      );
+      final coordinator = build(
+        probe: _FakeProbe(_probe(model: 105)),
+        store: store,
+        firmware: firmware,
+      );
+      final result = await coordinator.migrate(
+        original.candidate,
+        interruptionWarningAcknowledged: true,
+      );
+      // Physical (cable) recovery completed: the stock hardware model 105 was
+      // freshly re-verified for the same device, so the stale record is cleared
+      // and the migration continues instead of failing firmwareUpdateResumeRequired.
+      expect(firmware.superseded, ['engaged']);
+      expect(result.failureCode, isNot('firmwareUpdateResumeRequired'));
+      expect(firmware.startCalls, 1);
+      expect(store.value?.candidate.stableIdentity, selectedId);
+    },
+  );
 
   test('M1: a record that read the bootloader version (not a terminal '
       'mismatch) is still superseded by verified stock after UF2', () async {
@@ -1209,22 +1212,25 @@ void main() {
     });
   }
 
-  test('migration without the interruption acknowledgement starts nothing', () async {
-    final original = _durableSession(DeviceMigrationState.waitingForDevice);
-    final firmware = _FakeMigrationFirmwareService();
-    final probe = _FakeProbe(_probe(model: 105));
-    final coordinator = build(
-      probe: probe,
-      store: _MemoryMigrationStore()..value = original,
-      firmware: firmware,
-    );
-    final result = await coordinator.migrate(original.candidate);
-    expect(result.outcome, DeviceMigrationOutcome.blocked);
-    expect(result.failureCode, 'interruptionWarningNotAcknowledged');
-    expect(firmware.startCalls, 0);
-    expect(firmware.resolveCalls, 0);
-    expect(probe.calls, 0);
-  });
+  test(
+    'migration without the interruption acknowledgement starts nothing',
+    () async {
+      final original = _durableSession(DeviceMigrationState.waitingForDevice);
+      final firmware = _FakeMigrationFirmwareService();
+      final probe = _FakeProbe(_probe(model: 105));
+      final coordinator = build(
+        probe: probe,
+        store: _MemoryMigrationStore()..value = original,
+        firmware: firmware,
+      );
+      final result = await coordinator.migrate(original.candidate);
+      expect(result.outcome, DeviceMigrationOutcome.blocked);
+      expect(result.failureCode, 'interruptionWarningNotAcknowledged');
+      expect(firmware.startCalls, 0);
+      expect(firmware.resolveCalls, 0);
+      expect(probe.calls, 0);
+    },
+  );
 
   test(
     'temporary retry inspection cannot erase known supported recovery context',
@@ -1424,12 +1430,55 @@ void main() {
         store: _MemoryMigrationStore()
           ..value = _durableSession(DeviceMigrationState.prepared),
       );
-      await coordinator.reconcile(attemptRecovery: true);
+      final restored = await coordinator.reconcile(attemptRecovery: true);
+      // M3: the app was killed between the user's confirmation and the start of
+      // the transfer. Restoring (even with attemptRecovery) only observes: it
+      // finds the source and waits for a new explicit migrate().
       expect(probe.calls, 1);
+      expect(firmware.resolveCalls, 0);
+      expect(firmware.startCalls, 0);
+      expect(restored?.nextAction, DeviceMigrationNextAction.continueMigration);
+      expect(restored?.state, DeviceMigrationState.prepared);
+      // The acknowledgement is mandatory for the explicit tap.
+      final refused = await coordinator.migrate(restored!.candidate);
+      expect(refused.outcome, DeviceMigrationOutcome.blocked);
+      expect(firmware.resolveCalls, 0);
+      expect(firmware.startCalls, 0);
+      // A new tap that acknowledged the warning starts it (pre-flight runs in
+      // the firmware coordinator's start).
+      await coordinator.migrate(
+        restored.candidate,
+        interruptionWarningAcknowledged: true,
+      );
       expect(firmware.resolveCalls, 1);
       await coordinator.dispose();
     },
   );
+
+  test('M3: repeated restores and check-again never start a confirmed but '
+      'unstarted migration', () async {
+    final firmware = _FakeMigrationFirmwareService();
+    final coordinator = build(
+      probe: _FakeProbe(_probe(model: 105)),
+      firmware: firmware,
+      ble: _MigrationBleClient(
+        scanBatches: [
+          [_sourceScan(selectedId)],
+          [_sourceScan(selectedId)],
+          [_sourceScan(selectedId)],
+        ],
+      ),
+      store: _MemoryMigrationStore()
+        ..value = _durableSession(DeviceMigrationState.prepared),
+    );
+    for (var i = 0; i < 3; i++) {
+      final session = await coordinator.reconcile(attemptRecovery: i.isOdd);
+      expect(session?.nextAction, DeviceMigrationNextAction.continueMigration);
+    }
+    expect(firmware.resolveCalls, 0);
+    expect(firmware.startCalls, 0);
+    await coordinator.dispose();
+  });
 
   for (final model in [0, 9, 105]) {
     test(
