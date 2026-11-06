@@ -2,8 +2,10 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 String normalizeEixamFirmwareVersion(String? version) {
   if (version == null) return '';
-  var normalized =
-      version.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '').trim().toLowerCase();
+  var normalized = version
+      .replaceAll(RegExp(r'[\x00-\x1f\x7f]'), '')
+      .trim()
+      .toLowerCase();
   if (normalized.startsWith('v')) {
     normalized = normalized.substring(1);
   }
@@ -59,6 +61,33 @@ bool eixamFirmwareVersionsMatch(String? installed, String? target) {
 /// AdaDFU) and any other free text do not.
 bool isEixamApplicationFirmwareVersion(String? version) =>
     _firmwareOrderParts(version) != null;
+
+/// The RAK/Adafruit bootloader's Device Information revision
+/// (`0.4.3 s140 6.1.1`: bootloader, SoftDevice, SoftDevice version). A
+/// connection that reaches the TAG while it is AdaDFU reads this instead of an
+/// application version (F11).
+bool isDfuBootloaderRevision(String? revision) =>
+    revision != null && _dfuBootloaderRevision.hasMatch(revision.trim());
+
+final RegExp _dfuBootloaderRevision = RegExp(
+  r'^\d+\.\d+\.\d+\s+s\d{3}\b',
+  caseSensitive: false,
+);
+
+/// A bootloader revision never becomes [DeviceStatus.firmwareVersion]: it is
+/// cleared and [DeviceStatus.inDfuBootloader] is set. The next application
+/// version read clears the flag. Also normalizes a status cached by a build
+/// without this rule.
+DeviceStatus normalizeDfuBootloaderFirmware(DeviceStatus status) {
+  final version = status.firmwareVersion;
+  if (isDfuBootloaderRevision(version)) {
+    return status.copyWith(clearFirmwareVersion: true, inDfuBootloader: true);
+  }
+  if (status.inDfuBootloader && isEixamApplicationFirmwareVersion(version)) {
+    return status.copyWith(inDfuBootloader: false);
+  }
+  return status;
+}
 
 /// Negative if [left] is older than [right], positive if newer, zero if the
 /// same image. Null when neither side yields a comparable number.

@@ -35,6 +35,7 @@ class MockBleClient implements BleClient, BleTransportObservationSource {
   final Set<String> _connectedDeviceIds = <String>{};
   final List<EixamDeviceCommand> writtenCommands = <EixamDeviceCommand>[];
   bool systemAssociationAvailable = true;
+  String firmwareVersion = '2.7.21-mock';
   final List<String> removedSystemAssociations = <String>[];
   Duration? runtimeStatusReplyDelay;
   List<int> runtimeStatusPayload = <int>[
@@ -192,7 +193,7 @@ class MockBleClient implements BleClient, BleTransportObservationSource {
 
   @override
   Future<String?> readFirmwareVersion(String deviceId) async =>
-      _connectedDeviceIds.contains(deviceId) ? '2.7.21-mock' : null;
+      _connectedDeviceIds.contains(deviceId) ? firmwareVersion : null;
 
   @override
   Future<void> writeDeviceCommand(
