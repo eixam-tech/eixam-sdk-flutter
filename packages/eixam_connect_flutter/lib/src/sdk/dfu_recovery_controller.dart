@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/ble_client.dart';
+import '../device/ble_debug_registry.dart';
 import '../device/ble_scan_result.dart';
 import '../device/canonical_hardware_id.dart';
 import '../device/meshtastic_ble_protocol.dart';
@@ -194,6 +195,15 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     _last = stamped;
     if (unchanged) return;
     _forceNextEmit = false;
+    // No identifiers: state, reason and offered actions only (F19 forensics).
+    safeSdkDebugPrint(
+      'DFU_RECOVERY_STATUS state=${status.state.name} '
+      'reason=${status.reason.name} '
+      'action=${status.availableAction.name} '
+      'forward=${status.forwardActions.map((a) => a.name).join(',')} '
+      'progress=${status.progressFraction != null} '
+      'device=${status.deviceId != null}',
+    );
     final stream = _streamController;
     if (stream != null && !stream.isClosed && stream.hasListener) {
       stream.add(stamped);
@@ -226,6 +236,12 @@ final class DfuRecoveryController implements DfuRecoveryControl {
   Future<DfuRecoveryStatus> prepareCableRecovery() =>
       _runBootloaderAction(DfuRecoveryAction.prepareCableRecovery);
 
+  /// "Not now" hides the recovery card for this app run only. A persisted
+  /// dismissal hid every later interruption of the same session id (a retry
+  /// reuses it), even with the TAG waiting as AdaDFU and SOS unavailable: the
+  /// 2026-11-06 iPhone dead end (F19). After a relaunch the card is back.
+  String? _dismissedSessionThisRun;
+
   @override
   Future<DfuRecoveryStatus> dismissDfuRecovery() async {
     if (_actionLock || _running) {
@@ -234,6 +250,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     _warnings = const <DfuPreflightWarning>[];
     final observation = await _observe();
     final record = await recordStore.load();
+    _dismissedSessionThisRun = observation.session?.sessionId;
     await recordStore.save(
       DfuRecoveryRecord(
         sessionId: observation.session?.sessionId ?? record.sessionId,
@@ -645,7 +662,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       await recordStore.save(record);
     }
     final dismissed =
-        session != null && record.dismissedSessionId == session.sessionId;
+        session != null && _dismissedSessionThisRun == session.sessionId;
     final latched = record.recoveredAt != null && session == null;
     final inProgress =
         _running ||
@@ -679,6 +696,13 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     );
 
     if (session == null || dismissed || inProgress) {
+      if (session != null && inProgress) {
+        safeSdkDebugPrint(
+          'DFU_RECOVERY_IN_PROGRESS own=$_running '
+          'firmware=${firmware.operationInProgress} '
+          'other=${isOtherOperationInProgress?.call() ?? false}',
+        );
+      }
       return _Observation(derive(evidence()), session);
     }
 
