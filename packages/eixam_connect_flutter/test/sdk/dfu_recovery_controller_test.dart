@@ -464,6 +464,36 @@ void main() {
     Future<void> settle() =>
         Future<void>.delayed(const Duration(milliseconds: 10));
 
+    test('F19: "not now" hides the card for this run only; a dismissal '
+        'persisted by an earlier run never hides an interrupted TAG', () async {
+      final h = _Harness();
+      expect(
+        (await h.controller.getDfuRecoveryStatus()).state,
+        DfuRecoveryState.resumable,
+      );
+      var status = await h.controller.dismissDfuRecovery();
+      expect(status.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(
+        (await h.controller.getDfuRecoveryStatus()).reason,
+        DfuRecoveryReason.noInterruptedUpdate,
+      );
+      final dismissedId = h.store.record.dismissedSessionId;
+      expect(dismissedId, isNotNull);
+      await h.controller.dispose();
+
+      // Relaunch: same persisted record (dismissed), TAG still AdaDFU.
+      final relaunch = _Harness();
+      relaunch.store.record = h.store.record;
+      status = await relaunch.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.resumable);
+      expect(status.availableAction, DfuRecoveryAction.prepareCableRecovery);
+      expect(
+        status.forwardActions,
+        contains(DfuRecoveryAction.openCableRecoveryGuide),
+      );
+      await relaunch.controller.dispose();
+    });
+
     test('E2 -> stock superseded -> migration verified: recovered, then '
         'dismiss clears it', () async {
       final h = _Harness();

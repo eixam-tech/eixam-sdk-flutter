@@ -236,6 +236,12 @@ final class DfuRecoveryController implements DfuRecoveryControl {
   Future<DfuRecoveryStatus> prepareCableRecovery() =>
       _runBootloaderAction(DfuRecoveryAction.prepareCableRecovery);
 
+  /// "Not now" hides the recovery card for this app run only. A persisted
+  /// dismissal hid every later interruption of the same session id (a retry
+  /// reuses it), even with the TAG waiting as AdaDFU and SOS unavailable: the
+  /// 2026-11-06 iPhone dead end (F19). After a relaunch the card is back.
+  String? _dismissedSessionThisRun;
+
   @override
   Future<DfuRecoveryStatus> dismissDfuRecovery() async {
     if (_actionLock || _running) {
@@ -244,6 +250,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     _warnings = const <DfuPreflightWarning>[];
     final observation = await _observe();
     final record = await recordStore.load();
+    _dismissedSessionThisRun = observation.session?.sessionId;
     await recordStore.save(
       DfuRecoveryRecord(
         sessionId: observation.session?.sessionId ?? record.sessionId,
@@ -655,7 +662,7 @@ final class DfuRecoveryController implements DfuRecoveryControl {
       await recordStore.save(record);
     }
     final dismissed =
-        session != null && record.dismissedSessionId == session.sessionId;
+        session != null && _dismissedSessionThisRun == session.sessionId;
     final latched = record.recoveredAt != null && session == null;
     final inProgress =
         _running ||

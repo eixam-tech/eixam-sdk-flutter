@@ -4,6 +4,7 @@
 
 - `DfuRecoveryAction` gains two host-side values that never touch the TAG: `openCableRecoveryGuide` (show the cable recovery page, E2) and `checkAgain` (re-read the status). `availableAction` still only carries SDK-run actions. BREAKING for exhaustive `switch`es over `DfuRecoveryAction` in hosts.
 - New `DfuRecoveryStatus.forwardActions`: every way forward for the status, most useful first, never empty. The SDK action comes first; the cable page is offered whenever an interrupted update may still need a cable, also when the TAG was not seen recently (E1 without a fresh sighting, waiting for evidence, E2) and when another owner holds an interrupted update (state `unknown`, reason `updateInProgress`, no progress of the SDK's own run, device known) — the 2026-11-06 iPhone dead end.
+- "Not now" (`dismissDfuRecovery`) hides the recovery card for the current app run only. A dismissal persisted by an earlier run no longer hides an interrupted TAG (a retry reuses the session id, so the old persisted dismissal hid the next interruption too, with the TAG waiting as AdaDFU).
 - Diagnostics: `DFU_RECOVERY_STATUS` on every published status change and `DFU_RECOVERY_IN_PROGRESS` with the owner flags (no identifiers).
 
 ## Unreleased — bootloader revision is never a firmware version (F11)
