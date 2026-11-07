@@ -69,4 +69,102 @@ void main() {
       expect(error.code, 'bluetoothOff');
     });
   });
+
+  group('F19: never a recovery state without a way forward', () {
+    test('every state, reason, action, progress and device has an action', () {
+      for (final state in DfuRecoveryState.values) {
+        for (final reason in DfuRecoveryReason.values) {
+          for (final action in DfuRecoveryAction.values) {
+            for (final progress in <double?>[null, 0, 0.5]) {
+              for (final deviceId in <String?>[null, 'tag']) {
+                final status = DfuRecoveryStatus(
+                  state: state,
+                  reason: reason,
+                  availableAction: action,
+                  progressFraction: progress,
+                  deviceId: deviceId,
+                );
+                expect(
+                  status.forwardActions,
+                  isNotEmpty,
+                  reason: '$status progress=$progress device=$deviceId',
+                );
+                expect(
+                  status.forwardActions,
+                  isNot(contains(DfuRecoveryAction.none)),
+                );
+              }
+            }
+          }
+        }
+      }
+    });
+
+    test('E1 offers the SDK action first, then the cable page', () {
+      const status = DfuRecoveryStatus(
+        state: DfuRecoveryState.resumable,
+        reason: DfuRecoveryReason.bootloaderVisible,
+        availableAction: DfuRecoveryAction.prepareCableRecovery,
+      );
+      expect(status.forwardActions, [
+        DfuRecoveryAction.prepareCableRecovery,
+        DfuRecoveryAction.openCableRecoveryGuide,
+      ]);
+    });
+
+    test('E1 without a fresh sighting still offers the cable page', () {
+      const status = DfuRecoveryStatus(
+        state: DfuRecoveryState.resumable,
+        reason: DfuRecoveryReason.bootloaderVisible,
+      );
+      expect(status.forwardActions, [DfuRecoveryAction.openCableRecoveryGuide]);
+    });
+
+    test('an interrupted update held by another owner keeps the cable page '
+        '(2026-11-06 iPhone dead end)', () {
+      const status = DfuRecoveryStatus(
+        state: DfuRecoveryState.unknown,
+        reason: DfuRecoveryReason.updateInProgress,
+        deviceId: 'tag',
+      );
+      expect(
+        status.forwardActions.first,
+        DfuRecoveryAction.openCableRecoveryGuide,
+      );
+    });
+
+    test('the SDK recovery run itself and a healthy TAG only re-check', () {
+      const running = DfuRecoveryStatus(
+        state: DfuRecoveryState.unknown,
+        reason: DfuRecoveryReason.updateInProgress,
+        progressFraction: 0,
+        deviceId: 'tag',
+      );
+      const none = DfuRecoveryStatus.unknown();
+      expect(running.forwardActions, [DfuRecoveryAction.checkAgain]);
+      expect(none.forwardActions, [DfuRecoveryAction.checkAgain]);
+    });
+
+    test('E2 and waiting for evidence always include the cable page', () {
+      for (final reason in [
+        DfuRecoveryReason.cableRecoveryPrepared,
+        DfuRecoveryReason.deviceSilent,
+      ]) {
+        expect(
+          DfuRecoveryStatus(
+            state: DfuRecoveryState.silentNeedsCable,
+            reason: reason,
+          ).forwardActions,
+          contains(DfuRecoveryAction.openCableRecoveryGuide),
+        );
+      }
+      expect(
+        const DfuRecoveryStatus(
+          state: DfuRecoveryState.unknown,
+          reason: DfuRecoveryReason.awaitingEvidence,
+        ).forwardActions,
+        contains(DfuRecoveryAction.openCableRecoveryGuide),
+      );
+    });
+  });
 }

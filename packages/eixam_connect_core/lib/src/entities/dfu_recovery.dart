@@ -74,6 +74,15 @@ enum DfuRecoveryAction {
   /// iOS: the user removes the TAG in the system Bluetooth settings, then the
   /// host calls [DfuRecoveryControl.confirmDeviceForgotten].
   forgetDevice,
+
+  /// Host-side, never touches the TAG: show the cable recovery page (E2: the
+  /// recovery web link and the UF2 steps). Always safe while an update may be
+  /// interrupted, because the user can reach the UF2 drive with a double RESET
+  /// press even when the phone no longer sees the TAG (F19).
+  openCableRecoveryGuide,
+
+  /// Host-side: read the status again ([DfuRecoveryControl.getDfuRecoveryStatus]).
+  checkAgain,
 }
 
 class DfuRecoveryStatus {
@@ -111,6 +120,36 @@ class DfuRecoveryStatus {
 
   /// Pre-flight checks of the last action whose value could not be read.
   final List<DfuPreflightWarning> warnings;
+
+  /// Every way forward a host may offer for this status, most useful first.
+  /// Never empty: no recovery state may leave the user without an action
+  /// (F19). [availableAction] (an SDK-run action) comes first when there is
+  /// one; [DfuRecoveryAction.openCableRecoveryGuide] is offered whenever an
+  /// interrupted update may still need a cable, even if the phone does not see
+  /// the TAG; [DfuRecoveryAction.checkAgain] otherwise.
+  List<DfuRecoveryAction> get forwardActions {
+    const cable = DfuRecoveryAction.openCableRecoveryGuide;
+    const again = DfuRecoveryAction.checkAgain;
+    final sdkAction = availableAction == DfuRecoveryAction.none
+        ? null
+        : availableAction;
+    return switch (state) {
+      DfuRecoveryState.resumable => [?sdkAction, cable],
+      DfuRecoveryState.iosStaleLink => [?sdkAction, again],
+      DfuRecoveryState.silentNeedsCable => [cable, again],
+      DfuRecoveryState.recovered => const [again],
+      DfuRecoveryState.unknown => switch (reason) {
+        DfuRecoveryReason.awaitingEvidence => const [again, cable],
+        // Another owner holds the TAG (no progress of the SDK's own recovery
+        // run) while an interrupted update is recorded for a device: the user
+        // must still have the cable path (the 2026-11-06 iPhone dead end).
+        DfuRecoveryReason.updateInProgress
+            when progressFraction == null && deviceId != null =>
+          const [cable, again],
+        _ => const [again],
+      },
+    };
+  }
 
   DfuRecoveryStatus copyWith({
     DfuRecoveryState? state,

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
 import '../device/ble_client.dart';
+import '../device/ble_debug_registry.dart';
 import '../device/ble_scan_result.dart';
 import '../device/canonical_hardware_id.dart';
 import '../device/meshtastic_ble_protocol.dart';
@@ -194,6 +195,15 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     _last = stamped;
     if (unchanged) return;
     _forceNextEmit = false;
+    // No identifiers: state, reason and offered actions only (F19 forensics).
+    safeSdkDebugPrint(
+      'DFU_RECOVERY_STATUS state=${status.state.name} '
+      'reason=${status.reason.name} '
+      'action=${status.availableAction.name} '
+      'forward=${status.forwardActions.map((a) => a.name).join(',')} '
+      'progress=${status.progressFraction != null} '
+      'device=${status.deviceId != null}',
+    );
     final stream = _streamController;
     if (stream != null && !stream.isClosed && stream.hasListener) {
       stream.add(stamped);
@@ -679,6 +689,13 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     );
 
     if (session == null || dismissed || inProgress) {
+      if (session != null && inProgress) {
+        safeSdkDebugPrint(
+          'DFU_RECOVERY_IN_PROGRESS own=$_running '
+          'firmware=${firmware.operationInProgress} '
+          'other=${isOtherOperationInProgress?.call() ?? false}',
+        );
+      }
       return _Observation(derive(evidence()), session);
     }
 

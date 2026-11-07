@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — never a recovery state without a way forward (F19)
+
+- `DfuRecoveryAction` gains two host-side values that never touch the TAG: `openCableRecoveryGuide` (show the cable recovery page, E2) and `checkAgain` (re-read the status). `availableAction` still only carries SDK-run actions. BREAKING for exhaustive `switch`es over `DfuRecoveryAction` in hosts.
+- New `DfuRecoveryStatus.forwardActions`: every way forward for the status, most useful first, never empty. The SDK action comes first; the cable page is offered whenever an interrupted update may still need a cable, also when the TAG was not seen recently (E1 without a fresh sighting, waiting for evidence, E2) and when another owner holds an interrupted update (state `unknown`, reason `updateInProgress`, no progress of the SDK's own run, device known) — the 2026-11-06 iPhone dead end.
+- Diagnostics: `DFU_RECOVERY_STATUS` on every published status change and `DFU_RECOVERY_IN_PROGRESS` with the owner flags (no identifiers).
+
 ## Unreleased — bootloader revision is never a firmware version (F11)
 
 - New `DeviceStatus.inDfuBootloader` (default `false`; `copyWith(inDfuBootloader:, clearFirmwareVersion:)`). When a connection reaches the TAG while it runs its DFU bootloader, the Device Information revision it reads (`0.4.3 s140 6.1.1`) no longer becomes `DeviceStatus.firmwareVersion`: the version is cleared and `inDfuBootloader` is set, so hosts show a recovery state instead of a version and an update never uses it as `fromVersion`. The next application version read clears the flag. Persisted statuses keep the flag; a bootloader revision cached by an older build is dropped on load. Additive.
