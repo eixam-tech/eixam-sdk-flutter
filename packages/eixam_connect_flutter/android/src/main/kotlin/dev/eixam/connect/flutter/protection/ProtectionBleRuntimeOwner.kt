@@ -1967,7 +1967,10 @@ internal class ProtectionBleRuntimeOwner(
                     val lifecycleSnapshot = runtimeStore.snapshot()
                     val closedCycleKey = lifecycleSnapshot["preSosCycleKey"] as? String
                     val closeOutcome =
-                        ProtectionSosLifecycleLogic.onClosePacket(pendingSosLifecycleState)
+                        ProtectionSosLifecycleLogic.onClosePacket(
+                            currentState = pendingSosLifecycleState,
+                            backendTerminal = opcode == 0xE3,
+                        )
                     pendingSosLifecycleState = closeOutcome.nextState
                     cancelSosActivationTimeout()
                     runtimeStore.recordPreSosLifecycle(

@@ -68,4 +68,16 @@ class ProtectionSosLifecycleLogicTest {
         assertEquals(ProtectionSosLifecycleState.cancelPending, outcome.nextState)
         assertTrue(outcome.shouldCancelBackend)
     }
+
+    @Test
+    fun `backend terminal close (0xE3) never requests backend cancel`() {
+        val outcome =
+            ProtectionSosLifecycleLogic.onClosePacket(
+                ProtectionSosLifecycleState.createPending,
+                backendTerminal = true,
+            )
+
+        assertEquals(ProtectionSosLifecycleState.cancelPending, outcome.nextState)
+        assertFalse(outcome.shouldCancelBackend)
+    }
 }

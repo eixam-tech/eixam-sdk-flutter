@@ -17,11 +17,19 @@ internal object ProtectionSosLifecycleLogic {
             else -> currentState
         }
 
-    fun onClosePacket(currentState: ProtectionSosLifecycleState): CloseOutcome =
+    /**
+     * [backendTerminal]: the close is the backend's own terminal relayed to the
+     * TAG (`0xE3`, e.g. resolved in the portal). That is not a user cancel and
+     * must never send a backend cancel.
+     */
+    fun onClosePacket(
+        currentState: ProtectionSosLifecycleState,
+        backendTerminal: Boolean = false,
+    ): CloseOutcome =
         when (currentState) {
             ProtectionSosLifecycleState.createPending -> CloseOutcome(
                 nextState = ProtectionSosLifecycleState.cancelPending,
-                shouldCancelBackend = true,
+                shouldCancelBackend = !backendTerminal,
             )
 
             ProtectionSosLifecycleState.preConfirmSeen,
