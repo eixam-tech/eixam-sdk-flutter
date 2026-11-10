@@ -31,6 +31,12 @@ struct IosNativeSosDeliveryStoreTests {
     repeatedFramesOfActiveSosAreNotNewSos()
     notificationIsOncePerCycleAndStage()
     recycledFrameKeyGivesNewIdentity()
+    missedCloseFrameNeverBlocksTheNextSos()
+    sdkCloseKeepsAnSosNotHandedOver()
+    framesRightAfterACloseNeverOpenAnSos()
+    realSosInsideTheQuietWindowIsBackdated()
+    olderCancelNeverDropsANewerSos()
+    countdownIsReportedAsCountdown()
     claimedCreateIsKeptOnCancel()
     resetCycleNeverPromotesAfterStop()
     oldQueuedEventsAreNotReplayed()
@@ -120,7 +126,7 @@ struct IosNativeSosDeliveryStoreTests {
     _ = store.promoteExpiredCountdown(deviceId: nil)
     let first = store.peekPendingCreate()
     _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
-    clock += 1_000
+    clock += 60_000  // after the post-close quiet window
     let next = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:12", deviceId: nil)
     check(next.countdownDeadlineAt != nil, "new SOS after a close starts its countdown")
     clock += 20_000
@@ -278,5 +284,90 @@ struct IosNativeSosDeliveryStoreTests {
     let second = store.peekPendingCreate()
     check(second?["cycleKey"] as? String != first?["cycleKey"] as? String, "new SOS never reuses the previous identity")
     check(second?["incidentId"] as? String != first?["incidentId"] as? String, "new incident id")
+  }
+
+  private static func deliver(_ store: IosNativeSosDeliveryStore, key: String) {
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: key, deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    _ = store.ackPendingCreate(signature: store.peekPendingCreate()?["signature"] as? String ?? "")
+  }
+
+  static func missedCloseFrameNeverBlocksTheNextSos() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:50")
+    // Resolved while the phone missed the TAG's close frame; the SDK knows.
+    check(store.closeDeliveredCycle(), "SDK closes a handed-over cycle")
+    check(store.cycleState == .idle, "cycle closed")
+    clock += 3_600_000
+    let next = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:51", deviceId: nil)
+    check(next.countdownDeadlineAt == clock + 20_000, "next SOS starts its countdown")
+    clock += 20_000
+    check(store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "next SOS handed over")
+  }
+
+  static func sdkCloseKeepsAnSosNotHandedOver() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:52", deviceId: nil)
+    check(!store.closeDeliveredCycle(), "countdown is not closed by the SDK")
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    check(!store.closeDeliveredCycle(), "an SOS not handed over yet is kept")
+    check(store.pendingCreateCount == 1, "nothing lost")
+  }
+
+  static func framesRightAfterACloseNeverOpenAnSos() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:53")
+    _ = store.closeDeliveredCycle()
+    // The TAG keeps repeating until it gets the close, then stops.
+    for _ in 0..<5 {
+      clock += 4_000
+      let stale = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:54", deviceId: nil)
+      check(stale == IosNativeSosTransition(), "stale frame in the quiet window ignored")
+    }
+    clock += 600_000
+    let fresh = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:55", deviceId: nil)
+    check(fresh.countdownDeadlineAt == clock + 20_000, "a much later SOS gets a full countdown")
+  }
+
+  static func realSosInsideTheQuietWindowIsBackdated() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:56", deviceId: nil)
+    clock += 5_000
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    // Accidental cancel, then a real SOS 8 s later; frames keep coming.
+    clock += 8_000
+    let firstFrame = clock
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:57", deviceId: nil)
+    clock += 10_000
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:58", deviceId: nil)
+    clock += 14_000
+    let after = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:59", deviceId: nil)
+    check(after.queuedCreate, "countdown backdated to the first frame: already elapsed")
+    check((store.peekPendingCreate()?["cycleKey"] as? String)?.hasSuffix("@\(firstFrame)") == true, "starts at the first frame")
+  }
+
+  static func olderCancelNeverDropsANewerSos() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:60")
+    clock += 1_000
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    check(store.pendingCancelSupersedesCreate, "cancel without a create: cancelPending")
+    clock += 60_000
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:61", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    check(store.pendingCancelCount == 1 && store.pendingCreateCount == 1, "older cancel not handed over yet")
+    check(!store.pendingCancelSupersedesCreate, "the newer SOS is not reported as cancelled")
+  }
+
+  static func countdownIsReportedAsCountdown() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:62", deviceId: nil)
+    check(store.countdownDeadlineAt == clock + 20_000, "countdown deadline exposed")
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    check(store.countdownDeadlineAt == nil, "no countdown once handed over")
   }
 }

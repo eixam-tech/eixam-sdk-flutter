@@ -18506,8 +18506,24 @@ class EixamConnectSdkImpl
     )) {
       return false;
     }
+    final previousPublicState = _publicSosState;
     _publicSosState = nextState;
     _publicSosStateGeneration = _sosLifecycle.current.generation;
+    if (nextState == SosState.cancelled ||
+        nextState == SosState.resolved ||
+        (nextState == SosState.idle && previousPublicState != SosState.idle)) {
+      // The SOS is over for the SDK: a native TAG cycle already handed over
+      // must not stay open when its close frame never reached the phone
+      // (otherwise the next TAG SOS is ignored natively). Native keeps any
+      // cycle whose SOS was not handed over yet.
+      unawaited(
+        protectionPlatformAdapter.closeNativeSosCycle().catchError(
+          (Object error) => sdkReleaseLog(
+            'SOS_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
+          ),
+        ),
+      );
+    }
     if (_isTerminalPublicSosState(nextState)) {
       _publicTerminalAt = DateTime.now().toUtc();
       _publicTerminalGeneration = _publicSosStateGeneration;

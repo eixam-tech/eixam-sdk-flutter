@@ -179,6 +179,11 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<void> closeNativeSosCycle() {
+    return _methodChannel.invokeMethod<void>('closeNativeSosCycle');
+  }
+
+  @override
   Future<bool> dropPendingNativeSosCreate(
     String signature, {
     required String reason,

@@ -427,6 +427,11 @@ abstract class ProtectionPlatformAdapter {
   /// backend has not confirmed. iOS keeps background execution time while it
   /// does; Android needs nothing (foreground service).
   Future<void> setSosDeliveryPending(bool pending);
+
+  /// The SOS is over for the SDK (cancelled, resolved or idle). iOS closes a
+  /// native TAG cycle that was already handed over, in case its close frame
+  /// never reached the phone. No-op on Android.
+  Future<void> closeNativeSosCycle();
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -515,6 +520,9 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<void> setSosDeliveryPending(bool pending) async {}
+
+  @override
+  Future<void> closeNativeSosCycle() async {}
 
   @override
   Future<bool> dropPendingNativeSosCreate(

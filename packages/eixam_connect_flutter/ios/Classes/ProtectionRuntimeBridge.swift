@@ -228,6 +228,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       logSosDelivery("NATIVE_SOS_CANCEL_HANDED_TO_SDK_MQTT accepted=\(acked)")
       updateSosBackgroundHold(reason: "pending_cancel_acked")
       result(acked)
+    case "closeNativeSosCycle":
+      if sosDelivery.closeDeliveredCycle() {
+        logSosDelivery("NATIVE_SOS_CYCLE_CLOSED_BY_SDK")
+        updateSosBackgroundHold(reason: "sdk_sos_closed")
+      }
+      result(nil)
     case "setSosDeliveryPending":
       sosDeliveryPendingInDart = ((call.arguments as? [String: Any])?["pending"] as? Bool) ?? false
       updateSosBackgroundHold(reason: "sdk_outbox_status")
@@ -645,12 +651,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "lastCommandRoute": defaults.string(forKey: Keys.lastCommandRoute),
       "lastCommandResult": defaults.string(forKey: Keys.lastCommandResult),
       "lastCommandError": defaults.string(forKey: Keys.lastCommandError),
-      "iosBleSosSnapshotKind": defaults.string(forKey: Keys.iosBleSosSnapshotKind),
+      "iosBleSosSnapshotKind": effectiveSnapshotKind(),
       "iosBleSosPayloadHex": defaults.string(forKey: Keys.iosBleSosPayloadHex),
       "iosBleSosSource": defaults.string(forKey: Keys.iosBleSosSource),
       "iosBleSosCharacteristicUuid": defaults.string(forKey: Keys.iosBleSosCharacteristicUuid),
       "iosBleSosReceivedAt": defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
-      "iosBleSosDeadlineAt": defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int,
+      "iosBleSosDeadlineAt": effectiveSnapshotDeadlineAt(),
       "iosBleSosNodeId": defaults.object(forKey: Keys.iosBleSosNodeId) as? Int,
       "iosBleSosPacketId": defaults.object(forKey: Keys.iosBleSosPacketId) as? Int,
       "iosBleSosCycleKey": defaults.string(forKey: Keys.iosBleSosCycleKey),
@@ -666,35 +672,50 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     ]
   }
 
+  /// While the native countdown runs the snapshot shows a countdown with
+  /// the native deadline: TAG frames carry sosType 3 from the countdown
+  /// start, and the SDK must never show that as a sent SOS.
+  private func effectiveSnapshotKind() -> String? {
+    if sosDelivery.countdownDeadlineAt != nil {
+      return IosBleSosSnapshotKind.preSos.rawValue
+    }
+    return defaults.string(forKey: Keys.iosBleSosSnapshotKind)
+  }
+
+  private func effectiveSnapshotDeadlineAt() -> Int? {
+    sosDelivery.countdownDeadlineAt ?? defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int
+  }
+
   private func preSosLifecycleStateFromSnapshot() -> String? {
-    if sosDelivery.pendingCancelCount > 0 {
+    if sosDelivery.pendingCancelSupersedesCreate {
       // Same contract as Android: a TAG cancel not yet handed to the SDK
-      // wins; the SDK drops a pending create it did not publish.
+      // wins over an SOS created before it; the SDK drops a pending create
+      // it did not publish. A newer SOS is never dropped by an older cancel.
       return "cancelPending"
     }
     if sosDelivery.pendingCreateCount > 0 {
       // Same contract as Android: the SDK claims the pending create.
       return "createPending"
     }
-    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue else {
+    guard effectiveSnapshotKind() == IosBleSosSnapshotKind.preSos.rawValue else {
       return nil
     }
     return "preConfirmSeen"
   }
 
   private func preSosStartedAtFromSnapshot() -> Int? {
-    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue,
-          let deadlineAt = defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int else {
+    guard effectiveSnapshotKind() == IosBleSosSnapshotKind.preSos.rawValue,
+          let deadlineAt = effectiveSnapshotDeadlineAt() else {
       return nil
     }
     return deadlineAt - 20_000
   }
 
   private func preSosExpectedActivationAtFromSnapshot() -> Int? {
-    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue else {
+    guard effectiveSnapshotKind() == IosBleSosSnapshotKind.preSos.rawValue else {
       return nil
     }
-    return defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int
+    return effectiveSnapshotDeadlineAt()
   }
 
   private func preSosRemainingSecondsFromSnapshot() -> Int? {
@@ -1199,6 +1220,19 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 #if DEBUG
       print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil)")
 #endif
+      // The snapshot/event stay suppressed, but the native cycle sees the
+      // frame: its post-close quiet window decides, and backdates a real new
+      // SOS that started inside it instead of delaying it by the window.
+      applyNativeSosTransition(
+        sosDelivery.observe(
+          kind: parsed.kind,
+          nodeId: parsed.nodeId,
+          cycleKey: parsed.cycleKey,
+          deviceId: defaults.string(forKey: Keys.protectedDeviceId)
+        ),
+        reason: "device_cycle_after_close",
+        notifyActive: true
+      )
       return
     }
     let previousNotificationContext = currentSosNotificationContext()
@@ -1514,17 +1548,19 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     guard shouldNotifySosSnapshot(parsed, previous: previous) else {
       return
     }
+    // Claimed here on the caller's (main) thread: checking it inside the
+    // async settings callback let two close frames both pass (duplicate alert).
+    let dedupeKey = sosNotificationDedupeKey(for: parsed)
+    guard rememberSosNotificationKey(dedupeKey) else {
+#if DEBUG
+      print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil)")
+#endif
+      return
+    }
     UNUserNotificationCenter.current().getNotificationSettings { settings in
       guard self.isNotificationAuthorized(settings.authorizationStatus) else {
 #if DEBUG
         print("IOS_SOS_NOTIFICATION_PERMISSION_MISSING kind=\(parsed.kind.rawValue) authorization_category=not_granted")
-#endif
-        return
-      }
-      let dedupeKey = self.sosNotificationDedupeKey(for: parsed)
-      guard self.rememberSosNotificationKey(dedupeKey) else {
-#if DEBUG
-        print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil)")
 #endif
         return
       }

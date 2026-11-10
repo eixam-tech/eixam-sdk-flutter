@@ -16908,6 +16908,13 @@ class _SnapshotProtectionPlatformAdapter extends Fake
     deliveryHoldReports.add(pending);
   }
 
+  int closeNativeSosCycleCalls = 0;
+
+  @override
+  Future<void> closeNativeSosCycle() async {
+    closeNativeSosCycleCalls++;
+  }
+
   @override
   Future<bool> ackPendingNativeSosCancel() async {
     ackPendingNativeSosCancelCalls++;
@@ -18101,6 +18108,36 @@ void _backgroundTagSosDeliveryTests() {
         expect(adapter.pendingNativeSosCreate, isNull);
         expect(adapter.droppedNativeSosCreateSignatures, isNotEmpty);
         expect(adapter.ackPendingNativeSosCancelCalls, greaterThan(acksBefore));
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('the SDK closes the native TAG cycle once the SOS is over, so a '
+        'missed TAG close frame never blocks the next SOS', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await pumpEventQueue(times: 10);
+        final beforeClose = adapter.closeNativeSosCycleCalls;
+
+        await harness.sdk.cancelSosAuthoritatively();
+        await waitFor(() => adapter.closeNativeSosCycleCalls > beforeClose);
+
+        expect(adapter.closeNativeSosCycleCalls, greaterThan(beforeClose));
       } finally {
         await harness.dispose();
         await adapter.dispose();

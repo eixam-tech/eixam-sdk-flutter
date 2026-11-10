@@ -213,6 +213,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
+  Future<void> closeNativeSosCycle() async {}
+
+  @override
   Future<bool> dropPendingNativeSosCreate(
     String signature, {
     required String reason,

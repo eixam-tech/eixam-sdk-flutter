@@ -33,6 +33,12 @@ struct IosNativeSosTransition: Equatable {
 
 final class IosNativeSosDeliveryStore {
   static let countdownMs = 20_000
+  /// After a close, frames are the TAG's close burst / stale repeats for
+  /// this long; a new SOS needs a frame after it (no zombie SOS).
+  static let closeQuietMs = 30_000
+  /// Frames this long after a close can belong to a new SOS: its countdown
+  /// is backdated to the first of them once the quiet window has passed.
+  static let closeBurstMs = 5_000
   static let eventQueueCapacity = 64
   static let sosEventTypes: Set<String> = [
     "ownDeviceSosLifecycleObserved",
@@ -45,6 +51,8 @@ final class IosNativeSosDeliveryStore {
     static let cycleNodeId = "native_sos_cycle_node_id"
     static let cycleDeadlineAt = "native_sos_cycle_deadline_at"
     static let cycleStartedAt = "native_sos_cycle_started_at"
+    static let lastClosedAt = "native_sos_last_closed_at"
+    static let firstFrameAfterCloseAt = "native_sos_first_frame_after_close_at"
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
     static let pendingEvents = "pending_sos_events"
@@ -87,10 +95,33 @@ final class IosNativeSosDeliveryStore {
       // backend is told only once the countdown elapsed without a cancel.
       switch cycleState {
       case .idle:
-        let deadline = now() + Self.countdownMs
+        let timestamp = now()
+        if let closedAt = defaults.object(forKey: Keys.lastClosedAt) as? Int,
+           timestamp - closedAt < Self.closeQuietMs {
+          // Close burst / stale repeats of the SOS that just closed. Remember
+          // when frames kept coming, in case this is a new SOS.
+          if timestamp - closedAt >= Self.closeBurstMs,
+             defaults.object(forKey: Keys.firstFrameAfterCloseAt) == nil {
+            defaults.set(timestamp, forKey: Keys.firstFrameAfterCloseAt)
+          }
+          break
+        }
+        var start = timestamp
+        if let first = defaults.object(forKey: Keys.firstFrameAfterCloseAt) as? Int,
+           timestamp - first < Self.closeQuietMs + Self.countdownMs {
+          // Frames kept coming through the quiet window: a new SOS that
+          // started then (its TAG countdown is already running).
+          start = first
+        }
+        defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+        let deadline = start + Self.countdownMs
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
-        defaults.set(now(), forKey: Keys.cycleStartedAt)
-        transition.countdownDeadlineAt = deadline
+        defaults.set(start, forKey: Keys.cycleStartedAt)
+        if timestamp >= deadline {
+          transition = promoteExpiredCountdown(deviceId: deviceId)
+        } else {
+          transition.countdownDeadlineAt = deadline
+        }
       case .preConfirmSeen:
         // A later frame after the deadline: the phone was suspended when the
         // countdown elapsed.
@@ -111,10 +142,42 @@ final class IosNativeSosDeliveryStore {
         transition.queuedCancel = true
       }
       transition.countdownStopped = state == .preConfirmSeen
-      setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
-      defaults.removeObject(forKey: Keys.cycleStartedAt)
+      closeCycle()
     }
     return transition
+  }
+
+  private func closeCycle() {
+    setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
+    defaults.removeObject(forKey: Keys.cycleStartedAt)
+    defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+    defaults.set(now(), forKey: Keys.lastClosedAt)
+  }
+
+  /// The SDK says the SOS is over (cancelled / resolved / idle). Closes a
+  /// cycle already handed over, in case its close frame never reached the
+  /// phone (otherwise the next TAG SOS would be ignored natively). A cycle
+  /// whose SOS was not handed over yet is kept: nothing is ever lost.
+  func closeDeliveredCycle() -> Bool {
+    guard cycleState == .createPending, pendingCreateRecord == nil else {
+      return false
+    }
+    closeCycle()
+    return true
+  }
+
+  /// Native countdown deadline while it runs: the snapshot must show a
+  /// countdown, never a sent SOS (frames carry sosType 3 from the start).
+  var countdownDeadlineAt: Int? {
+    cycleState == .preConfirmSeen ? cycleDeadlineAt : nil
+  }
+
+  /// A pending TAG cancel only cancels a pending SOS created before it; a
+  /// newer SOS (created while an older cancel was not yet handed over) wins.
+  var pendingCancelSupersedesCreate: Bool {
+    guard let cancelAt = pendingCancelCreatedAt else { return false }
+    guard let createAt = pendingCreateRecord?["createdAt"] as? Int else { return true }
+    return cancelAt >= createAt
   }
 
   /// Which local SOS notification a countdown/active frame raises once the
@@ -165,6 +228,7 @@ final class IosNativeSosDeliveryStore {
     let wasCounting = cycleState == .preConfirmSeen
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
+    defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
     defaults.removeObject(forKey: Keys.pendingEvents)
     return wasCounting
   }
