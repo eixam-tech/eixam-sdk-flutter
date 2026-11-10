@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../mappers/local_state_serializers.dart';
 import 'mqtt_topic_segment.dart';
 import 'sos_backend_identity_normalizer.dart';
 import 'transport_security_validator.dart';
@@ -294,6 +295,29 @@ class SdkMqttContract {
     );
   }
 
+  /// SOS cancel on the alerts topic. User-scoped like the former REST cancel:
+  /// no device identity, so the backend cancels the user's one open incident
+  /// (a `deviceId` the backend cannot resolve would be rejected silently).
+  static SdkMqttEnvelope buildOperationalSosCancelEnvelope({
+    required String sdkUserId,
+    String? legacyUserId,
+    required DateTime timestamp,
+  }) {
+    final topicSDKUserId = sdkUserId.trim();
+    final payloadUserId = legacyUserId?.trim();
+    return SdkMqttEnvelope(
+      topic: topicSDKUserId.isEmpty
+          ? SdkMqttTopics.legacySosAlerts
+          : SdkMqttTopics.sosAlertsFor(topicSDKUserId),
+      payload: jsonEncode(<String, dynamic>{
+        'timestamp': timestamp.toUtc().toIso8601String(),
+        'cancel': true,
+        if (payloadUserId != null && payloadUserId.isNotEmpty)
+          'userId': payloadUserId,
+      }),
+    );
+  }
+
   static SdkMqttEnvelope buildTelemetryEnvelope({
     required EixamSession session,
     required SdkTelemetryPayload payload,
@@ -359,4 +383,86 @@ class SdkMqttContract {
   static String _sanitizeIdentifier(String input) {
     return input.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
   }
+}
+
+/// Persistable form of an SOS trigger request for the delivery outbox, so a
+/// pending SOS is replayed with the same identity after a process restart.
+/// Battery/coverage/widget extras are not persisted (no stable decoder); the
+/// SOS identity, position and sources are.
+Map<String, dynamic> mqttOperationalSosRequestToOutboxJson(
+  MqttOperationalSosRequest request,
+) {
+  final position = request.positionSnapshot;
+  return <String, dynamic>{
+    'timestamp': request.timestamp.toUtc().toIso8601String(),
+    if (position != null)
+      'position': LocalStateSerializers.trackingPositionToJson(position),
+    if (request.deviceId != null) 'deviceId': request.deviceId,
+    if (request.hardwareId != null) 'hardwareId': request.hardwareId,
+    if (request.identitySource != null)
+      'identitySource': request.identitySource,
+    if (request.originatorNodeId != null)
+      'originatorNodeId': request.originatorNodeId,
+    if (request.relayNodeId != null) 'relayNodeId': request.relayNodeId,
+    if (request.relayDeviceId != null) 'relayDeviceId': request.relayDeviceId,
+    if (request.relayHardwareId != null)
+      'relayHardwareId': request.relayHardwareId,
+    if (request.source != null) 'source': request.source,
+    if (request.triggerSource != null) 'triggerSource': request.triggerSource,
+    if (request.relaySource != null) 'relaySource': request.relaySource,
+    if (request.owner != null) 'owner': request.owner,
+    if (request.message != null) 'message': request.message,
+    if (request.incidentId != null) 'incidentId': request.incidentId,
+    if (request.cycleKey != null) 'cycleKey': request.cycleKey,
+    if (request.mobileBattery != null) 'mobileBattery': request.mobileBattery,
+  };
+}
+
+MqttOperationalSosRequest? mqttOperationalSosRequestFromOutboxJson(
+  Map<String, dynamic> json,
+) {
+  final timestamp = DateTime.tryParse('${json['timestamp']}');
+  if (timestamp == null) {
+    return null;
+  }
+  String? text(String key) {
+    final value = json[key];
+    return value is String && value.trim().isNotEmpty ? value : null;
+  }
+
+  int? integer(String key) {
+    final value = json[key];
+    return value is int ? value : null;
+  }
+
+  TrackingPosition? position;
+  final rawPosition = json['position'];
+  if (rawPosition is Map) {
+    try {
+      position = LocalStateSerializers.trackingPositionFromJson(
+        Map<String, dynamic>.from(rawPosition),
+      );
+    } catch (_) {
+      position = null;
+    }
+  }
+  return MqttOperationalSosRequest(
+    timestamp: timestamp.toUtc(),
+    positionSnapshot: position,
+    deviceId: text('deviceId'),
+    hardwareId: text('hardwareId'),
+    identitySource: text('identitySource'),
+    originatorNodeId: integer('originatorNodeId'),
+    relayNodeId: integer('relayNodeId'),
+    relayDeviceId: text('relayDeviceId'),
+    relayHardwareId: text('relayHardwareId'),
+    source: text('source'),
+    triggerSource: text('triggerSource'),
+    relaySource: text('relaySource'),
+    owner: text('owner'),
+    message: text('message'),
+    incidentId: text('incidentId'),
+    cycleKey: text('cycleKey'),
+    mobileBattery: integer('mobileBattery'),
+  );
 }

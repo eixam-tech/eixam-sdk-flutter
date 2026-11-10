@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — background TAG SOS is always delivered over MQTT (F4/F5)
+
+- SOS trigger and cancel go through a durable, ordered MQTT outbox (`SosDeliveryOutbox`): persisted before the first attempt (survives process death), retried with bounded backoff (1, 2, 4, 8, 15, then every 30 s) until the backend confirms (`processed`/`cancelled` event, or the read-only active-SOS endpoint), same incident identity on every attempt, a cancel supersedes older queued triggers and never precedes or closes a newer SOS. No REST trigger or cancel (`trigger_must_use_mqtt` unchanged; resolve still uses REST, no MQTT resolve exists in the backend).
+- QoS 1 publishes now complete only on the broker PUBACK; SOS publishes reconnect first when the link was not proven alive in the last 4 min (broker ACL session expiry) and retry once on a fresh connection.
+- Cancel is MQTT `cancel: true` (user-scoped). An app cancel stays `cancelRequested` until the backend confirms; it settles locally only if the trigger never reached the broker.
+- A trigger stays `sending` until backend confirmation (no `sent` on publish). New `SosIncident.isDeliveryRetrying` and progress `detailCode: delivery_not_confirmed_retrying` ("not sent yet, retrying"). Additive.
+- Android background: a terminal state left by the previous SOS no longer drops the next native TAG SOS; a new native cycle after a terminal is admitted; the native pending create is pumped until accepted; the SOS notification intent is emitted before any network; the native TAG cancel is handed to the MQTT outbox (`ackPendingNativeSosCancel`), never REST; the native SOS notification shows when Dart is not listening.
+- Release builds log `SOS_OUTBOX_*` delivery lines (codes and counters only).
+
 ## Unreleased — a healthy running update is never an interrupted one (F1)
 
 - `DfuRecoveryControl` no longer treats the session an ordinary update or migration in this process is transferring as an interrupted update. While it runs (also while the TAG reboots into its DFU bootloader) the status is `unknown` / `updateInProgress` with no `deviceId` and `forwardActions == [checkAgain]`: no cable action, no interruption marker. Before, every OTA/migration published `forwardActions` starting with `openCableRecoveryGuide`, which hosts render as "The update was interrupted".

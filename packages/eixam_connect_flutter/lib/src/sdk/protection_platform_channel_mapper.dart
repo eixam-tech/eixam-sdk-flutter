@@ -158,6 +158,9 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
         snapshot['pendingNativeSosCreateCount'] as int? ?? 0,
     pendingNativeSosCancelCount:
         snapshot['pendingNativeSosCancelCount'] as int? ?? 0,
+    pendingNativeSosCancelCreatedAt: readProtectionPlatformDateTime(
+      snapshot['pendingNativeSosCancelCreatedAt'],
+    ),
     lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
     lastRestorationEventAt: readProtectionPlatformDateTime(
       snapshot['lastRestorationEventAt'],

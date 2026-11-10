@@ -73,6 +73,7 @@ class SosIncidentProgress {
     SosOriginKind originKind = SosOriginKind.unknown,
     SosActionability actionability = SosActionability.unknown,
     SosDisplaySurface displaySurface = SosDisplaySurface.unknown,
+    bool deliveryRetrying = false,
   }) {
     final steps = <SosProgressStep>[];
     if (incidentState == SosState.acknowledged) {
@@ -98,7 +99,9 @@ class SosIncidentProgress {
           updatedAt: isBackendConfirmed ? createdAt : null,
           detailCode: isBackendConfirmed
               ? 'backend_incident_confirmed'
-              : 'awaiting_backend_confirmation',
+              : deliveryRetrying
+                  ? 'delivery_not_confirmed_retrying'
+                  : 'awaiting_backend_confirmation',
         ),
       );
     }

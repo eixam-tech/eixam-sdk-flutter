@@ -106,6 +106,8 @@ internal class ProtectionRuntimeStore(context: Context) {
             "pendingNativeSosCancelCount" to pendingNativeSosCancelCount,
             "pendingNativeSosCancelState" to
                 pendingNativeSosCancel?.optNullableString("state"),
+            "pendingNativeSosCancelCreatedAt" to
+                pendingNativeSosCancel?.optLongOrNull("createdAt"),
             "pendingNativeSosCancelLifecyclePresent" to
                 (pendingNativeSosCancel?.optNullableString("lifecycleId") != null),
             "pendingNativeSosCancelCanonicalTargetPresent" to
@@ -615,9 +617,16 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun markPendingSosCreate(reason: String): Map<String, Any?> {
         val now = System.currentTimeMillis()
-        val existing = pendingNativeSosCreateJson()
+        val currentCycleKey = preferences.getString(keyPreSosCycleKey, null)
+        // Reuse a pending record only for the same TAG cycle. A record left
+        // over from an earlier cycle must not lend its cycleKey/createdAt to
+        // a new SOS (the SDK would treat the new SOS as the terminated one).
+        val existing = pendingNativeSosCreateJson()?.takeIf { record ->
+            currentCycleKey == null ||
+                record.optNullableString("cycleKey") == currentCycleKey
+        }
         val cycleKey = existing?.optNullableString("cycleKey")
-            ?: preferences.getString(keyPreSosCycleKey, null)
+            ?: currentCycleKey
             ?: "native-sos-cycle-$now"
         val incidentId = existing?.optNullableString("incidentId")
             ?: "native-sos-${sanitizeStableId(cycleKey)}"
@@ -725,18 +734,18 @@ internal class ProtectionRuntimeStore(context: Context) {
             .put("state", "terminal")
             .put(
                 "transportState",
-                if (outcome == ProtectionNativeSosCancelOutcome.flushExecuted) {
-                    "sent"
-                } else {
-                    "not_sent"
+                when (outcome) {
+                    ProtectionNativeSosCancelOutcome.flushExecuted -> "sent"
+                    ProtectionNativeSosCancelOutcome.mqttHandoffAccepted -> "handed_to_sdk_mqtt"
+                    else -> "not_sent"
                 },
             )
             .put(
                 "ackState",
-                if (outcome == ProtectionNativeSosCancelOutcome.flushExecuted) {
-                    "acknowledged"
-                } else {
-                    "rejected"
+                when (outcome) {
+                    ProtectionNativeSosCancelOutcome.flushExecuted -> "acknowledged"
+                    ProtectionNativeSosCancelOutcome.mqttHandoffAccepted -> "accepted"
+                    else -> "rejected"
                 },
             )
             .put("updatedAt", now)

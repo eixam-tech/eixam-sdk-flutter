@@ -143,16 +143,15 @@ internal class ProtectionForegroundService : Service() {
             description = runtimeStore.protectionModeChannelDescription()
         }
         manager.createNotificationChannel(runtimeChannel)
-        if (!runtimeStore.hostAppManagedNotifications()) {
-            val sosChannel = NotificationChannel(
-                sosNotificationChannelId,
-                runtimeStore.protectionSosChannelName(),
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = runtimeStore.protectionSosChannelDescription()
-            }
-            manager.createNotificationChannel(sosChannel)
+        // Always available: SOS alarm must not depend on Dart being alive.
+        val sosChannel = NotificationChannel(
+            sosNotificationChannelId,
+            runtimeStore.protectionSosChannelName(),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = runtimeStore.protectionSosChannelDescription()
         }
+        manager.createNotificationChannel(sosChannel)
     }
 
     private fun ensureProtectionRuntime(
@@ -268,7 +267,10 @@ internal class ProtectionForegroundService : Service() {
             title: String,
             body: String,
         ) {
-            if (ProtectionRuntimeStore(context).hostAppManagedNotifications()) {
+            if (ProtectionRuntimeStore(context).hostAppManagedNotifications() &&
+                ProtectionRuntimeBridge.isFlutterListening()
+            ) {
+                // The host app notifies from SDK intents while Dart runs.
                 return
             }
             val notification = NotificationCompat.Builder(context, sosNotificationChannelId)

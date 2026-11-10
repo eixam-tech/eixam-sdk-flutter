@@ -23,6 +23,9 @@ internal enum class ProtectionNativeSosCancelOutcome(
     incidentMismatch("NATIVE_SOS_CANCEL_INCIDENT_MISMATCH"),
     noCanonicalTarget("NATIVE_SOS_CANCEL_NO_CANONICAL_TARGET"),
     flushExecuted("NATIVE_SOS_CANCEL_FLUSH_EXECUTED"),
+
+    /** The SDK's durable MQTT outbox accepted the cancel (cancel is MQTT-only). */
+    mqttHandoffAccepted("NATIVE_SOS_CANCEL_MQTT_HANDOFF_ACCEPTED"),
 }
 
 internal data class ProtectionNativeSosCancelDecision(

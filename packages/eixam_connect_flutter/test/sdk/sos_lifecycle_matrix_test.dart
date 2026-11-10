@@ -39,6 +39,7 @@ import '../support/fakes/sdk_contract_fakes.dart';
 import '../support/device/mock_ble_client.dart';
 
 void main() {
+  _backgroundTagSosDeliveryTests();
   TestWidgetsFlutterBinding.ensureInitialized();
 
   const protectionMethodChannel = MethodChannel(
@@ -5031,7 +5032,7 @@ void main() {
             harness.deviceSosController.currentStatus.state,
             DeviceSosState.active,
           );
-          expect(await harness.sdk.getSosState(), SosState.sent);
+          expect(await harness.sdk.getSosState(), SosState.sending);
 
           repository.emitTerminal(
             SosIncident(
@@ -13138,7 +13139,13 @@ void main() {
                 },
               );
               cancellation = repository.cancelSos();
-              await cancelRemote.cancelStarted;
+              // Cancel is MQTT-only: wait for the `cancel: true` publish.
+              for (var i = 0;
+                  i < 200 && realtime.publishedSosCancels.isEmpty;
+                  i++) {
+                await Future<void>.delayed(const Duration(milliseconds: 5));
+              }
+              expect(realtime.publishedSosCancels, isNotEmpty);
             } else {
               realtime.emitEvent(terminalEvent);
             }
@@ -13360,9 +13367,11 @@ void main() {
 
       final remoteResolution = await repository
           .rehydrateRuntimeStateFromBackend();
+      // The SOS is still being delivered over MQTT (not yet confirmed), so a
+      // backend that does not have it yet must not clear it to idle.
       expect(
         remoteResolution.outcome,
-        SosRuntimeRehydrationOutcome.clearedToIdle,
+        SosRuntimeRehydrationOutcome.keptLocalFallback,
       );
       expect((await first.sdk.getSosLifecycle()).isOpen, isTrue);
 
@@ -16593,6 +16602,15 @@ final class _SdkSosHarness {
 
 final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
     implements OperationalRealtimeClient {
+  final List<DateTime> publishedSosCancels = <DateTime>[];
+  Future<void> Function(DateTime timestamp)? publishSosCancelHook;
+
+  @override
+  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+    publishedSosCancels.add(timestamp);
+    await publishSosCancelHook?.call(timestamp);
+  }
+
   bool connected = false;
 
   @override
@@ -16882,6 +16900,14 @@ final class _DelayedCancelSosRemoteDataSource
 
 class _SnapshotProtectionPlatformAdapter extends Fake
     implements ProtectionPlatformAdapter {
+  int ackPendingNativeSosCancelCalls = 0;
+
+  @override
+  Future<bool> ackPendingNativeSosCancel() async {
+    ackPendingNativeSosCancelCalls++;
+    return true;
+  }
+
   _SnapshotProtectionPlatformAdapter(
     this.snapshot, {
     Completer<ProtectionPlatformCommandResult>? commandResult,
@@ -17622,3 +17648,152 @@ EixamSosPacket _minimalAppSosPacket({
     0,
   ])!;
 }
+
+/// F4/F5 (QA 2026-11-10, Android background TAG SOS).
+void _backgroundTagSosDeliveryTests() {
+  group('background TAG SOS delivery (F4/F5)', () {
+    ProtectionPendingNativeSosCreate nativeCreate({
+      required String cycleKey,
+      required DateTime createdAt,
+    }) {
+      return ProtectionPendingNativeSosCreate(
+        signature: 'native-create-$cycleKey',
+        incidentId: 'native-sos-$cycleKey',
+        cycleKey: cycleKey,
+        correlationId: 'native-correlation-$cycleKey',
+        createdAt: createdAt,
+        updatedAt: createdAt,
+        retryCount: 0,
+        state: 'pending',
+      );
+    }
+
+    ProtectionPlatformEvent queued(String reason) => ProtectionPlatformEvent(
+      type: ProtectionPlatformEventType.nativeBackendSyncQueued,
+      timestamp: DateTime.now().toUtc(),
+      reason: reason,
+    );
+
+    Future<void> waitFor(bool Function() condition) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 4));
+      while (!condition() && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+
+    test('a terminal state left by a previous TAG cancel never drops the next '
+        'background TAG SOS; the SOS notification is emitted first', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      final intents = <EixamNotificationIntent>[];
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        final intentSub = harness.sdk.watchNotificationIntents().listen(
+          intents.add,
+        );
+        addTearDown(intentSub.cancel);
+
+        // Previous SOS cancelled from the TAG while native owned BLE.
+        adapter.emit(queued('cancel:device_cycle_closed'));
+        await pumpEventQueue(times: 20);
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+
+        // Next TAG SOS in background: countdown elapsed natively.
+        adapter.pendingNativeSosCreate = nativeCreate(
+          cycleKey: 'sos:1435727214:3',
+          createdAt: DateTime.now().toUtc(),
+        );
+        adapter.emit(queued('create:device_cycle_active_after_timeout'));
+        await waitFor(() => harness.sosRepository.triggerCallCount > 0);
+
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(
+          intents.where((i) => i.type == EixamNotificationIntentType.sosActive),
+          isNotEmpty,
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('a native SOS created before a later cancel is still dropped',
+        () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        final createdAt = DateTime.now().toUtc();
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        adapter.emit(queued('cancel:device_cycle_closed'));
+        await pumpEventQueue(times: 20);
+
+        adapter.pendingNativeSosCreate = nativeCreate(
+          cycleKey: 'sos:1435727214:4',
+          createdAt: createdAt,
+        );
+        adapter.emit(queued('create:scheduled_retry'));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+
+        expect(harness.sosRepository.triggerCallCount, 0);
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('a background TAG cancel is published over MQTT and the native '
+        'pending cancel is retired; no REST', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtime,
+      );
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+      );
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+
+        adapter.emit(queued('cancel:device_cycle_closed'));
+        await waitFor(() => realtime.publishedSosCancels.isNotEmpty);
+
+        expect(realtime.publishedSosCancels, isNotEmpty);
+        expect(adapter.ackPendingNativeSosCancelCalls, 1);
+        expect(repository.deliveryStatus.pendingCancel, isTrue,
+            reason: 'kept until the backend confirms');
+      } finally {
+        await harness.dispose();
+        await repository.dispose();
+        await adapter.dispose();
+      }
+    });
+  });
+}
+

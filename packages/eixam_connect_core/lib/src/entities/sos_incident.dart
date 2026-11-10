@@ -32,6 +32,7 @@ class SosIncident {
     this.isUsingCachedData = false,
     this.provisionalIncidentId,
     this.preservedLocalOwnership = false,
+    this.isDeliveryRetrying = false,
   });
   final String id;
   final SosState state;
@@ -58,6 +59,10 @@ class SosIncident {
   final String? provisionalIncidentId;
   final bool preservedLocalOwnership;
 
+  /// The SOS is not confirmed by the backend yet and delivery is being
+  /// retried ("Not sent yet, retrying"). Hosts must not present it as sent.
+  final bool isDeliveryRetrying;
+
   SosIncidentProgress get progress => SosIncidentProgress.fromEvidence(
         incidentId: id,
         incidentState: state,
@@ -72,6 +77,7 @@ class SosIncident {
         originKind: originKind,
         actionability: actionability,
         displaySurface: displaySurface,
+        deliveryRetrying: isDeliveryRetrying,
       );
 
   SosIncident copyWith({
@@ -98,6 +104,7 @@ class SosIncident {
     bool? isUsingCachedData,
     String? provisionalIncidentId,
     bool? preservedLocalOwnership,
+    bool? isDeliveryRetrying,
   }) {
     return SosIncident(
       id: id,
@@ -132,6 +139,7 @@ class SosIncident {
           provisionalIncidentId ?? this.provisionalIncidentId,
       preservedLocalOwnership:
           preservedLocalOwnership ?? this.preservedLocalOwnership,
+      isDeliveryRetrying: isDeliveryRetrying ?? this.isDeliveryRetrying,
     );
   }
 

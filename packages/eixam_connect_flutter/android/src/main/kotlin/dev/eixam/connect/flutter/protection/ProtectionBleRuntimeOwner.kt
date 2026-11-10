@@ -61,6 +61,9 @@ internal class ProtectionBleRuntimeOwner(
             scheduleRetry = ::scheduleBackendFlush,
         )
 
+    /** The SDK's MQTT outbox accepted the TAG cancel: retire the native record. */
+    fun ackPendingNativeSosCancel(): Boolean = backendHandoff.ackPendingCancelHandedToMqtt()
+
     fun start(
         deviceId: String,
         backendHardwareId: String?,

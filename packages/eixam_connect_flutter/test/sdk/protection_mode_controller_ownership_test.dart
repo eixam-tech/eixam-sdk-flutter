@@ -321,6 +321,14 @@ ProtectionModeController _testController(
 
 final class _OrderingProtectionPlatformAdapter extends Fake
     implements ProtectionPlatformAdapter {
+  int ackPendingNativeSosCancelCalls = 0;
+
+  @override
+  Future<bool> ackPendingNativeSosCancel() async {
+    ackPendingNativeSosCancelCalls++;
+    return true;
+  }
+
   _OrderingProtectionPlatformAdapter({
     required this.flutterReleased,
     this.startResult = const ProtectionPlatformStartResult(

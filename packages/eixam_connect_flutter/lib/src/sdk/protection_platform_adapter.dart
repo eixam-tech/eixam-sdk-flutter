@@ -110,6 +110,7 @@ class ProtectionPlatformSnapshot {
     this.pendingTelemetryCount = 0,
     this.pendingNativeSosCreateCount = 0,
     this.pendingNativeSosCancelCount = 0,
+    this.pendingNativeSosCancelCreatedAt,
     this.lastRestorationEvent,
     this.lastRestorationEventAt,
     this.lastBleServiceEvent,
@@ -182,6 +183,9 @@ class ProtectionPlatformSnapshot {
   final int pendingTelemetryCount;
   final int pendingNativeSosCreateCount;
   final int pendingNativeSosCancelCount;
+
+  /// When the TAG cancel still waiting for SDK hand-off was observed.
+  final DateTime? pendingNativeSosCancelCreatedAt;
   final String? lastRestorationEvent;
   final DateTime? lastRestorationEventAt;
   final String? lastBleServiceEvent;
@@ -414,6 +418,10 @@ abstract class ProtectionPlatformAdapter {
     String signature, {
     required String reason,
   });
+
+  /// Retires the native pending TAG cancel once the SDK durably queued it for
+  /// MQTT delivery. Returns false when the platform keeps no such record.
+  Future<bool> ackPendingNativeSosCancel();
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -496,6 +504,9 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     return true;
   }
+
+  @override
+  Future<bool> ackPendingNativeSosCancel() async => false;
 
   @override
   Future<bool> dropPendingNativeSosCreate(

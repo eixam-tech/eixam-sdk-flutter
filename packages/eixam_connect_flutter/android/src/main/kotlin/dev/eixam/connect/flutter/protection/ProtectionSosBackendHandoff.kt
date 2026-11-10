@@ -183,104 +183,42 @@ internal class ProtectionSosBackendHandoff(
     }
 
     private fun syncCancel(reason: String): Boolean {
-        val pending = runtimeStore.pendingNativeSosCancel()
-        if (pending == null) {
-            return retireRejectedCancel(
-                outcome = ProtectionNativeSosCancelOutcome.pendingStaleRejected,
-                reason = "legacy_record_without_identity",
-            )
+        if (runtimeStore.pendingNativeSosCancel() == null) {
+            return true
         }
-        if (pending.canonicalBackendIncidentId.isNullOrBlank()) {
-            return retireRejectedCancel(
-                outcome = ProtectionNativeSosCancelOutcome.noCanonicalTarget,
-                reason = "missing_canonical_incident",
-            )
-        }
-        return try {
-            val session = loadSession()
-                ?: throw IllegalStateException("Missing SDK session for native SOS backend cancel.")
-            val apiBaseUrl = requireValidatedApiBaseUrl()
-                ?: throw IllegalStateException("Missing API base URL for native SOS backend cancel.")
-            val existingIncident = fetchActiveIncident(apiBaseUrl, session)
-            val decision = ProtectionNativeSosCancelPolicy.evaluate(
-                pending = pending,
-                activeBackendIncidentId = existingIncident?.id,
-                currentSessionScope = sessionScope(session),
-                currentDeviceId = runtimeStore.currentBleHardwareId()
-                    ?: runtimeStore.currentTargetDeviceId(),
-                currentNodeId = runtimeStore.currentBoundNodeId(),
-            )
-
-            var backendCancelCalled = false
-            val outcome = ProtectionNativeSosCancelFlushGate.execute(decision) {
-                backendCancelCalled = true
-                cancelIncident(apiBaseUrl, session)
-            }
-            if (!backendCancelCalled) {
-                Log.i(
-                    logTag,
-                    "${outcome.diagnosticCode} " +
-                        "reason=${decision.reason} backendCancelCall=false",
-                )
-                runtimeStore.retirePendingNativeSosCancel(
-                    outcome = outcome,
-                    reason = decision.reason,
-                )
-                if (existingIncident == null) {
-                    runtimeStore.markBackendIncidentCleared("cancel_target_terminal")
-                } else {
-                    runtimeStore.markBackendIncidentActive(
-                        incidentId = existingIncident.id,
-                        incidentState = existingIncident.state,
-                    )
-                }
-                true
-            } else {
-                Log.i(
-                    logTag,
-                    "${decision.outcome.diagnosticCode} " +
-                        "reason=${decision.reason} backendCancelCall=pending",
-                )
-                Log.i(
-                    logTag,
-                    "${outcome.diagnosticCode} " +
-                        "backendCancelCall=true result=success",
-                )
-                runtimeStore.retirePendingNativeSosCancel(
-                    outcome = outcome,
-                    reason = "exact_incident_match_cancelled",
-                )
-                runtimeStore.markBackendIncidentCleared("cancel_synced_exact_incident_match")
-                ProtectionRuntimeBridge.recordPlatformEvent(
-                    context = context,
-                    type = "nativeBackendSyncSucceeded",
-                    reason = "cancel_synced_exact_incident_match",
-                )
-                true
-            }
-        } catch (error: Exception) {
-            handleFailure(
-                action = "cancel",
-                reason = reason,
-                error = error,
-            )
-            false
-        }
+        // SOS cancel is MQTT-only. Native never calls REST and never retires a
+        // TAG cancel for a missing canonical incident (F5): the pending cancel
+        // stays until the SDK's durable MQTT outbox accepts it
+        // (ackPendingNativeSosCancel). The queued event was emitted once by
+        // queueCancel; it is not re-emitted here so a stale cancel can never
+        // close a newer SOS.
+        logSosCancelRestBlocked(reason)
+        runtimeStore.markBackendHandoffQueued("NATIVE_SOS_CANCEL_MQTT_HANDOFF_PENDING")
+        return false
     }
 
-    private fun retireRejectedCancel(
-        outcome: ProtectionNativeSosCancelOutcome,
-        reason: String,
-    ): Boolean {
+    fun ackPendingCancelHandedToMqtt(): Boolean {
+        if (runtimeStore.pendingNativeSosCancel() == null) {
+            return false
+        }
+        runtimeStore.retirePendingNativeSosCancel(
+            outcome = ProtectionNativeSosCancelOutcome.mqttHandoffAccepted,
+            reason = "sdk_mqtt_outbox_accepted",
+        )
         Log.i(
             logTag,
-            "${outcome.diagnosticCode} reason=$reason backendCancelCall=false",
-        )
-        runtimeStore.retirePendingNativeSosCancel(
-            outcome = outcome,
-            reason = reason,
+            "${ProtectionNativeSosCancelOutcome.mqttHandoffAccepted.diagnosticCode} " +
+                "backendCancelCall=false transport=mqtt",
         )
         return true
+    }
+
+    private fun logSosCancelRestBlocked(reason: String) {
+        Log.i(
+            logTag,
+            "SOS_CANCEL_REST_BLOCKED source=native_protection_sos " +
+                "reason=cancel_must_use_mqtt trigger=$reason",
+        )
     }
 
     private fun sessionScope(session: SessionSnapshot): String {
@@ -318,21 +256,6 @@ internal class ProtectionSosBackendHandoff(
             "SOS_TRIGGER_REST_BLOCKED source=native_protection_sos " +
                 "reason=trigger_must_use_mqtt",
         )
-    }
-
-    private fun cancelIncident(
-        apiBaseUrl: String,
-        session: SessionSnapshot,
-    ) {
-        val response = sendRequest(
-            method = "POST",
-            url = normalizeUrl(apiBaseUrl, "/v1/sdk/sos/cancel"),
-            session = session,
-            body = null,
-        )
-        if (response.statusCode !in 200..299) {
-            throw IllegalStateException("Native SOS cancel failed: ${response.statusCode} ${response.body}")
-        }
     }
 
     private fun fetchActiveIncident(
@@ -847,6 +770,19 @@ internal class ProtectionSosBackendHandoff(
         Regex("^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$").matches(value)
 
     companion object {
+        /** Ack when no live runtime owner exists (process restarted). */
+        fun ackPendingCancelWithoutOwner(context: Context): Boolean {
+            val store = ProtectionRuntimeStore(context.applicationContext)
+            if (store.pendingNativeSosCancel() == null) {
+                return false
+            }
+            store.retirePendingNativeSosCancel(
+                outcome = ProtectionNativeSosCancelOutcome.mqttHandoffAccepted,
+                reason = "sdk_mqtt_outbox_accepted",
+            )
+            return true
+        }
+
         private const val logTag = "ProtectionSosBackend"
         private const val locationAuthTag = "[EIXAM_LOCATION_AUTH]"
         private const val flutterPrefsName = "FlutterSharedPreferences"

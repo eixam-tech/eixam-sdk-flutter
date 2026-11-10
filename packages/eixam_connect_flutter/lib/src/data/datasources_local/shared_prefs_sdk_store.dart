@@ -13,6 +13,8 @@ class SharedPrefsSdkStore {
   static const String sosIncidentKey = 'eixam.sos.active_incident';
   static const String sosStateKey = 'eixam.sos.state';
   static const String sosClosedIncidentKey = 'eixam.sos.closed_incident';
+  // Pending SOS trigger/cancel actions awaiting backend confirmation.
+  static const String sosDeliveryOutboxKey = 'eixam.sos.delivery_outbox.v1';
   static const String trackingPositionKey = 'eixam.tracking.last_position';
   static const String resolvedLocationKey = 'eixam.location.resolved';
   static const int resolvedLocationHandoffVersion = 2;
@@ -63,6 +65,7 @@ class SharedPrefsSdkStore {
   static const String dfuRecoveryRecordKey = 'eixam.device.dfu_recovery_record';
   static const List<String> localUserDataKeys = <String>[
     sosIncidentKey,
+    sosDeliveryOutboxKey,
     sosStateKey,
     sosClosedIncidentKey,
     trackingPositionKey,

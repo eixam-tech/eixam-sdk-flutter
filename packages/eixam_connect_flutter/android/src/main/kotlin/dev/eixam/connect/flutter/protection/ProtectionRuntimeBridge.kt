@@ -284,6 +284,13 @@ internal object ProtectionRuntimeBridge {
                     else store.ackPendingNativeSosCreate(signature, backendIncidentId),
                 )
             }
+            "ackPendingNativeSosCancel" -> {
+                val owner = runtimeOwner
+                result.success(
+                    owner?.ackPendingNativeSosCancel()
+                        ?: ProtectionSosBackendHandoff.ackPendingCancelWithoutOwner(context),
+                )
+            }
             "dropPendingNativeSosCreate" -> {
                 val arguments = call.arguments as? Map<*, *>
                 val signature = arguments?.get("signature") as? String
@@ -364,6 +371,9 @@ internal object ProtectionRuntimeBridge {
             else -> result.notImplemented()
         }
     }
+
+    /** True while Dart listens to platform events (it can notify itself). */
+    fun isFlutterListening(): Boolean = eventSink != null
 
     fun recordPlatformEvent(
         context: Context,

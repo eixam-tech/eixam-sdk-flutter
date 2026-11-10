@@ -139,6 +139,9 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<bool> ackPendingNativeSosCancel() async => false;
+
+  @override
   Future<bool> dropPendingNativeSosCreate(
     String signature, {
     required String reason,

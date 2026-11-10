@@ -8,14 +8,14 @@ import 'package:flutter/foundation.dart';
 import '../data/datasources_remote/sdk_session_context.dart';
 import '../diagnostics/security_diagnostics_redactor.dart';
 import '../device/ble_debug_registry.dart';
+import '../diagnostics/sdk_release_log.dart';
 import 'mqtt_topic_segment.dart';
 import 'operational_realtime_client.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sdk_mqtt_transport.dart';
 
-typedef SdkMqttTransportFactory = SdkMqttTransport Function(
-  SdkMqttConnectRequest request,
-);
+typedef SdkMqttTransportFactory =
+    SdkMqttTransport Function(SdkMqttConnectRequest request);
 
 final class _MqttConnectAttempt {
   _MqttConnectAttempt({
@@ -54,7 +54,9 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     required this.transportFactory,
     this.reconnectDelay = const Duration(seconds: 2),
     this.connectTimeout = const Duration(seconds: 8),
-  }) {
+    this.sosLinkFreshness = const Duration(minutes: 4),
+    DateTime Function()? clock,
+  }) : _now = clock ?? DateTime.now {
     _connectionController.add(_state);
   }
 
@@ -63,6 +65,12 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   final SdkMqttTransportFactory transportFactory;
   final Duration reconnectDelay;
   final Duration connectTimeout;
+
+  /// Maximum age of the last CONNACK/PUBACK for an SOS publish to reuse the
+  /// link. Below the broker ACL cache (5 min) and session TTL (10 min).
+  final Duration sosLinkFreshness;
+  final DateTime Function() _now;
+  DateTime? _lastProvenAliveAt;
 
   final StreamController<RealtimeConnectionState> _connectionController =
       StreamController<RealtimeConnectionState>.broadcast();
@@ -97,6 +105,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
     final binding = _binding;
     _binding = null;
     _activeSession = null;
+    _lastProvenAliveAt = null;
     _recordRealtime(
       'MQTT_LIFECYCLE event=disconnect_begin generation=$generation '
       'inFlight=${attempt != null} transportPresent=${binding != null}',
@@ -147,25 +156,6 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         ? MqttTopicSegment.legacyUserIdFrom(session)
         : null;
 
-    await _ensureConnected(initialConnect: true);
-    var transport = _binding?.transport;
-    if (transport == null) {
-      // A hung TLS/CONNACK attempt is now timed out and cleared. SOS must try
-      // one fresh connect immediately instead of waiting for the reconnect
-      // timer, or the alert never leaves the phone.
-      _recordRealtime(
-        'MQTT_LIFECYCLE event=sos_publish_reconnect_after_connect_failure',
-      );
-      await _ensureConnected(initialConnect: true);
-      transport = _binding?.transport;
-    }
-    if (transport == null) {
-      throw const NetworkException(
-        'E_MQTT_NOT_CONNECTED',
-        'The MQTT transport is not connected.',
-      );
-    }
-
     final envelope = SdkMqttContract.buildOperationalSosEnvelope(
       sdkUserId: sdkUserId,
       legacyUserId: legacyUserId,
@@ -182,12 +172,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         'relayNodeId=${request.relayNodeId?.toString() ?? _intField(payload, 'relayNodeId')?.toString() ?? "none"}',
       );
       try {
-        await transport.publish(
-          topic: envelope.topic,
-          payload: envelope.payload,
-          qos: SdkMqttQos.atLeastOnce,
-          retain: false,
-        );
+        await _publishSosEnvelope(envelope, action: 'external_trigger');
         BleDebugRegistry.instance.recordEvent(
           'EXTERNAL_SOS mqtt_publish_result result=publish_returned '
           'topic=${envelope.topic} correlationId=$correlationId',
@@ -239,12 +224,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         '[BACKGROUND_SOS] mqtt_publish_start '
         'topic=${envelope.topic} correlationId=$correlationId qos=atLeastOnce',
       );
-      await transport.publish(
-        topic: envelope.topic,
-        payload: envelope.payload,
-        qos: SdkMqttQos.atLeastOnce,
-        retain: false,
-      );
+      await _publishSosEnvelope(envelope, action: 'trigger');
       BleDebugRegistry.instance.recordEvent(
         '[SOS_BACKEND_RESPONSE] correlationId=$correlationId status=ok '
         'backendIncidentId=none responseSummary=mqtt_publish_accepted',
@@ -266,6 +246,97 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       );
       rethrow;
     }
+  }
+
+  @override
+  Future<void> publishOperationalSosCancel({
+    required DateTime timestamp,
+  }) async {
+    final session = sessionContext.currentSession;
+    if (session == null) {
+      throw const AuthException(
+        'E_SDK_SESSION_REQUIRED',
+        'E_SDK_SESSION_REQUIRED',
+      );
+    }
+    final legacy = MqttTopicSegment.usesLegacyUserTopics(session);
+    final envelope = SdkMqttContract.buildOperationalSosCancelEnvelope(
+      sdkUserId: legacy ? '' : MqttTopicSegment.sdkUserIdFrom(session),
+      legacyUserId: legacy ? MqttTopicSegment.legacyUserIdFrom(session) : null,
+      timestamp: timestamp,
+    );
+    await _publishSosEnvelope(envelope, action: 'cancel');
+  }
+
+  /// SOS publishes must reach the broker or fail loudly. The link is used only
+  /// when it was proven alive recently (CONNACK or PUBACK); otherwise it is
+  /// re-established first so the broker re-runs auth (its ACL session expires
+  /// when idle). A failed publish is retried once on a fresh connection.
+  Future<void> _publishSosEnvelope(
+    SdkMqttEnvelope envelope, {
+    required String action,
+  }) async {
+    Object? lastError;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      final forceFresh = attempt > 1 || !_linkProvenFresh;
+      if (forceFresh && _state == RealtimeConnectionState.connected) {
+        sdkReleaseLog(
+          'SOS_OUTBOX_MQTT_RECONNECT action=$action attempt=$attempt '
+          'reason=${attempt > 1 ? "publish_failed" : "link_not_proven_fresh"}',
+        );
+        await disconnect();
+        _manualDisconnect = false;
+      }
+      await _ensureConnected(initialConnect: true);
+      var transport = _binding?.transport;
+      if (transport == null) {
+        // A hung TLS/CONNACK attempt is now timed out and cleared. SOS must
+        // try one fresh connect immediately instead of waiting for the
+        // reconnect timer, or the alert never leaves the phone.
+        _recordRealtime(
+          'MQTT_LIFECYCLE event=sos_publish_reconnect_after_connect_failure',
+        );
+        await _ensureConnected(initialConnect: true);
+        transport = _binding?.transport;
+      }
+      if (transport == null) {
+        lastError = const NetworkException(
+          'E_MQTT_NOT_CONNECTED',
+          'The MQTT transport is not connected.',
+        );
+        continue;
+      }
+      try {
+        await transport.publish(
+          topic: envelope.topic,
+          payload: envelope.payload,
+          qos: SdkMqttQos.atLeastOnce,
+          retain: false,
+        );
+        _lastProvenAliveAt = _now();
+        sdkReleaseLog('SOS_OUTBOX_MQTT_PUBACK action=$action attempt=$attempt');
+        return;
+      } catch (error) {
+        lastError = error;
+        sdkReleaseLog(
+          'SOS_OUTBOX_MQTT_PUBLISH_FAILED action=$action attempt=$attempt '
+          'errorType=${error.runtimeType}',
+        );
+      }
+    }
+    final error = lastError;
+    if (error is EixamSdkException) {
+      throw error;
+    }
+    throw NetworkException(
+      'E_MQTT_SOS_PUBLISH_FAILED',
+      'MQTT SOS publish was not acknowledged: ${error.runtimeType}',
+    );
+  }
+
+  bool get _linkProvenFresh {
+    final provenAt = _lastProvenAliveAt;
+    return provenAt != null && _now().difference(provenAt) < sosLinkFreshness;
   }
 
   bool _isExternalSosRequest(
@@ -347,6 +418,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         qos: SdkMqttQos.atLeastOnce,
         retain: false,
       );
+      _lastProvenAliveAt = _now();
       BleDebugRegistry.instance.recordEvent(
         'Telemetry publish success -> transport=MQTT topic=${envelope.topic} qos=1 retain=false backendHttpResponse=<not_applicable>',
       );
@@ -529,6 +601,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         state: 'ready_${binding.subscribedTopics.length}',
       );
       _activeSession = attempt.session;
+      _lastProvenAliveAt = _now();
       _setState(RealtimeConnectionState.connected);
       _recordRealtime(
         'MQTT_LIFECYCLE event=connect_success '

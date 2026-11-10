@@ -202,6 +202,14 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<bool> ackPendingNativeSosCancel() async {
+    final acknowledged = await _methodChannel.invokeMethod<bool>(
+      'ackPendingNativeSosCancel',
+    );
+    return acknowledged == true;
+  }
+
+  @override
   Future<bool> dropPendingNativeSosCreate(
     String signature, {
     required String reason,

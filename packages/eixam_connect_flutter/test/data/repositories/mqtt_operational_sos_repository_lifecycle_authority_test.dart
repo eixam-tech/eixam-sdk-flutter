@@ -50,10 +50,11 @@ void main() {
           triggerSource: 'commercial_app',
         );
 
-        expect(incident.state, SosState.sent);
+        // MQTT publish is not backend confirmation: `sending` until then.
+        expect(incident.state, SosState.sending);
         expect(realtimeClient.publishedSos, hasLength(1));
         expect(remoteDataSource.getActiveSosCalls, greaterThanOrEqualTo(1));
-        expect(await repository.getSosState(), SosState.sent);
+        expect(await repository.getSosState(), SosState.sending);
         expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_CHECK'), isTrue);
         expect(
           _hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_STALE_CLEARED'),
@@ -82,7 +83,7 @@ void main() {
       );
 
       expect(realtimeClient.publishedSos, hasLength(publishCount));
-      expect(await repository.getSosState(), SosState.sent);
+      expect(await repository.getSosState(), SosState.sending);
       expect(_hasDiagnostic('SOS_ALREADY_ACTIVE_GUARD_BLOCKED'), isTrue);
     });
 
@@ -93,7 +94,7 @@ void main() {
         deviceId: '1498094248',
       );
 
-      expect(incident.state, SosState.sent);
+      expect(incident.state, SosState.sending);
       expect(realtimeClient.publishedSos, hasLength(1));
       expect(realtimeClient.publishedSos.single.positionSnapshot, isNull);
       expect(_hasDiagnostic('SOS_POSITION_UNAVAILABLE'), isTrue);
@@ -593,7 +594,7 @@ void main() {
       final current = await repository.getCurrentIncident();
       expect(current!.id, local.id);
       expect(current.isBackendConfirmed, isFalse);
-      expect(current.state, SosState.sent);
+      expect(current.state, SosState.sending);
       expect(_hasDiagnostic('reason=identity_mismatch'), isTrue);
     });
 
@@ -817,7 +818,7 @@ void main() {
         await _pumpRealtime();
 
         expect((await repository.getCurrentIncident())!.id, incident.id);
-        expect(await repository.getSosState(), SosState.sent);
+        expect(await repository.getSosState(), SosState.sending);
         expect(
           requests.map((request) => request.terminalState),
           containsAllInOrder(<SosState>[SosState.cancelled, SosState.resolved]),
@@ -887,8 +888,8 @@ void main() {
 
         final current = await repository.getCurrentIncident();
         expect(current!.id, incident.id);
-        expect(current.state, SosState.sent);
-        expect(await repository.getSosState(), SosState.sent);
+        expect(current.state, SosState.sending);
+        expect(await repository.getSosState(), SosState.sending);
         expect(
           _hasDiagnostic('MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH'),
           isTrue,
@@ -915,7 +916,7 @@ void main() {
 
       final current = await repository.getCurrentIncident();
       expect(current?.id, incident.id);
-      expect(current?.state, SosState.sent);
+      expect(current?.state, SosState.sending);
     });
 
     test('rejects stale terminal replay after newer active incident', () async {
@@ -935,8 +936,8 @@ void main() {
 
       final current = await repository.getCurrentIncident();
       expect(current!.id, newerIncident.id);
-      expect(current.state, SosState.sent);
-      expect(await repository.getSosState(), SosState.sent);
+      expect(current.state, SosState.sending);
+      expect(await repository.getSosState(), SosState.sending);
       expect(
         _hasDiagnostic('MQTT_SOS_LIFECYCLE_REJECTED_IDENTITY_MISMATCH'),
         isTrue,
@@ -961,8 +962,8 @@ void main() {
 
         final current = await repository.getCurrentIncident();
         expect(current!.id, incident.id);
-        expect(current.state, SosState.sent);
-        expect(await repository.getSosState(), SosState.sent);
+        expect(current.state, SosState.sending);
+        expect(await repository.getSosState(), SosState.sending);
         expect(
           _hasDiagnostic('MQTT_SOS_LIFECYCLE_REJECTED_EXTERNAL_ONLY'),
           isTrue,
@@ -1513,17 +1514,25 @@ void main() {
       },
     );
 
+    // SOS cancel is MQTT-only (`cancel: true`). The backend confirms with a
+    // `cancelled` event or the active-SOS read; nothing else closes it.
+    MqttOperationalSosRepository mqttCancelRepository(
+      _FakeSosRemoteDataSource remoteDataSource,
+    ) => MqttOperationalSosRepository(
+      realtimeClient: realtimeClient,
+      remoteDataSource: remoteDataSource,
+      cancelRemoteDataSource: remoteDataSource,
+      mqttConfirmationWarningDelay: const Duration(milliseconds: 20),
+      cancelConfirmationWait: const Duration(milliseconds: 150),
+      deliveryBackoff: const <Duration>[Duration(milliseconds: 20)],
+    );
+
     test(
-      'null cancel response stays pending while backend remains active',
+      'MQTT cancel stays pending while the backend remains active; no REST',
       () async {
-        final remoteDataSource = _FakeSosRemoteDataSource()
-          ..cancelReturnsNull = true;
+        final remoteDataSource = _FakeSosRemoteDataSource();
         await repository.dispose();
-        repository = MqttOperationalSosRepository(
-          realtimeClient: realtimeClient,
-          remoteDataSource: remoteDataSource,
-          cancelRemoteDataSource: remoteDataSource,
-        );
+        repository = mqttCancelRepository(remoteDataSource);
         final local = await _triggerAppSos(repository);
         remoteDataSource.active = _localActiveDto(
           id: 'backend-still-active',
@@ -1534,25 +1543,19 @@ void main() {
 
         expect(pending.state, SosState.cancelRequested);
         expect(await repository.getSosState(), SosState.cancelRequested);
-        expect(
-          (await repository.getCurrentIncident())!.id,
-          'backend-still-active',
-        );
+        expect(realtimeClient.publishedSosCancels, isNotEmpty);
+        expect(repository.deliveryStatus.pendingCancel, isTrue);
         expect(remoteDataSource.lastCancelIncidentId, isNull);
+        expect(remoteDataSource.cancelCalls, 0);
       },
     );
 
     test(
-      'active cancel response stays pending until terminal MQTT evidence',
+      'pending MQTT cancel settles on terminal MQTT evidence',
       () async {
-        final remoteDataSource = _FakeSosRemoteDataSource()
-          ..keepActiveOnCancel = true;
+        final remoteDataSource = _FakeSosRemoteDataSource();
         await repository.dispose();
-        repository = MqttOperationalSosRepository(
-          realtimeClient: realtimeClient,
-          remoteDataSource: remoteDataSource,
-          cancelRemoteDataSource: remoteDataSource,
-        );
+        repository = mqttCancelRepository(remoteDataSource);
         final local = await _triggerAppSos(repository);
         remoteDataSource.active = _localActiveDto(
           id: 'backend-cancel-pending',
@@ -1580,14 +1583,9 @@ void main() {
     );
 
     test('explicit active-query absence confirms cancellation', () async {
-      final remoteDataSource = _FakeSosRemoteDataSource()
-        ..cancelReturnsNull = true;
+      final remoteDataSource = _FakeSosRemoteDataSource();
       await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-      );
+      repository = mqttCancelRepository(remoteDataSource);
       await _triggerAppSos(repository);
 
       final cancelled = await repository.cancelSos();
@@ -1595,23 +1593,20 @@ void main() {
       expect(cancelled.state, SosState.cancelled);
       expect(await repository.getSosState(), SosState.idle);
       expect(await repository.getCurrentIncident(), isNull);
+      expect(remoteDataSource.cancelCalls, 0);
     });
 
     test(
-      'HTTP failure of provisional sos-* settles cancelled locally',
+      'SOS whose trigger never reached the broker settles cancelled locally',
       () async {
-        final remoteDataSource = _FakeSosRemoteDataSource()
-          ..cancelError = const SosException(
-            'E_HTTP_SOS_CANCEL_FAILED',
-            'E_HTTP_SOS_CANCEL_FAILED',
-          );
+        final remoteDataSource = _FakeSosRemoteDataSource();
         await repository.dispose();
-        repository = MqttOperationalSosRepository(
-          realtimeClient: realtimeClient,
-          remoteDataSource: remoteDataSource,
-          cancelRemoteDataSource: remoteDataSource,
-        );
+        repository = mqttCancelRepository(remoteDataSource);
+        realtimeClient.publishSosHook = (_) async =>
+            throw const NetworkException('E_MQTT_NOT_CONNECTED', 'down');
         final local = await _triggerAppSos(repository);
+        realtimeClient.publishSosCancelHook = (_) async =>
+            throw const NetworkException('E_MQTT_NOT_CONNECTED', 'down');
 
         final cancelled = await repository.cancelSos();
 
@@ -1619,54 +1614,15 @@ void main() {
         expect(cancelled.state, SosState.cancelled);
         expect(await repository.getSosState(), SosState.idle);
         expect(await repository.getCurrentIncident(), isNull);
-        expect(remoteDataSource.lastCancelIncidentId, isNull);
-      },
-    );
-
-    test(
-      'missing cancel HTTP still settles provisional sos-* locally',
-      () async {
-        final local = await _triggerAppSos(repository);
-
-        final cancelled = await repository.cancelSos();
-
-        expect(local.id, startsWith('sos-'));
-        expect(cancelled.state, SosState.cancelled);
-        expect(await repository.getSosState(), SosState.idle);
+        expect(remoteDataSource.cancelCalls, 0);
       },
     );
 
     test('active-query exception keeps cancellation non-terminal', () async {
       final remoteDataSource = _FakeSosRemoteDataSource()
-        ..cancelReturnsNull = true
         ..getActiveSosError = StateError('query failed');
       await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-      );
-      await _triggerAppSos(repository);
-
-      final pending = await repository.cancelSos();
-
-      expect(pending.state, SosState.cancelRequested);
-      expect(await repository.getSosState(), SosState.cancelRequested);
-    });
-
-    test('missing-incident success keeps cancellation non-terminal', () async {
-      final remoteDataSource = _FakeSosRemoteDataSource()
-        ..cancelReturnsNull = true
-        ..getActiveSosError = const SosException(
-          'E_HTTP_SOS_GET_ACTIVE_FAILED',
-          'E_HTTP_SOS_GET_ACTIVE_FAILED',
-        );
-      await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-      );
+      repository = mqttCancelRepository(remoteDataSource);
       await _triggerAppSos(repository);
 
       final pending = await repository.cancelSos();
@@ -1676,123 +1632,69 @@ void main() {
     });
 
     test(
-      'wrong incident terminal response cannot close cancellation',
+      'terminal event for another incident cannot close cancellation',
       () async {
         final remoteDataSource = _FakeSosRemoteDataSource();
         await repository.dispose();
-        repository = MqttOperationalSosRepository(
-          realtimeClient: realtimeClient,
-          remoteDataSource: remoteDataSource,
-          cancelRemoteDataSource: remoteDataSource,
+        repository = mqttCancelRepository(remoteDataSource);
+        final local = await _triggerAppSos(repository);
+        remoteDataSource.active = _localActiveDto(
+          id: 'backend-target',
+          cycleKey: local.cycleKey,
         );
-        await _triggerAppSos(repository);
-        remoteDataSource.cancelResponse = _localActiveDto(
-          id: 'different-backend-incident',
-          state: SosState.cancelled,
-        );
-
         final pending = await repository.cancelSos();
-
         expect(pending.state, SosState.cancelRequested);
+
+        realtimeClient.emitEvent(
+          _lifecycleEvent(
+            incidentId: 'different-backend-incident',
+            state: 'cancelled',
+          ),
+        );
+        await _pumpRealtime();
+
         expect(await repository.getSosState(), SosState.cancelRequested);
+        expect(repository.deliveryStatus.pendingCancel, isTrue);
       },
     );
 
-    test('wrong cycle terminal response cannot close cancellation', () async {
+    test('late cancel confirmation cannot close a newer SOS generation',
+        () async {
       final remoteDataSource = _FakeSosRemoteDataSource();
       await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-      );
-      final local = await _triggerAppSos(repository);
-      remoteDataSource.cancelResponse = _localActiveDto(
-        id: local.id,
-        state: SosState.cancelled,
-        cycleKey: 'different-cycle',
-      );
-
-      final pending = await repository.cancelSos();
-
-      expect(pending.state, SosState.cancelRequested);
-      expect(await repository.getSosState(), SosState.cancelRequested);
-    });
-
-    test('wrong device terminal response cannot close cancellation', () async {
-      final remoteDataSource = _FakeSosRemoteDataSource();
-      await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-      );
-      final local = await repository.triggerSos(
-        triggerSource: 'ble_device_runtime_status',
-        positionSnapshot: _position(),
-        deviceId: '13579',
-        originatorNodeId: 13579,
-        incidentId: 'device-runtime-13579:9',
-        cycleKey: 'sos-cycle:13579:9',
-      );
-      remoteDataSource.cancelResponse = _localActiveDto(
-        id: local.id,
-        state: SosState.cancelled,
-        cycleKey: local.cycleKey,
-        deviceId: '24680',
-        originatorNodeId: 24680,
-      );
-
-      final pending = await repository.cancelSos();
-
-      expect(pending.state, SosState.cancelRequested);
-      expect(await repository.getSosState(), SosState.cancelRequested);
-    });
-
-    test('late cancel result cannot close a newer SOS generation', () async {
-      final cancelResponse = Completer<SosIncidentDto?>();
-      final remoteDataSource = _FakeSosRemoteDataSource()
-        ..cancelCompleter = cancelResponse;
-      await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-      );
+      repository = mqttCancelRepository(remoteDataSource);
       final first = await _triggerAppSos(repository, cycleKey: 'cycle-1');
+      remoteDataSource.active = _localActiveDto(
+        id: 'backend-first',
+        cycleKey: first.cycleKey,
+      );
 
       final cancellation = repository.cancelSos();
       await _pumpRealtime();
       await repository.clearSosRuntimeForSessionChange();
       final second = await _triggerAppSos(repository, cycleKey: 'cycle-2');
 
-      cancelResponse.complete(
-        _localActiveDto(
-          id: first.id,
-          state: SosState.cancelled,
+      realtimeClient.emitEvent(
+        _lifecycleEvent(
+          incidentId: first.id,
+          state: 'cancelled',
           cycleKey: first.cycleKey,
         ),
       );
       final result = await cancellation;
+      await _pumpRealtime();
 
-      expect(result.id, second.id);
-      expect(result.state, SosState.sent);
-      expect(await repository.getSosState(), SosState.sent);
+      expect(result.state, isNot(SosState.cancelled));
+      expect(await repository.getSosState(), SosState.sending);
       expect((await repository.getCurrentIncident())?.id, second.id);
     });
 
-    test('late timeout result cannot regress cancellation', () async {
+    test('late backend read cannot regress cancellation', () async {
       final query = Completer<SosIncidentDto?>();
       final remoteDataSource = _FakeSosRemoteDataSource()
-        ..getActiveSosCompleter = query
-        ..keepActiveOnCancel = true;
+        ..getActiveSosCompleter = query;
       await repository.dispose();
-      repository = MqttOperationalSosRepository(
-        realtimeClient: realtimeClient,
-        remoteDataSource: remoteDataSource,
-        cancelRemoteDataSource: remoteDataSource,
-        mqttConfirmationWarningDelay: const Duration(milliseconds: 1),
-      );
+      repository = mqttCancelRepository(remoteDataSource);
       final local = await _triggerAppSos(repository);
       remoteDataSource.active = _localActiveDto(
         id: 'backend-late-active',
@@ -1810,7 +1712,7 @@ void main() {
     });
 
     test(
-      'timeout result from a stale lifecycle generation is ignored',
+      'backend read from a stale lifecycle generation is ignored',
       () async {
         final query = Completer<SosIncidentDto?>();
         final remoteDataSource = _FakeSosRemoteDataSource()
@@ -2313,6 +2215,7 @@ final class _CountingSosStore extends MemorySharedPrefsSdkStore {
 final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
   SosIncidentDto? active;
   int getActiveSosCalls = 0;
+  int cancelCalls = 0;
   bool cancelReturnsNull = false;
   bool keepActiveOnCancel = false;
   SosIncidentDto? cancelResponse;
@@ -2358,6 +2261,7 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
     String? incidentId,
     String? cycleKey,
   }) async {
+    cancelCalls += 1;
     lastCancelIncidentId = incidentId;
     if (cancelError != null) {
       throw cancelError!;
@@ -2398,6 +2302,15 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
 }
 
 class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
+  final List<DateTime> publishedSosCancels = <DateTime>[];
+  Future<void> Function(DateTime timestamp)? publishSosCancelHook;
+
+  @override
+  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+    publishedSosCancels.add(timestamp);
+    await publishSosCancelHook?.call(timestamp);
+  }
+
   final StreamController<RealtimeConnectionState> _connectionController =
       StreamController<RealtimeConnectionState>.broadcast();
   final StreamController<RealtimeEvent> _eventController =
