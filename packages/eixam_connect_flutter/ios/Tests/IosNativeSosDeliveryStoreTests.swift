@@ -240,15 +240,23 @@ struct IosNativeSosDeliveryStoreTests {
   static func notificationIsOncePerCycleAndStage() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:40", deviceId: nil)
+    let started = clock
     let countdown = store.notification(for: .active)
-    check(countdown?.kind == .preSos && countdown?.cycleKey == "sos:7:40", "countdown notification, not 'SOS active'")
+    check(countdown?.kind == .preSos && countdown?.cycleKey == "sos:7:40@\(started)", "countdown notification, not 'SOS active'")
+    clock += 2_000
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:41", deviceId: nil)
-    check(store.notification(for: .active)?.cycleKey == "sos:7:40", "repeat frame: same key (deduped)")
+    check(store.notification(for: .active)?.cycleKey == "sos:7:40@\(started)", "repeat frame: same key (deduped)")
     clock += 20_000
     _ = store.promoteExpiredCountdown(deviceId: nil)
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:42", deviceId: nil)
     let active = store.notification(for: .active)
-    check(active?.kind == .active && active?.cycleKey == "sos:7:40", "active once, keyed by the cycle")
+    check(active?.kind == .active && active?.cycleKey == "sos:7:40@\(started)", "active once, keyed by the cycle")
     check(store.notification(for: .cancelled) == nil, "close frames handled by the caller")
+    // Next SOS that happens to reuse the same frame cycle key (4-bit packet
+    // id) still gets its own notifications.
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    clock += 60_000
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:40", deviceId: nil)
+    check(store.notification(for: .active)?.cycleKey != "sos:7:40@\(started)", "a new SOS is never deduplicated against the previous one")
   }
 }

@@ -44,6 +44,7 @@ final class IosNativeSosDeliveryStore {
     static let cycleKey = "native_sos_cycle_key"
     static let cycleNodeId = "native_sos_cycle_node_id"
     static let cycleDeadlineAt = "native_sos_cycle_deadline_at"
+    static let cycleStartedAt = "native_sos_cycle_started_at"
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
     static let pendingEvents = "pending_sos_events"
@@ -88,6 +89,7 @@ final class IosNativeSosDeliveryStore {
       case .idle:
         let deadline = now() + Self.countdownMs
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
+        defaults.set(now(), forKey: Keys.cycleStartedAt)
         transition.countdownDeadlineAt = deadline
       case .preConfirmSeen:
         // A later frame after the deadline: the phone was suspended when the
@@ -110,6 +112,7 @@ final class IosNativeSosDeliveryStore {
       }
       transition.countdownStopped = state == .preConfirmSeen
       setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
+      defaults.removeObject(forKey: Keys.cycleStartedAt)
     }
     return transition
   }
@@ -126,10 +129,18 @@ final class IosNativeSosDeliveryStore {
     case .idle:
       return nil
     case .preConfirmSeen:
-      return (.preSos, cycleKey)
+      return (.preSos, notificationCycleId)
     case .createPending:
-      return (.active, cycleKey)
+      return (.active, notificationCycleId)
     }
+  }
+
+  /// Unique per SOS: the frame cycle key alone repeats (4-bit packet id), so
+  /// a later SOS could be deduplicated against an earlier one.
+  var notificationCycleId: String? {
+    guard cycleState != .idle else { return nil }
+    let started = defaults.object(forKey: Keys.cycleStartedAt) as? Int ?? 0
+    return "\(cycleKey ?? "cycle")@\(started)"
   }
 
   /// Countdown timer fired, or a snapshot / resume / restoration found the
@@ -153,6 +164,7 @@ final class IosNativeSosDeliveryStore {
   func resetCycle() -> Bool {
     let wasCounting = cycleState == .preConfirmSeen
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
+    defaults.removeObject(forKey: Keys.cycleStartedAt)
     defaults.removeObject(forKey: Keys.pendingEvents)
     return wasCounting
   }

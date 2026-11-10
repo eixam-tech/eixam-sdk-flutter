@@ -1222,8 +1222,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil) deadline_present=\(parsed.deadlineAt != nil)")
 #endif
     if parsed.kind == .cancelled || parsed.kind == .resolved {
+      // Keyed by the SOS it closes (before the cycle is reset below), so the
+      // close of a later SOS is never deduplicated against an earlier one.
       requestBackgroundSosNotification(
-        for: parsed,
+        for: (parsed.kind, parsed.nodeId, parsed.packetId,
+              sosDelivery.notificationCycleId ?? parsed.cycleKey, parsed.deadlineAt),
         previous: previousNotificationContext
       )
     }
@@ -1310,7 +1313,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         // The TAG went active while no active frame reached the phone:
         // the local SOS notification never waits for Dart or the network.
         requestBackgroundSosNotification(
-          for: (.active, sosDelivery.cycleNodeId, nil, sosDelivery.cycleKey, nil),
+          for: (.active, sosDelivery.cycleNodeId, nil, sosDelivery.notificationCycleId, nil),
           previous: currentSosNotificationContext()
         )
       }
