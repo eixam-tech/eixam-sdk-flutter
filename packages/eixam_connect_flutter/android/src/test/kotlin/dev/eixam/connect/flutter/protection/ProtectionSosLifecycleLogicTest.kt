@@ -80,4 +80,21 @@ class ProtectionSosLifecycleLogicTest {
         assertEquals(ProtectionSosLifecycleState.cancelPending, outcome.nextState)
         assertFalse(outcome.shouldCancelBackend)
     }
+
+    @Test
+    fun `native hand-off identity is unique per SOS even with a recycled frame key`() {
+        val first = ProtectionSosLifecycleLogic.nativeHandoffCycleKey("sos:7:3", 1_000L)
+        val sameCycle = ProtectionSosLifecycleLogic.nativeHandoffCycleKey("sos:7:3", 1_000L)
+        val nextSos = ProtectionSosLifecycleLogic.nativeHandoffCycleKey("sos:7:3", 95_000L)
+
+        assertEquals("sos:7:3@1000", first)
+        assertEquals(first, sameCycle)
+        assertTrue(first != nextSos)
+    }
+
+    @Test
+    fun `native hand-off identity without a cycle start keeps the frame key`() {
+        assertEquals("sos:7:3", ProtectionSosLifecycleLogic.nativeHandoffCycleKey("sos:7:3", 0L))
+        assertEquals(null, ProtectionSosLifecycleLogic.nativeHandoffCycleKey(" ", 1_000L))
+    }
 }

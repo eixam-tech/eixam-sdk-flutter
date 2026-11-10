@@ -617,7 +617,10 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun markPendingSosCreate(reason: String): Map<String, Any?> {
         val now = System.currentTimeMillis()
-        val currentCycleKey = preferences.getString(keyPreSosCycleKey, null)
+        val currentCycleKey = ProtectionSosLifecycleLogic.nativeHandoffCycleKey(
+            frameCycleKey = preferences.getString(keyPreSosCycleKey, null),
+            cycleStartedAt = preferences.getLong(keyPreSosStartedAt, 0L),
+        )
         // Reuse a pending record only for the same TAG cycle. A record left
         // over from an earlier cycle must not lend its cycleKey/createdAt to
         // a new SOS (the SDK would treat the new SOS as the terminated one).
@@ -681,7 +684,10 @@ internal class ProtectionRuntimeStore(context: Context) {
         }
         val pendingCreate = pendingNativeSosCreateJson()
         val provisionalIncidentId = pendingCreate
-            ?.takeIf { it.optNullableString("cycleKey") == normalizedLifecycleId }
+            ?.takeIf {
+                // Hand-off identity is `<frame key>@<cycle start>`.
+                it.optNullableString("cycleKey")?.substringBefore('@') == normalizedLifecycleId
+            }
             ?.optNullableString("incidentId")
         val pending = ProtectionPendingNativeSosCancel(
             lifecycleId = normalizedLifecycleId,

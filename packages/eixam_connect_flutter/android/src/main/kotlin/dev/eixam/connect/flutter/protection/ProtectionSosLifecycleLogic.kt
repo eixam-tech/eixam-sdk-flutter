@@ -45,6 +45,19 @@ internal object ProtectionSosLifecycleLogic {
             )
         }
 
+    /**
+     * Identity of the native SOS hand-off for one TAG cycle. The frame cycle
+     * key (`sos:<node>:<4-bit packet id>`) repeats across SOS; the SDK fences
+     * a pending SOS whose cycle equals the one it just closed, so a new SOS
+     * with a recycled key was dropped as a replay. The cycle start makes it
+     * unique per SOS and stable for the same cycle.
+     */
+    fun nativeHandoffCycleKey(frameCycleKey: String?, cycleStartedAt: Long?): String? {
+        val key = frameCycleKey?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val started = cycleStartedAt?.takeIf { it > 0L } ?: return key
+        return "$key@$started"
+    }
+
     data class CloseOutcome(
         val nextState: ProtectionSosLifecycleState,
         val shouldCancelBackend: Boolean,
