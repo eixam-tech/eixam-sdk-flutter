@@ -8,6 +8,7 @@
 - A trigger stays `sending` until backend confirmation (no `sent` on publish). New `SosIncident.isDeliveryRetrying` and progress `detailCode: delivery_not_confirmed_retrying` ("not sent yet, retrying"). Additive.
 - Android background: a terminal state left by the previous SOS no longer drops the next native TAG SOS; a new native cycle after a terminal is admitted; the native pending create is pumped until accepted; the SOS notification intent is emitted before any network; the native TAG cancel is handed to the MQTT outbox (`ackPendingNativeSosCancel`), never REST; the native SOS notification shows when Dart is not listening.
 - Release builds log `SOS_OUTBOX_*` delivery lines (codes and counters only).
+- A backend event confirms a queued SOS trigger or cancel only when it can be that action's own effect: the action already got its PUBACK and the event's incident was not already seen closed by this phone (closed via an event or a confirmed cancel). A late or redelivered event of an earlier incident never confirms, retires or updates a newer SOS; it is left to retry + backend read.
 
 ## Unreleased — a healthy running update is never an interrupted one (F1)
 

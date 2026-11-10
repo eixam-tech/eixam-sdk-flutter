@@ -331,6 +331,110 @@ void main() {
     expect(await repository.getSosState(), SosState.sending);
     expect(repository.deliveryStatus.pendingTrigger, isTrue);
   });
+
+  group('confirmation belongs to the same incident (M1)', () {
+    test('a late event of an incident already seen closed never confirms a '
+        'new SOS', () async {
+      // Previous SOS: closed by the backend, seen by this phone.
+      realtime.emit(_event('cancelled', incidentId: 'old-a'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      remote.active = null;
+
+      await repository.triggerSos(
+        triggerSource: 'ble_device_runtime_status',
+        originatorNodeId: 7,
+        cycleKey: 'sos:7:40',
+      );
+      await eventually(() => realtime.publishedSos.isNotEmpty);
+      // QoS1 redelivery / actuator update of the closed incident.
+      realtime.emit(_event('acknowledged', incidentId: 'old-a'));
+      realtime.emit(_event('processed', incidentId: 'old-a'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(repository.deliveryStatus.pendingTrigger, isTrue);
+      expect(await repository.getSosState(), SosState.sending);
+    });
+
+    test('an event received before the trigger ever reached the broker is '
+        'not its confirmation', () async {
+      realtime.failSosPublishes = 1000;
+      remote.active = null;
+      await repository.triggerSos(
+        triggerSource: 'ble_device_runtime_status',
+        originatorNodeId: 7,
+        cycleKey: 'sos:7:41',
+      );
+      await eventually(() => realtime.sosPublishAttempts >= 1);
+
+      realtime.emit(_event('processed', incidentId: 'someone-else'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(repository.deliveryStatus.pendingTrigger, isTrue);
+    });
+
+    test('a repeated close of an earlier incident never confirms a TAG '
+        'cancel of the open SOS', () async {
+      realtime.emit(_event('cancelled', incidentId: 'old-c'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      // The open SOS the TAG cancels; the backend has not closed it yet.
+      remote.active = _activeDto('open-d');
+      realtime.onSosCancelPublished = () =>
+          realtime.emit(_event('cancelled', incidentId: 'old-c'));
+
+      await repository.deliverDeviceCancel(
+        reason: 'native_device_cycle_closed',
+      );
+      await eventually(() => realtime.publishedCancels.length >= 2);
+
+      expect(repository.deliveryStatus.pendingCancel, isTrue);
+
+      // The real close of the open SOS confirms it.
+      realtime.onSosCancelPublished = () {
+        remote.active = null;
+        realtime.emit(_event('cancelled', incidentId: 'open-d'));
+      };
+      await eventually(() => !repository.deliveryStatus.pendingCancel);
+    });
+
+    test('a cancel is not confirmed by a close that arrived before its own '
+        'publish', () async {
+      remote.active = _activeDto('open-e');
+      realtime.failCancelPublishes = 1000;
+      await repository.deliverDeviceCancel(
+        reason: 'native_device_cycle_closed',
+      );
+      await eventually(() => realtime.cancelPublishAttempts >= 1);
+
+      realtime.emit(_event('resolved', incidentId: 'other-f'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(repository.deliveryStatus.pendingCancel, isTrue);
+    });
+
+    test('a late close of an incident whose cancel the backend read confirmed '
+        'never retires the next SOS', () async {
+      remote.active = _activeDto('backend-g');
+      await repository.triggerSos(triggerSource: 'commercial_app');
+      realtime.emit(_event('processed', incidentId: 'backend-g'));
+      await eventually(() => !repository.deliveryStatus.pendingTrigger);
+      // Cancel confirmed by GET /v1/sdk/sos only (event missed).
+      realtime.onSosCancelPublished = () => remote.active = null;
+      await repository.cancelSos();
+      await eventually(() => !repository.deliveryStatus.pendingCancel);
+
+      realtime.onSosCancelPublished = null;
+      await repository.triggerSos(
+        triggerSource: 'ble_device_runtime_status',
+        originatorNodeId: 7,
+        cycleKey: 'sos:7:42',
+      );
+      await eventually(() => realtime.publishedSos.length >= 3);
+      realtime.emit(_event('cancelled', incidentId: 'backend-g'));
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(repository.deliveryStatus.pendingTrigger, isTrue);
+    });
+  });
 }
 
 SosIncidentDto _activeDto(String id) => SosIncidentDto(

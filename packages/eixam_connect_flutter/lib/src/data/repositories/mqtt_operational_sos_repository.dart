@@ -1607,6 +1607,15 @@ class MqttOperationalSosRepository
   void _handleOutboxConfirmed(SosOutboxAction action, String source) {
     if (action.kind == SosOutboxActionKind.cancel) {
       final target = _activeIncident;
+      // Whatever proved it (event or backend read), this incident is closed:
+      // a late event of it is never evidence for a newer SOS (M1).
+      final targetId = _normalizeIdentity(target?.id);
+      if (target != null &&
+          targetId != null &&
+          target.isBackendConfirmed &&
+          !_isProvisionalLocalSosIncidentId(target.id)) {
+        _rememberClosedBackendIncident(targetId);
+      }
       if (target != null && _stateMachine.current == SosState.cancelRequested) {
         _settleConfirmedCancel(target);
       }
@@ -1731,20 +1740,47 @@ class MqttOperationalSosRepository
 
   /// Backend lifecycle events confirm the outbox head regardless of the local
   /// incident authority gate (the local incident may be gone after a cancel).
-  void _confirmOutboxFromRealtime(MqttSosLifecycleUpdate update) {
+  ///
+  /// The backend ignores our incident identity, so an event proves delivery
+  /// of the head only when it can be the head's own effect (M1):
+  /// - the head already reached the broker (PUBACK): `sos/events` is not
+  ///   retained, so an event evaluated now arrived after that PUBACK;
+  /// - its incident was not already seen closed: a late or redelivered event
+  ///   of an earlier incident is never proof for a newer SOS or cancel.
+  /// Anything else is left to the outbox retry and its backend read.
+  ///
+  /// Returns true when [update] is an open-state event of an incident already
+  /// seen closed: the caller must not apply it to the local SOS either.
+  bool _confirmOutboxFromRealtime(MqttSosLifecycleUpdate update) {
     if (!update.authenticatedUserScoped || _isExternalOnlyLifecycle(update)) {
-      return;
+      return false;
     }
+    final incidentId = _normalizeIdentity(update.incidentId);
+    final closedBefore =
+        incidentId != null && _closedBackendIncidentIds.contains(incidentId);
     final state = update.state;
-    if (update.eventType == 'processed' ||
-        state == SosState.sent ||
-        state == SosState.acknowledged) {
+    final terminal = state == SosState.cancelled || state == SosState.resolved;
+    if (terminal && incidentId != null) {
+      _rememberClosedBackendIncident(incidentId);
+    }
+    if (closedBefore) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_CONFIRMATION_REJECTED reason=incident_already_closed '
+        'eventType=${update.eventType}',
+      );
+      return !terminal;
+    }
+    if (!terminal &&
+        (update.eventType == 'processed' ||
+            state == SosState.sent ||
+            state == SosState.acknowledged)) {
       _outbox.confirm(
         SosOutboxActionKind.trigger,
         source: 'mqtt_${update.eventType}',
+        matches: (head) => head.published,
       );
     }
-    if (state == SosState.cancelled || state == SosState.resolved) {
+    if (terminal) {
       // The backend closed the incident this trigger was delivered into
       // (one open SOS per user); republishing would open a zombie SOS.
       _outbox.confirm(
@@ -1763,8 +1799,22 @@ class MqttOperationalSosRepository
         _outbox.confirm(
           SosOutboxActionKind.cancel,
           source: 'mqtt_${state.name}',
+          matches: (head) => head.published,
         );
       }
+    }
+    return false;
+  }
+
+  /// Backend incidents this phone saw closed (bounded, newest last).
+  final List<String> _closedBackendIncidentIds = <String>[];
+
+  void _rememberClosedBackendIncident(String incidentId) {
+    _closedBackendIncidentIds
+      ..remove(incidentId)
+      ..add(incidentId);
+    if (_closedBackendIncidentIds.length > 32) {
+      _closedBackendIncidentIds.removeAt(0);
     }
   }
 
@@ -1850,6 +1900,7 @@ class MqttOperationalSosRepository
     _outboxRequests.clear();
     _outboxBackendConfirmations.clear();
     _neverPublishedTriggerCycles.clear();
+    _closedBackendIncidentIds.clear();
     await _outbox.clear(reason: 'session_cleared');
     _setState(SosState.idle);
     await _persistState();
@@ -1902,7 +1953,17 @@ class MqttOperationalSosRepository
       );
       return;
     }
-    _confirmOutboxFromRealtime(update);
+    if (_confirmOutboxFromRealtime(update) &&
+        !_isTerminalState(_stateMachine.current)) {
+      // An open-state event of an incident this phone already saw closed is
+      // never evidence for the current SOS (M1). A terminal local state is
+      // already protected by the regression block below.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_MQTT_EVENT_AUTHORITY_REJECTED reason=incident_already_closed '
+        'eventType=${update.eventType}',
+      );
+      return;
+    }
     if (_isDuplicateMqttEvent(update)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_MQTT_EVENT_AUTHORITY_REJECTED reason=duplicate_alias_or_event '
