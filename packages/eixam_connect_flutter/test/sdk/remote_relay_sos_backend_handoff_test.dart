@@ -3871,6 +3871,9 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   int ackPendingNativeSosCancelCalls = 0;
 
   @override
+  Future<void> setSosDeliveryPending(bool pending) async {}
+
+  @override
   Future<bool> ackPendingNativeSosCancel() async {
     ackPendingNativeSosCancelCalls++;
     return true;

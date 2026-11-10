@@ -808,6 +808,8 @@ class EixamConnectSdkImpl
   final List<String> _emittedNotificationIntentKeyOrder = <String>[];
   bool _disposed = false;
   Timer? _nativePendingSosPumpTimer;
+  StreamSubscription<SosOutboxStatus>? _sosDeliveryHoldSub;
+  bool? _sosDeliveryHoldReported;
   bool _nativePendingSosPumpRunning = false;
   int _nativePendingSosPumpAttempt = 0;
   bool _debugTransientAppSosCorrelationDropped = false;
@@ -1184,8 +1186,11 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
     );
     await _restorePersistedPreSosSession(trigger: 'initialize');
-    // A native SOS stored before process death is delivered now.
+    // A native SOS (or TAG cancel) stored before process death is delivered
+    // now.
     _startNativePendingSosPump('initialize');
+    unawaited(_recoverNativePendingCancel('initialize'));
+    _bindSosDeliveryHold();
     if (!config.deferRuntimeStartup) {
       await _rehydrateSosRuntimeState();
     }
@@ -3001,6 +3006,33 @@ class EixamConnectSdkImpl
     if (repository is SosRuntimeSessionIsolation) {
       await (repository as SosRuntimeSessionIsolation)
           .clearSosRuntimeForSessionChange();
+    }
+    await _dropNativeSosRecordsForSessionChange();
+  }
+
+  /// A native SOS / TAG cancel stored for the previous account must never be
+  /// delivered under the next one (native records carry no account scope).
+  Future<void> _dropNativeSosRecordsForSessionChange() async {
+    try {
+      final pending = await protectionPlatformAdapter
+          .peekPendingNativeSosCreate();
+      if (pending != null) {
+        await protectionPlatformAdapter.dropPendingNativeSosCreate(
+          pending.signature,
+          reason: 'session_changed',
+        );
+      }
+      final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
+      if (snapshot.pendingNativeSosCancelCount > 0) {
+        await protectionPlatformAdapter.ackPendingNativeSosCancel();
+      }
+      if (pending != null || snapshot.pendingNativeSosCancelCount > 0) {
+        sdkReleaseLog('SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed');
+      }
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_RECORDS_DROP_FAILED errorType=${error.runtimeType}',
+      );
     }
   }
 
@@ -13397,6 +13429,13 @@ class EixamConnectSdkImpl
     }
 
     if (normalizedKind == 'active') {
+      if (snapshot.pendingNativeSosCreateCount > 0) {
+        // Not yet handed to the outbox: deliver it (published and confirmed)
+        // like Android's pending create, never as a device-only incident.
+        _startNativePendingSosPump('ios_snapshot_active_pending');
+        return null;
+      }
+      // Already handed to the outbox (or an earlier build): show it.
       _applyIosBleSosActiveSnapshot(snapshot, trigger: trigger);
       return SosState.sent;
     }
@@ -13784,6 +13823,33 @@ class EixamConnectSdkImpl
       delay,
       () => unawaited(_runNativePendingSosPump('native_pending_pump')),
     );
+  }
+
+  /// The platform keeps background execution time (iOS) while the SOS outbox
+  /// holds an action the backend has not confirmed yet.
+  void _bindSosDeliveryHold() {
+    final repository = sosRepository;
+    if (repository is! MqttOperationalSosRepository ||
+        _sosDeliveryHoldSub != null) {
+      return;
+    }
+    void report(SosOutboxStatus status) {
+      final pending = !status.isEmpty;
+      if (_disposed || _sosDeliveryHoldReported == pending) {
+        return;
+      }
+      _sosDeliveryHoldReported = pending;
+      unawaited(
+        protectionPlatformAdapter.setSosDeliveryPending(pending).catchError(
+          (Object error) => sdkReleaseLog(
+            'SOS_OUTBOX_DELIVERY_HOLD_FAILED errorType=${error.runtimeType}',
+          ),
+        ),
+      );
+    }
+
+    report(repository.deliveryStatus);
+    _sosDeliveryHoldSub = repository.watchDeliveryStatus().listen(report);
   }
 
   /// Connectivity regained / app resumed / start-up: retry every pending SOS
@@ -25090,8 +25156,11 @@ class EixamConnectSdkImpl
             SosState.sending,
             source: 'native_backend_sync_queued',
           );
-          // Alarm/notification never waits for the network.
-          unawaited(_emitNativePendingSosActiveIntent());
+          // Alarm/notification never waits for the network. iOS posts its
+          // own native SOS notification (also without Dart).
+          if (protectionPlatformAdapter.platform != ProtectionPlatform.ios) {
+            unawaited(_emitNativePendingSosActiveIntent());
+          }
           _startNativePendingSosPump('native_backend_sync_queued');
         }
         return true;
@@ -28001,6 +28070,8 @@ class EixamConnectSdkImpl
     _disposed = true;
     _nativePendingSosPumpTimer?.cancel();
     _nativePendingSosPumpTimer = null;
+    unawaited(_sosDeliveryHoldSub?.cancel());
+    _sosDeliveryHoldSub = null;
     _cancelRemoteTerminalDeviceClearAckTimers();
     _advanceIdentityRevision();
     final recordingDisposal = _activityRecordings.dispose();

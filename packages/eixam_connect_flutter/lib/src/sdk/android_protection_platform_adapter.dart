@@ -156,7 +156,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
       'peekPendingNativeSosCreate',
     );
-    return raw == null ? null : _mapPendingNativeSosCreate(raw);
+    return raw == null ? null : mapProtectionPendingNativeSosCreate(raw);
   }
 
   @override
@@ -210,6 +210,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<void> setSosDeliveryPending(bool pending) async {}
+
+  @override
   Future<bool> dropPendingNativeSosCreate(
     String signature, {
     required String reason,
@@ -219,56 +222,6 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       <String, dynamic>{'signature': signature, 'reason': reason},
     );
     return dropped == true;
-  }
-
-  ProtectionPendingNativeSosCreate? _mapPendingNativeSosCreate(
-    Map<String, dynamic> value,
-  ) {
-    final signature = (value['signature'] as String?)?.trim();
-    final incidentId = (value['incidentId'] as String?)?.trim();
-    final cycleKey = (value['cycleKey'] as String?)?.trim();
-    final correlationId = (value['correlationId'] as String?)?.trim();
-    if (signature == null ||
-        signature.isEmpty ||
-        incidentId == null ||
-        incidentId.isEmpty ||
-        cycleKey == null ||
-        cycleKey.isEmpty ||
-        correlationId == null ||
-        correlationId.isEmpty) {
-      return null;
-    }
-    return ProtectionPendingNativeSosCreate(
-      signature: signature,
-      incidentId: incidentId,
-      cycleKey: cycleKey,
-      correlationId: correlationId,
-      source: (value['source'] as String?)?.trim().isNotEmpty == true
-          ? (value['source'] as String).trim()
-          : 'native_protection_sos',
-      triggerSource:
-          (value['triggerSource'] as String?)?.trim().isNotEmpty == true
-          ? (value['triggerSource'] as String).trim()
-          : 'native_protection_sos',
-      deviceId: (value['deviceId'] as String?)?.trim(),
-      hardwareId: (value['hardwareId'] as String?)?.trim(),
-      nodeId: (value['nodeId'] as num?)?.toInt(),
-      createdAt: _readNativeMs(value['createdAt']) ?? DateTime.now().toUtc(),
-      updatedAt: _readNativeMs(value['updatedAt']),
-      lastAttemptAt: _readNativeMs(value['lastAttemptAt']),
-      lastPublishedAt: _readNativeMs(value['lastPublishedAt']),
-      retryCount: (value['retryCount'] as num?)?.toInt() ?? 0,
-      state: (value['state'] as String?)?.trim().isNotEmpty == true
-          ? (value['state'] as String).trim()
-          : 'pending_mqtt',
-    );
-  }
-
-  DateTime? _readNativeMs(Object? value) {
-    if (value is num && value > 0) {
-      return DateTime.fromMillisecondsSinceEpoch(value.toInt(), isUtc: true);
-    }
-    return null;
   }
 
   ProtectionPendingExternalRelayCancelEvent? _mapPendingExternalRelayCancel(

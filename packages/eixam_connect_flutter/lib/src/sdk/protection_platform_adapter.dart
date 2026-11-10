@@ -422,6 +422,11 @@ abstract class ProtectionPlatformAdapter {
   /// Retires the native pending TAG cancel once the SDK durably queued it for
   /// MQTT delivery. Returns false when the platform keeps no such record.
   Future<bool> ackPendingNativeSosCancel();
+
+  /// Tells the platform whether the SDK SOS outbox still holds an action the
+  /// backend has not confirmed. iOS keeps background execution time while it
+  /// does; Android needs nothing (foreground service).
+  Future<void> setSosDeliveryPending(bool pending);
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -507,6 +512,9 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<bool> ackPendingNativeSosCancel() async => false;
+
+  @override
+  Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
   Future<bool> dropPendingNativeSosCreate(
