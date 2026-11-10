@@ -170,9 +170,16 @@ final class IosNativeSosDeliveryStore {
   }
 
   private func promote(reason: String, deviceId: String?) {
-    let key = cycleKey ?? "native-sos-cycle-\(now())"
+    let frameKey = cycleKey ?? "native-sos-cycle"
     let nodeId = cycleNodeId
-    setCycle(.createPending, key: key, nodeId: nodeId, deadlineAt: nil)
+    let started = defaults.object(forKey: Keys.cycleStartedAt) as? Int ?? now()
+    setCycle(.createPending, key: frameKey, nodeId: nodeId, deadlineAt: nil)
+    defaults.set(started, forKey: Keys.cycleStartedAt)
+    // The frame cycle key (node + 4-bit packet id) repeats across SOS. The
+    // SDK fences a pending SOS whose cycle equals the one it just closed, so
+    // a new SOS with a recycled key was dropped as a replay (device QA): the
+    // hand-off identity is unique per cycle.
+    let key = "\(frameKey)@\(started)"
     let timestamp = now()
     // Reuse a pending record only for the same TAG cycle: an older record
     // must never lend its identity to a new SOS.

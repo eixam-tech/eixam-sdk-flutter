@@ -30,6 +30,7 @@ struct IosNativeSosDeliveryStoreTests {
     activeFrameStartsCountdownNotSos()
     repeatedFramesOfActiveSosAreNotNewSos()
     notificationIsOncePerCycleAndStage()
+    recycledFrameKeyGivesNewIdentity()
     claimedCreateIsKeptOnCancel()
     resetCycleNeverPromotesAfterStop()
     oldQueuedEventsAreNotReplayed()
@@ -63,8 +64,8 @@ struct IosNativeSosDeliveryStoreTests {
     let promoted = store.promoteExpiredCountdown(deviceId: nil)
     check(promoted.queuedCreate && promoted.countdownStopped, "promoted at deadline")
     let pending = store.peekPendingCreate()
-    check(pending?["cycleKey"] as? String == "sos:7:2", "cycle identity kept")
-    check(pending?["incidentId"] as? String == "native-sos-sos-7-2", "stable incident id")
+    check((pending?["cycleKey"] as? String)?.hasPrefix("sos:7:2@") == true, "cycle identity kept")
+    check((pending?["incidentId"] as? String)?.hasPrefix("native-sos-sos-7-2-") == true, "stable incident id")
     check(pending?["nodeId"] as? Int == 7 && pending?["deviceId"] as? String == "7", "device identity")
     check(pending?["state"] as? String == "pending_mqtt", "pending_mqtt state")
     check(store.promoteExpiredCountdown(deviceId: nil) == IosNativeSosTransition(), "promoted once")
@@ -76,7 +77,7 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 25_000
     let next = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:4", deviceId: nil)
     check(next.queuedCreate, "late countdown frame promotes")
-    check(store.peekPendingCreate()?["cycleKey"] as? String == "sos:7:3", "keeps the cycle's first identity")
+    check((store.peekPendingCreate()?["cycleKey"] as? String)?.hasPrefix("sos:7:3@") == true, "keeps the cycle's first identity")
   }
 
   static func cancelBeforeCreateQueuesNoBackendCancel() {
@@ -125,7 +126,7 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 20_000
     check(store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "queued at its deadline")
     let second = store.peekPendingCreate()
-    check(second?["cycleKey"] as? String == "sos:7:12", "new cycle identity")
+    check((second?["cycleKey"] as? String)?.hasPrefix("sos:7:12@") == true, "new cycle identity")
     check(second?["signature"] as? String != first?["signature"] as? String, "new signature")
     check(second?["createdAt"] as? Int == clock, "new creation time")
   }
@@ -258,5 +259,24 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 60_000
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:40", deviceId: nil)
     check(store.notification(for: .active)?.cycleKey != "sos:7:40@\(started)", "a new SOS is never deduplicated against the previous one")
+  }
+
+  static func recycledFrameKeyGivesNewIdentity() {
+    // Real TAG: 4-bit packet id, so a later SOS can start with the same
+    // frame cycle key as the previous one.
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:3", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    let first = store.peekPendingCreate()
+    _ = store.ackPendingCreate(signature: first?["signature"] as? String ?? "")
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    clock += 90_000
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:3", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    let second = store.peekPendingCreate()
+    check(second?["cycleKey"] as? String != first?["cycleKey"] as? String, "new SOS never reuses the previous identity")
+    check(second?["incidentId"] as? String != first?["incidentId"] as? String, "new incident id")
   }
 }
