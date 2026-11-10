@@ -2,6 +2,7 @@ import CoreBluetooth
 import Flutter
 import UIKit
 import UserNotifications
+import os.log
 
 final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
   private static let methodChannelName = "dev.eixam.connect_flutter/protection_runtime/methods"
@@ -1220,10 +1221,12 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 #if DEBUG
     print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil) deadline_present=\(parsed.deadlineAt != nil)")
 #endif
-    requestBackgroundSosNotification(
-      for: parsed,
-      previous: previousNotificationContext
-    )
+    if parsed.kind == .cancelled || parsed.kind == .resolved {
+      requestBackgroundSosNotification(
+        for: parsed,
+        previous: previousNotificationContext
+      )
+    }
     var eventPayload: [String: Any] = [
       "payloadHex": payloadHex,
       "source": source,
@@ -1249,6 +1252,14 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       reason: parsed.kind == .active ? "device_cycle_active" : "device_cycle_\(parsed.kind.rawValue)",
       notifyActive: false
     )
+    // One notification per SOS: keyed by the native cycle (the TAG repeats
+    // its frames with a new packet id), countdown vs active by cycle stage.
+    if let notification = sosDelivery.notification(for: parsed.kind) {
+      requestBackgroundSosNotification(
+        for: (notification.kind, parsed.nodeId, nil, notification.cycleKey, nil),
+        previous: previousNotificationContext
+      )
+    }
   }
 
   // MARK: - Background SOS delivery (Android hand-off contract)
@@ -1365,7 +1376,7 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
   /// Release-visible, identifier-free diagnostics (device QA via syslog).
   private func logSosDelivery(_ message: String) {
-    NSLog("[EIXAM_SOS] %@", message)
+    os_log("[EIXAM_SOS] %{public}@", log: .default, type: .default, message)
   }
 
   private func sourceName(for characteristic: CBCharacteristic) -> String {

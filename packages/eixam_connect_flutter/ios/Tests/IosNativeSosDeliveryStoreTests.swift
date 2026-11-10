@@ -29,6 +29,7 @@ struct IosNativeSosDeliveryStoreTests {
     eventQueueKeepsOrderAndOnlySosEvents()
     activeFrameStartsCountdownNotSos()
     repeatedFramesOfActiveSosAreNotNewSos()
+    notificationIsOncePerCycleAndStage()
     claimedCreateIsKeptOnCancel()
     resetCycleNeverPromotesAfterStop()
     oldQueuedEventsAreNotReplayed()
@@ -234,5 +235,20 @@ struct IosNativeSosDeliveryStoreTests {
       check(repeated == IosNativeSosTransition(), "repeat \(packet) of the delivered SOS is ignored")
     }
     check(store.pendingCreateCount == 0, "no second SOS")
+  }
+
+  static func notificationIsOncePerCycleAndStage() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:40", deviceId: nil)
+    let countdown = store.notification(for: .active)
+    check(countdown?.kind == .preSos && countdown?.cycleKey == "sos:7:40", "countdown notification, not 'SOS active'")
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:41", deviceId: nil)
+    check(store.notification(for: .active)?.cycleKey == "sos:7:40", "repeat frame: same key (deduped)")
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:42", deviceId: nil)
+    let active = store.notification(for: .active)
+    check(active?.kind == .active && active?.cycleKey == "sos:7:40", "active once, keyed by the cycle")
+    check(store.notification(for: .cancelled) == nil, "close frames handled by the caller")
   }
 }

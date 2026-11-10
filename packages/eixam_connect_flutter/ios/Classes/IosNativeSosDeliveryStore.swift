@@ -114,6 +114,24 @@ final class IosNativeSosDeliveryStore {
     return transition
   }
 
+  /// Which local SOS notification a countdown/active frame raises once the
+  /// cycle was updated: the countdown stage → pre-SOS, the handed-over stage
+  /// → active. Keyed by the cycle, so the TAG's repeated frames (new packet
+  /// id each time) raise it once. Close frames are handled by the caller.
+  func notification(
+    for kind: IosBleSosSnapshotKind
+  ) -> (kind: IosBleSosSnapshotKind, cycleKey: String?)? {
+    guard kind == .preSos || kind == .active else { return nil }
+    switch cycleState {
+    case .idle:
+      return nil
+    case .preConfirmSeen:
+      return (.preSos, cycleKey)
+    case .createPending:
+      return (.active, cycleKey)
+    }
+  }
+
   /// Countdown timer fired, or a snapshot / resume / restoration found the
   /// countdown already elapsed while the app was suspended.
   func promoteExpiredCountdown(deviceId: String?) -> IosNativeSosTransition {
