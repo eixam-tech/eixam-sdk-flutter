@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — a healthy running update is never an interrupted one (F1)
+
+- `DfuRecoveryControl` no longer treats the session an ordinary update or migration in this process is transferring as an interrupted update. While it runs (also while the TAG reboots into its DFU bootloader) the status is `unknown` / `updateInProgress` with no `deviceId` and `forwardActions == [checkAgain]`: no cable action, no interruption marker. Before, every OTA/migration published `forwardActions` starting with `openCableRecoveryGuide`, which hosts render as "The update was interrupted".
+- A session that reaches a terminal state re-derives the status at once instead of on the next observe tick (up to `observeInterval` later, longer while the post-DFU verification held the lock). A verified install clears the recovery bookkeeping of that TAG (still `recovered` when an interruption was recorded for it); a failed or aborted transfer that leaves the TAG in its bootloader is classified (E1 + cable) right away.
+- Unchanged: an interrupted update recorded for a device (persisted session from a run that ended without success, or a failure in this run) keeps every existing state and action, including the cable page while another owner holds it (F19). Internal: `FirmwareUpdateCoordinator.liveUpdateSessionId` / `liveUpdateEnded`. No public API change.
+
 ## Unreleased — never a recovery state without a way forward (F19)
 
 - `DfuRecoveryAction` gains two host-side values that never touch the TAG: `openCableRecoveryGuide` (show the cable recovery page, E2) and `checkAgain` (re-read the status). `availableAction` still only carries SDK-run actions. BREAKING for exhaustive `switch`es over `DfuRecoveryAction` in hosts.
