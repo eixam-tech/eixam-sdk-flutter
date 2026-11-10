@@ -136,28 +136,44 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     _completionSub = null;
   }
 
+  /// A session reached a terminal state: re-derive the status at once
+  /// instead of on the next tick, so a finished update never keeps a stale
+  /// status and a failed one is classified right away.
+  ///
   /// A verified install (state completed = reconnect + installed version
-  /// verified) on the TAG whose update was interrupted. After a cable recovery
-  /// the interrupted session is superseded and the stock -> EIXAM migration
-  /// installs and verifies the firmware in a new session; this is what turns
-  /// that into the `recovered` ("Ready") state. Only for a TAG that was shown
-  /// an interrupted state, never for an ordinary update.
+  /// verified) on the TAG whose update was interrupted turns into the
+  /// `recovered` ("Ready") state: after a cable recovery the interrupted
+  /// session is superseded and the stock -> EIXAM migration installs and
+  /// verifies the firmware in a new session. A verified install on a TAG
+  /// with no recorded interruption clears that TAG's recovery bookkeeping.
   Future<void> _noteFirmwareSession(FirmwareUpdateSession session) async {
-    if (session.state != FirmwareUpdateState.completed) return;
+    if (session.completedAt == null && !session.isCompleted) return;
     try {
-      final record = await recordStore.load();
-      final deviceId = record.deviceId;
-      if (record.interruptedAt == null ||
-          record.recoveredAt != null ||
-          deviceId == null ||
-          !_sameIdentity(
-            session.deviceId,
-            session.hardwareId,
-            deviceId,
-            record.hardwareId,
-          )) {
-        return;
-      }
+      if (session.isCompleted) await _noteVerifiedInstall(session);
+    } catch (_) {
+      // Best-effort: the TAG works; only the success card is missed.
+    }
+    // A recovery action publishes its own final status; refreshing between
+    // its DFU and its confirmation would flash an intermediate state.
+    if (_actionLock) return;
+    // No forced scan: the scan cache ages out within one observe interval,
+    // and a completed update needs none (it no longer has a session).
+    await _refreshAndEmit();
+  }
+
+  Future<void> _noteVerifiedInstall(FirmwareUpdateSession session) async {
+    final record = await recordStore.load();
+    final deviceId = record.deviceId;
+    final sameTag =
+        deviceId == null ||
+        _sameIdentity(
+          session.deviceId,
+          session.hardwareId,
+          deviceId,
+          record.hardwareId,
+        );
+    if (!sameTag || record.recoveredAt != null) return;
+    if (record.interruptedAt != null && deviceId != null) {
       await recordStore.save(
         DfuRecoveryRecord(
           recoveredAt: _clock(),
@@ -165,20 +181,39 @@ final class DfuRecoveryController implements DfuRecoveryControl {
           hardwareId: record.hardwareId,
         ),
       );
-      _scanCacheAt = null;
-      await _refreshAndEmit();
-    } catch (_) {
-      // Best-effort: the TAG works; only the success card is missed.
+      return;
+    }
+    if (record.sessionId != null ||
+        record.deviceId != null ||
+        record.firstMissAt != null ||
+        record.cablePreparedAt != null) {
+      await recordStore.save(
+        DfuRecoveryRecord(
+          staleLinkDeviceId: record.staleLinkDeviceId,
+          staleLinkAt: record.staleLinkAt,
+        ),
+      );
     }
   }
 
+  bool _refreshQueued = false;
+
   Future<void> _refreshAndEmit() async {
-    if (_refreshing) return;
+    if (_refreshing) {
+      // The running refresh may have read the state before this change.
+      _refreshQueued = true;
+      return;
+    }
     _refreshing = true;
     try {
-      await getDfuRecoveryStatus();
-    } catch (_) {
-      // Observation is best-effort; the next tick retries.
+      do {
+        _refreshQueued = false;
+        try {
+          await getDfuRecoveryStatus();
+        } catch (_) {
+          // Observation is best-effort; the next tick retries.
+        }
+      } while (_refreshQueued);
     } finally {
       _refreshing = false;
     }
@@ -622,11 +657,14 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     final active = await firmware.getActiveFirmwareUpdate();
     // A verified version mismatch is a running TAG, not an interrupted update:
     // the firmware card owns it (retry / contact support), no recovery card.
+    // The session an update in this process is transferring right now is
+    // live, not interrupted, even while the TAG sits in its bootloader (F1).
     final session =
         active != null &&
             !active.isCompleted &&
             active.nativeTransferEngaged &&
-            !active.isInstalledVersionMismatch
+            !active.isInstalledVersionMismatch &&
+            active.sessionId != firmware.liveUpdateSessionId
         ? active
         : null;
     var record = await recordStore.load();
@@ -664,9 +702,10 @@ final class DfuRecoveryController implements DfuRecoveryControl {
     final dismissed =
         session != null && _dismissedSessionThisRun == session.sessionId;
     final latched = record.recoveredAt != null && session == null;
+    // An update that already ended only holds the lock to persist its result.
     final inProgress =
         _running ||
-        firmware.operationInProgress ||
+        (firmware.operationInProgress && !firmware.liveUpdateEnded) ||
         (isOtherOperationInProgress?.call() ?? false);
 
     DfuRecoveryEvidence evidence({

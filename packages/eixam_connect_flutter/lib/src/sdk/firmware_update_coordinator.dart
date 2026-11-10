@@ -111,6 +111,19 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
   /// A firmware operation (update, recovery) currently owns the device.
   bool get operationInProgress => _operationInProgress;
 
+  String? _liveUpdateSessionId;
+  bool _liveUpdateEnded = false;
+
+  /// Session that an ordinary update or migration started in this process is
+  /// transferring or verifying right now. It is live, never an interrupted
+  /// update, even though its transfer is engaged and the TAG may be visible
+  /// as the DFU bootloader. Null once it reaches a terminal state.
+  String? get liveUpdateSessionId => _liveUpdateSessionId;
+
+  /// That update reached its terminal state; the lock ([operationInProgress])
+  /// is held only to persist the result. Cleared with the lock.
+  bool get liveUpdateEnded => _liveUpdateEnded;
+
   /// SDK platform evidence only; never a host timeout or user-facing retry
   /// policy. Mobile BLE implementations may have no evidence while absent.
   final Future<FirmwarePhysicalRecoveryEvidence?> Function()?
@@ -649,6 +662,7 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     // cannot have stranded the device in the bootloader, so it must NOT be
     // routed to recovery. Read by _completeTransferFailure on the error paths.
     var nativeDfuEngaged = false;
+    _liveUpdateSessionId = session.sessionId;
     try {
       final artifactBytes = await _prepareArtifact(session, release);
 
@@ -1661,6 +1675,8 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
       return await action();
     } finally {
       _operationInProgress = false;
+      _liveUpdateSessionId = null;
+      _liveUpdateEnded = false;
     }
   }
 
@@ -2217,6 +2233,11 @@ class FirmwareUpdateCoordinator implements DeviceMigrationFirmwareService {
     );
     _sessions[session.sessionId] = next;
     _queuePersist(next);
+    if (_liveUpdateSessionId == session.sessionId) {
+      // Before the emit: listeners must already see the update as ended.
+      _liveUpdateSessionId = null;
+      _liveUpdateEnded = true;
+    }
     _emit(
       next,
       state,
