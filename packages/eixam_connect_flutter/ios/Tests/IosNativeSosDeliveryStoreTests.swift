@@ -20,7 +20,6 @@ struct IosNativeSosDeliveryStoreTests {
     setbuf(stdout, nil)
     countdownPromotesToPendingCreate()
     countdownExpiredWhileSuspendedPromotesOnNextFrame()
-    activeFrameQueuesCreateOnce()
     cancelBeforeCreateQueuesNoBackendCancel()
     cancelAfterCreateQueuesDurableCancel()
     backendTerminalNeverQueuesCancel()
@@ -28,8 +27,9 @@ struct IosNativeSosDeliveryStoreTests {
     pendingRecordsSurviveProcessDeath()
     signatureGuardsAckAndDrop()
     eventQueueKeepsOrderAndOnlySosEvents()
+    activeFrameStartsCountdownNotSos()
+    repeatedFramesOfActiveSosAreNotNewSos()
     claimedCreateIsKeptOnCancel()
-    staleCreatePendingStartsNewCycleOnCountdown()
     resetCycleNeverPromotesAfterStop()
     oldQueuedEventsAreNotReplayed()
     if failures > 0 {
@@ -78,21 +78,6 @@ struct IosNativeSosDeliveryStoreTests {
     check(store.peekPendingCreate()?["cycleKey"] as? String == "sos:7:3", "keeps the cycle's first identity")
   }
 
-  static func activeFrameQueuesCreateOnce() {
-    let (store, _) = makeStore()
-    _ = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:5", deviceId: nil)
-    let active = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:6", deviceId: nil)
-    check(active.queuedCreate && active.countdownStopped, "active frame promotes and stops countdown")
-    check(store.peekPendingCreate()?["cycleKey"] as? String == "sos:7:5", "same cycle identity")
-    let repeated = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:7", deviceId: nil)
-    check(!repeated.queuedCreate, "repeated active frame is not a new SOS")
-
-    let (fresh, _) = makeStore()
-    let direct = fresh.observe(kind: .active, nodeId: nil, cycleKey: nil, deviceId: "PERIPHERAL-1")
-    check(direct.queuedCreate, "active without countdown still queues")
-    check(fresh.peekPendingCreate()?["deviceId"] as? String == "PERIPHERAL-1", "falls back to protected device id")
-  }
-
   static func cancelBeforeCreateQueuesNoBackendCancel() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:8", deviceId: nil)
@@ -105,6 +90,8 @@ struct IosNativeSosDeliveryStoreTests {
   static func cancelAfterCreateQueuesDurableCancel() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:9", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
     clock += 5_000
     let cancelled = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
     check(cancelled.queuedCancel, "TAG cancel of an SOS queues a backend cancel")
@@ -117,6 +104,8 @@ struct IosNativeSosDeliveryStoreTests {
   static func backendTerminalNeverQueuesCancel() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:10", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
     let resolved = store.observe(kind: .resolved, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
     check(!resolved.queuedCancel, "0xE3 is never a TAG cancel")
     check(store.pendingCancelCount == 0 && store.cycleState == .idle, "closed without cancel")
@@ -125,12 +114,16 @@ struct IosNativeSosDeliveryStoreTests {
   static func newCycleAfterCloseGetsNewIdentity() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:11", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
     let first = store.peekPendingCreate()
     _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
     clock += 1_000
     let next = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:12", deviceId: nil)
+    check(next.countdownDeadlineAt != nil, "new SOS after a close starts its countdown")
+    clock += 20_000
+    check(store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "queued at its deadline")
     let second = store.peekPendingCreate()
-    check(next.queuedCreate, "new SOS after a close is queued")
     check(second?["cycleKey"] as? String == "sos:7:12", "new cycle identity")
     check(second?["signature"] as? String != first?["signature"] as? String, "new signature")
     check(second?["createdAt"] as? Int == clock, "new creation time")
@@ -154,6 +147,8 @@ struct IosNativeSosDeliveryStoreTests {
   static func signatureGuardsAckAndDrop() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:14", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
     let signature = store.peekPendingCreate()?["signature"] as? String ?? ""
     check(!store.ackPendingCreate(signature: "other"), "foreign signature rejected")
     store.markPendingCreate(signature: signature, state: "mqtt_flush_started")
@@ -183,26 +178,13 @@ struct IosNativeSosDeliveryStoreTests {
   static func claimedCreateIsKeptOnCancel() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:20", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
     let signature = store.peekPendingCreate()?["signature"] as? String ?? ""
     store.markPendingCreate(signature: signature, state: "mqtt_flush_started")
     let cancelled = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
     check(cancelled.queuedCancel, "cancel queued")
     check(store.pendingCreateCount == 1, "a claimed create stays: the SDK outbox orders the cancel after it")
-  }
-
-  static func staleCreatePendingStartsNewCycleOnCountdown() {
-    let (store, _) = makeStore()
-    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:21", deviceId: nil)
-    let signature = store.peekPendingCreate()?["signature"] as? String ?? ""
-    let blocked = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:22", deviceId: nil)
-    check(blocked.countdownDeadlineAt == nil, "same SOS still unclaimed: no new cycle")
-    _ = store.ackPendingCreate(signature: signature)
-    // Resolved while out of range: no close frame. Next SOS starts.
-    let next = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:23", deviceId: nil)
-    check(next.countdownDeadlineAt != nil, "new countdown after a handed-over SOS")
-    clock += 20_000
-    check(store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "new SOS queued")
-    check(store.peekPendingCreate()?["cycleKey"] as? String == "sos:7:23", "new identity")
   }
 
   static func resetCycleNeverPromotesAfterStop() {
@@ -220,5 +202,37 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 16 * 60 * 1000
     store.enqueue(event: ["type": "nativeBackendSyncQueued", "timestamp": clock])
     check(store.drainEvents().count == 1, "only recent events replayed")
+  }
+
+  static func activeFrameStartsCountdownNotSos() {
+    // Real TAG (fw 2.7.68): first frame at countdown start is sosType 3.
+    let (store, _) = makeStore()
+    let first = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:30", deviceId: nil)
+    check(!first.queuedCreate, "no SOS for the backend inside the countdown")
+    check(first.countdownDeadlineAt == clock + 20_000, "countdown started")
+    clock += 10_000
+    let cancelled = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    check(!cancelled.queuedCancel && store.pendingCreateCount == 0, "cancel in the countdown stays local")
+
+    let (fresh, _) = makeStore()
+    _ = fresh.observe(kind: .active, nodeId: nil, cycleKey: nil, deviceId: "PERIPHERAL-1")
+    clock += 20_000
+    check(fresh.promoteExpiredCountdown(deviceId: "PERIPHERAL-1").queuedCreate, "queued at the deadline")
+    check(fresh.peekPendingCreate()?["deviceId"] as? String == "PERIPHERAL-1", "falls back to protected device id")
+  }
+
+  static func repeatedFramesOfActiveSosAreNotNewSos() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:31", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    let signature = store.peekPendingCreate()?["signature"] as? String ?? ""
+    _ = store.ackPendingCreate(signature: signature)
+    for packet in 32...35 {
+      clock += 5_000
+      let repeated = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:\(packet)", deviceId: nil)
+      check(repeated == IosNativeSosTransition(), "repeat \(packet) of the delivered SOS is ignored")
+    }
+    check(store.pendingCreateCount == 0, "no second SOS")
   }
 }

@@ -79,34 +79,23 @@ final class IosNativeSosDeliveryStore {
   ) -> IosNativeSosTransition {
     var transition = IosNativeSosTransition()
     switch kind {
-    case .preSos:
+    case .preSos, .active:
+      // Firmware sosType 1..3 is the SOS kind / fix quality, not the
+      // countdown phase: the TAG sends the same frames from the start of its
+      // 20 s countdown (Android: first SOS frame starts the countdown). The
+      // backend is told only once the countdown elapsed without a cancel.
       switch cycleState {
       case .idle:
         let deadline = now() + Self.countdownMs
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
         transition.countdownDeadlineAt = deadline
       case .preConfirmSeen:
-        // A repeated countdown frame after the deadline means the TAG went
-        // active while the phone was suspended.
+        // A later frame after the deadline: the phone was suspended when the
+        // countdown elapsed.
         transition = promoteExpiredCountdown(deviceId: deviceId)
       case .createPending:
-        // A countdown frame only starts an SOS. Once the previous SOS was
-        // handed to the SDK (its close frame may never have reached the
-        // phone, e.g. resolved while out of range), this is a new SOS.
-        if pendingCreateRecord == nil {
-          let deadline = now() + Self.countdownMs
-          setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
-          transition.countdownDeadlineAt = deadline
-        }
-      }
-    case .active:
-      if cycleState != .createPending {
-        if cycleState == .idle {
-          setCycle(.createPending, key: cycleKey, nodeId: nodeId, deadlineAt: nil)
-        }
-        transition.countdownStopped = cycleState == .preConfirmSeen
-        promote(reason: "device_cycle_active", deviceId: deviceId)
-        transition.queuedCreate = true
+        // Repeated frames of the same SOS (the TAG keeps sending them).
+        break
       }
     case .cancelled, .resolved:
       let state = cycleState
