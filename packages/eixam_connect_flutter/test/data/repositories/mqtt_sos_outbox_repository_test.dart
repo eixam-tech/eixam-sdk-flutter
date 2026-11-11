@@ -143,6 +143,35 @@ void main() {
     );
   });
 
+  test('F10: "not sent yet, retrying" stays set across failed publish '
+      'attempts (offline), never falls back to "sending"', () async {
+    await repository.dispose();
+    realtime.failSosPublishes = 1000;
+    repository = MqttOperationalSosRepository(
+      realtimeClient: realtime,
+      remoteDataSource: remote,
+      localStore: store,
+      mqttConfirmationWarningDelay: const Duration(milliseconds: 10),
+      deliveryBackoff: const <Duration>[Duration(milliseconds: 15)],
+      deliveryRetryingAfter: const Duration(milliseconds: 60),
+    );
+    await repository.triggerSos(triggerSource: 'commercial_app');
+    await eventually(() => repository.deliveryStatus.retrying);
+    final attemptsAtRetrying = realtime.sosPublishAttempts;
+
+    final seen = <String?>[];
+    for (var i = 0; i < 15; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final incident = (await repository.getCurrentIncident())!;
+      seen.add(incident.progress.steps.first.detailCode);
+    }
+
+    expect(realtime.sosPublishAttempts, greaterThan(attemptsAtRetrying + 2),
+        reason: 'precondition: several failed attempts while retrying');
+    expect(seen.toSet(), <String?>{'delivery_not_confirmed_retrying'},
+        reason: seen.join(','));
+  });
+
   test('backend read confirms a delivered SOS when the realtime event is '
       'missed', () async {
     remote.active = null;

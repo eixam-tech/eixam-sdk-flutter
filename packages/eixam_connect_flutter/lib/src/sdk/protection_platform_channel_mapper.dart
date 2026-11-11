@@ -377,6 +377,16 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.bluetoothTurnedOn;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
+    // Native SOS hand-off (pending create / TAG cancel stored natively).
+    // Without these the iOS events fell to `woke`: a background TAG SOS
+    // reached the outbox only on a later app resume or MQTT reconnect (F7),
+    // and a native TAG cancel never reached the backend (F8).
+    case 'nativeBackendSyncQueued':
+      return ProtectionPlatformEventType.nativeBackendSyncQueued;
+    case 'nativeBackendSyncSucceeded':
+      return ProtectionPlatformEventType.nativeBackendSyncSucceeded;
+    case 'nativeBackendSyncFailed':
+      return ProtectionPlatformEventType.nativeBackendSyncFailed;
     case 'woke':
     default:
       return ProtectionPlatformEventType.woke;

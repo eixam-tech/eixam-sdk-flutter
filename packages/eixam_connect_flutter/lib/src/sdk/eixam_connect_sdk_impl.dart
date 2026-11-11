@@ -25743,8 +25743,50 @@ class EixamConnectSdkImpl
       'decision=accept_terminal incidentId=${terminalIncident.id} '
       'canonicalIncidentId=${terminalIncident.id} reason=$reason',
     );
+    _deliverTagCancelOfOpenSos(
+      reason: reason,
+      terminalState: terminalState,
+    );
     _emitPublicSosState(terminalState, source: 'device_terminal_event');
     _emitOperationalDiagnostics();
+  }
+
+  /// The TAG cancelled (0xE1, after its countdown) an SOS that was open on
+  /// the phone. The backend must follow over MQTT even when this phone's own
+  /// BLE path never tracked the TAG cycle (an SOS born from the native
+  /// hand-off): otherwise the app and the TAG go idle while the backend keeps
+  /// the incident active (F8). Never for a backend close (0xE3 → resolved)
+  /// nor a countdown cancel (`pre_sos`, stays local). A cancel also queued by
+  /// another path is a backend no-op.
+  void _deliverTagCancelOfOpenSos({
+    required String reason,
+    required SosState terminalState,
+  }) {
+    const deliveredOrDelivering = <SosState>{
+      SosState.sending,
+      SosState.sent,
+      SosState.acknowledged,
+    };
+    final repository = sosRepository;
+    if (terminalState != SosState.cancelled ||
+        reason != 'device_terminal_event:inactive' ||
+        !deliveredOrDelivering.contains(_publicSosState) ||
+        repository is! MqttOperationalSosRepository) {
+      return;
+    }
+    sdkReleaseLog('SOS_OUTBOX_TAG_CANCEL_OF_OPEN_SOS');
+    unawaited(
+      repository
+          .deliverDeviceCancel(
+            reason: 'tag_cancel_open_sos',
+            observedAt: DateTime.now().toUtc(),
+          )
+          .catchError(
+            (Object error) => sdkReleaseLog(
+              'SOS_OUTBOX_TAG_CANCEL_FAILED errorType=${error.runtimeType}',
+            ),
+          ),
+    );
   }
 
   bool _deferDeviceTerminalDuringPublicCancellation({required String source}) {

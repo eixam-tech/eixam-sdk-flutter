@@ -116,5 +116,26 @@ void main() {
       expect(event.payloadHex, 'da2200000000');
       expect(event.source, 'tel');
     });
+
+    test('F7/F8: maps the native SOS hand-off events (they fell to woke, so '
+        'a background TAG SOS and its TAG cancel never reached the outbox)',
+        () {
+      for (final entry in <String, ProtectionPlatformEventType>{
+        'nativeBackendSyncQueued':
+            ProtectionPlatformEventType.nativeBackendSyncQueued,
+        'nativeBackendSyncSucceeded':
+            ProtectionPlatformEventType.nativeBackendSyncSucceeded,
+        'nativeBackendSyncFailed':
+            ProtectionPlatformEventType.nativeBackendSyncFailed,
+      }.entries) {
+        final event = mapIosProtectionPlatformEvent(<Object?, Object?>{
+          'type': entry.key,
+          'timestamp': DateTime.utc(2026, 11, 11, 12, 40).millisecondsSinceEpoch,
+          'reason': 'create:device_cycle_active',
+        });
+        expect(event.type, entry.value, reason: entry.key);
+        expect(event.reason, 'create:device_cycle_active');
+      }
+    });
   });
 }
