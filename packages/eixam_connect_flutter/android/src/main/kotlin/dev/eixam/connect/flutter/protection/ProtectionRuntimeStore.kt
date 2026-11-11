@@ -1126,6 +1126,12 @@ internal class ProtectionRuntimeStore(context: Context) {
     fun activeBackendIncidentId(): String? =
         preferences.getString(keyActiveBackendIncidentId, null)
 
+    fun activeBackendIncidentLifecycleId(): String? =
+        preferences.getString(keyActiveBackendIncidentLifecycleId, null)
+
+    fun pendingNativeSosCreateCycleKey(): String? =
+        pendingNativeSosCreateJson()?.optNullableString("cycleKey")
+
     fun lastBackendIncidentState(): String? =
         preferences.getString(keyActiveBackendIncidentState, null)
 

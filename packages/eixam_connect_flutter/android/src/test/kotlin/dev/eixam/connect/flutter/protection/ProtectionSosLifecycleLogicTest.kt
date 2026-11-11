@@ -97,4 +97,43 @@ class ProtectionSosLifecycleLogicTest {
         assertEquals("sos:7:3", ProtectionSosLifecycleLogic.nativeHandoffCycleKey("sos:7:3", 0L))
         assertEquals(null, ProtectionSosLifecycleLogic.nativeHandoffCycleKey(" ", 1_000L))
     }
+
+    @Test
+    fun `a backend incident of an earlier SOS never retires a new native SOS (F7 Android)`() {
+        // Device QA 2026-11-11: the incident id of an SOS cancelled from the
+        // app stayed stored natively; the next background TAG SOS was retired
+        // as `create_already_synced` and never reached the backend.
+        assertFalse(
+            ProtectionSosLifecycleLogic.isNativeCreateAlreadySynced(
+                activeBackendIncidentId = "backend-incident-of-previous-sos",
+                activeBackendIncidentLifecycleId = "sos:1435727214:3@1000",
+                pendingCreateCycleKey = "sos:1435727214:3@95000",
+            ),
+        )
+        assertFalse(
+            ProtectionSosLifecycleLogic.isNativeCreateAlreadySynced(
+                activeBackendIncidentId = "backend-incident-of-previous-sos",
+                activeBackendIncidentLifecycleId = null,
+                pendingCreateCycleKey = "sos:1435727214:3@95000",
+            ),
+        )
+    }
+
+    @Test
+    fun `the backend incident of the same SOS cycle retires its native create`() {
+        assertTrue(
+            ProtectionSosLifecycleLogic.isNativeCreateAlreadySynced(
+                activeBackendIncidentId = "backend-incident",
+                activeBackendIncidentLifecycleId = "sos:1435727214:3@95000",
+                pendingCreateCycleKey = "sos:1435727214:3@95000",
+            ),
+        )
+        assertFalse(
+            ProtectionSosLifecycleLogic.isNativeCreateAlreadySynced(
+                activeBackendIncidentId = null,
+                activeBackendIncidentLifecycleId = "sos:1435727214:3@95000",
+                pendingCreateCycleKey = "sos:1435727214:3@95000",
+            ),
+        )
+    }
 }

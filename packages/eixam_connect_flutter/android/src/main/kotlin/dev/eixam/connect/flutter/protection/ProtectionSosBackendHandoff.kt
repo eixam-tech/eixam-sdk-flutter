@@ -148,7 +148,14 @@ internal class ProtectionSosBackendHandoff(
 
     private fun syncCreate(reason: String): Boolean {
         return try {
-            if (runtimeStore.activeBackendIncidentId()?.isNotBlank() == true) {
+            if (
+                ProtectionSosLifecycleLogic.isNativeCreateAlreadySynced(
+                    activeBackendIncidentId = runtimeStore.activeBackendIncidentId(),
+                    activeBackendIncidentLifecycleId =
+                        runtimeStore.activeBackendIncidentLifecycleId(),
+                    pendingCreateCycleKey = runtimeStore.pendingNativeSosCreateCycleKey(),
+                )
+            ) {
                 runtimeStore.clearPendingSosCreate()
                 runtimeStore.markBackendHandoffSuccess("create_already_synced")
                 ProtectionRuntimeBridge.recordPlatformEvent(
