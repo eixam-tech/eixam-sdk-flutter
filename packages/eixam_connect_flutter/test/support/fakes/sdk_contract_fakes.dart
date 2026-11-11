@@ -364,6 +364,7 @@ class FakeContactsRepository implements ContactsRepository {
 class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
   final List<BackendRegisteredDevice> devices = <BackendRegisteredDevice>[];
   int upsertCallCount = 0;
+  Object? upsertError;
   String? lastHardwareId;
   String? lastFirmwareVersion;
   String? lastHardwareModel;
@@ -387,6 +388,10 @@ class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
     required DateTime pairedAt,
   }) async {
     upsertCallCount++;
+    final error = upsertError;
+    if (error != null) {
+      throw error;
+    }
     lastHardwareId = hardwareId;
     lastFirmwareVersion = firmwareVersion;
     lastHardwareModel = hardwareModel;

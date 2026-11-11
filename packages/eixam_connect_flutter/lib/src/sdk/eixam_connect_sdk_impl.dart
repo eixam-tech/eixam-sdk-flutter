@@ -520,6 +520,7 @@ class EixamConnectSdkImpl
           .listen(_handleRejectedTerminalReconciliationRequest);
     }
     _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
+      _closeNativeSosCycleOnLifecycleTerminal(lifecycle);
       final silenceTarget = _physicalSosSilenceTarget;
       if (silenceTarget != null &&
           (!lifecycle.isOpen ||
@@ -3029,6 +3030,8 @@ class EixamConnectSdkImpl
       if (pending != null || snapshot.pendingNativeSosCancelCount > 0) {
         sdkReleaseLog('SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed');
       }
+      // The previous account's TAG cycle must not block the next one's SOS.
+      await protectionPlatformAdapter.closeNativeSosCycle();
     } catch (error) {
       sdkReleaseLog(
         'SOS_OUTBOX_NATIVE_RECORDS_DROP_FAILED errorType=${error.runtimeType}',
@@ -4992,6 +4995,16 @@ class EixamConnectSdkImpl
           _activityRecordings.reconcileHistoryReadiness(runtimeResumed: true);
         }
         _bleAutoReconnectCoordinator.setAppForeground(true);
+        if (!wasResumed) {
+          // The TAG's backend registration may have been removed while the
+          // app was away; the backend then rejects its SOS silently.
+          final connectedStatus = _lastDeviceStatus;
+          if (connectedStatus != null && connectedStatus.connected) {
+            unawaited(
+              _claimConnectedDeviceAssignment(connectedStatus, recheck: true),
+            );
+          }
+        }
         final sosRehydration = _rehydrateSosStateOnAppResume();
         unawaited(sosRehydration);
         _pushTagLinkSnapshot();
@@ -13850,6 +13863,109 @@ class EixamConnectSdkImpl
 
     report(repository.deliveryStatus);
     _sosDeliveryHoldSub = repository.watchDeliveryStatus().listen(report);
+    repository.unconfirmedTriggerPrecheck =
+        _ensureSosReportingDeviceRegistered;
+  }
+
+  /// An SOS the broker acknowledged was not confirmed by the backend. The
+  /// backend accepts an SOS only while the account has at least one
+  /// registered TAG (otherwise it rejects it silently, 422 "Authenticated user
+  /// has no paired reporting device"), e.g. after the registration was
+  /// removed while this process kept its local pairing. Restores it with the
+  /// existing registration call when this phone has that TAG paired;
+  /// otherwise the user is told the TAG is not linked (the SOS cannot be
+  /// accepted until a TAG is paired again; the outbox keeps retrying).
+  Future<({bool known, String? issue})> _ensureSosReportingDeviceRegistered(
+    MqttOperationalSosRequest request,
+  ) async {
+    const unknown = (known: false, issue: null);
+    const fine = (known: true, issue: null);
+    const notLinked = (
+      known: true,
+      issue: SosIncident.deliveryIssueDeviceNotRegistered,
+    );
+    const step = Duration(seconds: 2);
+    if (!_hasAuthenticatedDeviceRegistrySession()) {
+      return unknown;
+    }
+    final revision = _identityRevision;
+    List<BackendRegisteredDevice> devices;
+    try {
+      devices = await deviceRegistryRepository.listRegisteredDevices().timeout(
+        step,
+      );
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION result=check_failed '
+        'errorType=${error.runtimeType}',
+      );
+      return unknown;
+    }
+    if (_disposed || revision != _identityRevision) return unknown;
+    if (devices.isNotEmpty) {
+      // The registration rule is met; the cause is elsewhere.
+      sdkReleaseLog('SOS_OUTBOX_DEVICE_REGISTRATION result=present');
+      return fine;
+    }
+    final nodeId = int.tryParse(request.deviceId?.trim() ?? '');
+    final status = _lastDeviceStatus;
+    final locallyPaired =
+        nodeId != null &&
+        status != null &&
+        status.nodeId == nodeId &&
+        (status.paired || status.connected);
+    if (!locallyPaired) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION result=missing_not_paired_here',
+      );
+      return notLinked;
+    }
+    if (!_assignmentClaimInFlight.add(nodeId)) {
+      // A connect-time claim is registering it right now.
+      return unknown;
+    }
+    try {
+      final registered = await _registerPairedDevice(status).timeout(step);
+      if (_disposed || revision != _identityRevision) return unknown;
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION '
+        'result=${registered ? "reregistered" : "register_mismatch"}',
+      );
+      return registered ? fine : notLinked;
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION result=register_failed '
+        'errorType=${error.runtimeType}',
+      );
+      // Retried on the next attempt; meanwhile the user learns why.
+      return notLinked;
+    } finally {
+      _assignmentClaimInFlight.remove(nodeId);
+    }
+  }
+
+  /// Existing registration call (`upsertRegisteredDevice`) for the paired
+  /// TAG; the same payload the connect-time claim uses.
+  Future<bool> _registerPairedDevice(DeviceStatus status) async {
+    final nodeId = status.nodeId;
+    if (nodeId == null) return false;
+    final firmwareVersion = status.firmwareVersion?.trim();
+    final hardwareModel = (status.model ?? status.deviceAlias)?.trim();
+    final registered = await deviceRegistryRepository.upsertRegisteredDevice(
+      hardwareId: nodeId.toString(),
+      firmwareVersion: firmwareVersion == null || firmwareVersion.isEmpty
+          ? 'unknown'
+          : firmwareVersion,
+      hardwareModel: hardwareModel == null || hardwareModel.isEmpty
+          ? 'EIXAM R1'
+          : hardwareModel,
+      pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
+    );
+    final ok = registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId);
+    if (ok) {
+      _rememberVerifiedDeviceAssignment(nodeId);
+    }
+    return ok;
   }
 
   /// Connectivity regained / app resumed / start-up: retry every pending SOS
@@ -18411,6 +18527,36 @@ class EixamConnectSdkImpl
     _applyPublicSosState(nextState, source: source, emit: true);
   }
 
+  int? _nativeSosCycleClosedGeneration;
+
+  /// The SOS of this lifecycle generation really ended (cancelled, resolved
+  /// or activation failed): a native TAG cycle already handed over must not stay open
+  /// when its close frame never reached the phone (otherwise the next TAG SOS
+  /// is ignored natively). Driven by the lifecycle, never by a public `idle`
+  /// or projection: that closed the cycle of a live SOS, whose TAG cancel then
+  /// reached nobody (F8). Never during `cancelling` either: a failed cancel
+  /// leaves the SOS open. Native keeps a cycle whose SOS was not handed over.
+  void _closeNativeSosCycleOnLifecycleTerminal(SosLifecycleSnapshot lifecycle) {
+    if (_disposed ||
+        (lifecycle.stage != SosLifecycleStage.cancelled &&
+            lifecycle.stage != SosLifecycleStage.resolved &&
+            lifecycle.stage != SosLifecycleStage.activationFailed) ||
+        _nativeSosCycleClosedGeneration == lifecycle.generation) {
+      return;
+    }
+    _nativeSosCycleClosedGeneration = lifecycle.generation;
+    unawaited(
+      protectionPlatformAdapter.closeNativeSosCycle().catchError(
+        (Object error) => sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
+        ),
+      ),
+    );
+  }
+
+  /// Sign-out / account change clears everything, an open SOS included.
+  bool _isSessionClearSosSource(String source) => source == 'clear_session';
+
   bool _hasNewAuthoritativeGenerationSinceTerminal() {
     final watermark = _sosLifecycle.activeTerminalWatermark;
     final current = _sosLifecycle.current;
@@ -18426,6 +18572,25 @@ class EixamConnectSdkImpl
   }) {
     _alignPublicSosProjectionWithCurrentGeneration(source: source);
     final authoritativeLifecycle = _sosLifecycle.current;
+    if (nextState == SosState.idle &&
+        _publicSosState != SosState.idle &&
+        authoritativeLifecycle.isOpen &&
+        (authoritativeLifecycle.stage != SosLifecycleStage.arming ||
+            _hasActivePreSosSession) &&
+        !_isSessionClearSosSource(source)) {
+      // An open SOS (past its countdown, or a countdown still running) is
+      // never projected as idle: a passive read (repository still idle before
+      // its trigger is queued, device evidence not admitted yet) made hosts
+      // drop the SOS screen takeover (F6). The lifecycle ends an SOS. A
+      // countdown whose pre-SOS session was already cleared may settle.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_OPEN_LIFECYCLE_IDLE_REJECTED source=$source '
+        'generation=${authoritativeLifecycle.generation} '
+        'stage=${authoritativeLifecycle.stage.name} '
+        'current=${_publicSosState.name}',
+      );
+      return false;
+    }
     final terminalProjectionIncident =
         _publicSosFallbackIncident ?? _lastKnownActiveSosIncident;
     final terminalProjectionMatchesCurrentGeneration =
@@ -18506,24 +18671,8 @@ class EixamConnectSdkImpl
     )) {
       return false;
     }
-    final previousPublicState = _publicSosState;
     _publicSosState = nextState;
     _publicSosStateGeneration = _sosLifecycle.current.generation;
-    if (nextState == SosState.cancelled ||
-        nextState == SosState.resolved ||
-        (nextState == SosState.idle && previousPublicState != SosState.idle)) {
-      // The SOS is over for the SDK: a native TAG cycle already handed over
-      // must not stay open when its close frame never reached the phone
-      // (otherwise the next TAG SOS is ignored natively). Native keeps any
-      // cycle whose SOS was not handed over yet.
-      unawaited(
-        protectionPlatformAdapter.closeNativeSosCycle().catchError(
-          (Object error) => sdkReleaseLog(
-            'SOS_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
-          ),
-        ),
-      );
-    }
     if (_isTerminalPublicSosState(nextState)) {
       _publicTerminalAt = DateTime.now().toUtc();
       _publicTerminalGeneration = _publicSosStateGeneration;
@@ -20831,16 +20980,23 @@ class EixamConnectSdkImpl
     if (!nodeIdChanged && !becameConnected) {
       return;
     }
-    unawaited(_claimConnectedDeviceAssignment(status));
+    // Every (re)connection re-checks the backend registration: it can be
+    // removed while this process runs (unpair elsewhere, portal), and the
+    // backend then rejects every SOS of this TAG.
+    unawaited(_claimConnectedDeviceAssignment(status, recheck: true));
   }
 
-  Future<void> _claimConnectedDeviceAssignment(DeviceStatus status) async {
+  Future<void> _claimConnectedDeviceAssignment(
+    DeviceStatus status, {
+    bool recheck = false,
+  }) async {
     final revision = _identityRevision;
     final nodeId = status.nodeId;
     if (nodeId == null || !_hasAuthenticatedDeviceRegistrySession()) {
       return;
     }
-    if (_verifiedAssignedNodeIdsForSession.contains(nodeId.toString())) {
+    if (!recheck &&
+        _verifiedAssignedNodeIdsForSession.contains(nodeId.toString())) {
       return;
     }
     if (!_assignmentClaimInFlight.add(nodeId)) {
@@ -20866,21 +21022,9 @@ class EixamConnectSdkImpl
         );
         return;
       }
-      final firmwareVersion = status.firmwareVersion?.trim();
-      final hardwareModel = (status.model ?? status.deviceAlias)?.trim();
-      final registered = await deviceRegistryRepository.upsertRegisteredDevice(
-        hardwareId: nodeId.toString(),
-        firmwareVersion: firmwareVersion == null || firmwareVersion.isEmpty
-            ? 'unknown'
-            : firmwareVersion,
-        hardwareModel: hardwareModel == null || hardwareModel.isEmpty
-            ? 'EIXAM R1'
-            : hardwareModel,
-        pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
-      );
+      final registered = await _registerPairedDevice(status);
       if (_disposed || revision != _identityRevision) return;
-      if (registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId)) {
-        _rememberVerifiedDeviceAssignment(nodeId);
+      if (registered) {
         _rememberRecordingAssignment(nodeId, revision);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_ASSIGNMENT result=created action=auto_claim',

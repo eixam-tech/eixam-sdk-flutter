@@ -238,6 +238,66 @@ class MqttOperationalSosRepository
     await _outbox.restore();
   }
 
+  /// Set by the SDK: checks and, through the existing device registration
+  /// calls, restores what the backend needs before an SOS it acknowledged but
+  /// never confirmed is published again. Returns whether the outcome is
+  /// known and the delivery issue (e.g.
+  /// [SosIncident.deliveryIssueDeviceNotRegistered]) or null.
+  Future<({bool known, String? issue})> Function(
+    MqttOperationalSosRequest request,
+  )?
+  unconfirmedTriggerPrecheck;
+
+  /// The precheck never holds an SOS republish for long (poor coverage, slow
+  /// backend): past this the SOS is published anyway.
+  @visibleForTesting
+  Duration unconfirmedTriggerPrecheckTimeout = const Duration(seconds: 5);
+
+  /// Delivery issue of the current SOS, kept across the incident updates of
+  /// that SOS (no flicker on transient errors) and reset by the next
+  /// trigger.
+  String? _sosDeliveryIssue;
+
+  SosIncident? _withDeliveryIssue(SosIncident? incident) {
+    final issue = _sosDeliveryIssue;
+    if (incident == null || issue == null || incident.deliveryIssue == issue) {
+      return incident;
+    }
+    return incident.copyWith(deliveryIssue: issue);
+  }
+
+  Future<void> _runUnconfirmedTriggerPrecheck(
+    MqttOperationalSosRequest request,
+  ) async {
+    final precheck = unconfirmedTriggerPrecheck;
+    if (precheck == null) {
+      return;
+    }
+    ({bool known, String? issue}) result;
+    try {
+      result = await precheck(request).timeout(
+        unconfirmedTriggerPrecheckTimeout,
+      );
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_PRECHECK_FAILED errorType=${error.runtimeType}',
+      );
+      return;
+    }
+    if (_disposed || !result.known) {
+      // Unknown outcome: keep what the user already sees.
+      return;
+    }
+    if (_sosDeliveryIssue != result.issue) {
+      _sosDeliveryIssue = result.issue;
+      sdkReleaseLog('SOS_OUTBOX_DELIVERY_ISSUE issue=${result.issue ?? "none"}');
+      final incident = _activeIncident;
+      if (incident != null) {
+        _emitActuatorOnlyUpdate(incidentId: incident.id, version: null);
+      }
+    }
+  }
+
   /// Mirrors "not sent yet, retrying" onto the unconfirmed local incident so
   /// hosts can say it clearly; cleared on confirmation or when delivered.
   void _applyDeliveryStatus(SosOutboxStatus status) {
@@ -1031,6 +1091,8 @@ class MqttOperationalSosRepository
     // surface here; they are delivery state, not an SOS failure.
     final outboxCycle =
         _normalizeIdentity(cycleKey) ?? _normalizeIdentity(incidentId);
+    // A new SOS starts without the previous one's delivery issue.
+    _sosDeliveryIssue = null;
     final action = await _outbox.enqueueTrigger(
       cycleKey: outboxCycle,
       payload: mqttOperationalSosRequestToOutboxJson(request),
@@ -1310,7 +1372,8 @@ class MqttOperationalSosRepository
   }
 
   @override
-  Future<SosIncident?> getCurrentIncident() async => _activeIncident;
+  Future<SosIncident?> getCurrentIncident() async =>
+      _withDeliveryIssue(_activeIncident);
 
   @override
   Future<SosState> getSosState() async => _stateMachine.current;
@@ -1320,11 +1383,11 @@ class MqttOperationalSosRepository
 
   @override
   Stream<SosIncident?> watchCurrentIncident() async* {
-    yield _activeIncident;
+    yield _withDeliveryIssue(_activeIncident);
     // Delegate cancellation even while idle; retain await-for's error-then-done.
     yield* _stateController.stream.transform(
       StreamTransformer<SosState, SosIncident?>.fromHandlers(
-        handleData: (_, sink) => sink.add(_activeIncident),
+        handleData: (_, sink) => sink.add(_withDeliveryIssue(_activeIncident)),
         handleError: (error, stack, sink) {
           sink.addError(error, stack);
           sink.close();
@@ -1522,6 +1585,15 @@ class MqttOperationalSosRepository
           );
         }
         _outboxRequests[action.id] = request;
+        var outgoing = request;
+        if (action.published) {
+          // The broker acknowledged an earlier attempt but the backend never
+          // confirmed it (it rejects silently while the account has no
+          // registered TAG): restore the registration, then publish on a new
+          // connection so the broker re-runs auth.
+          await _runUnconfirmedTriggerPrecheck(request);
+          outgoing = request.copyWith(forceFreshConnection: true);
+        }
         final handoff = _pendingProcessedHandoff;
         if (handoff == null ||
             _normalizeIdentity(request.cycleKey) == handoff.cycleKey) {
@@ -1533,7 +1605,7 @@ class MqttOperationalSosRepository
             registeredAt: _nowProvider().toUtc(),
           );
         }
-        await realtimeClient.publishOperationalSos(request);
+        await realtimeClient.publishOperationalSos(outgoing);
         final publishedCycle = _normalizeIdentity(action.cycleKey);
         if (publishedCycle != null) {
           _neverPublishedTriggerCycles.remove(publishedCycle);

@@ -74,6 +74,7 @@ class SosIncidentProgress {
     SosActionability actionability = SosActionability.unknown,
     SosDisplaySurface displaySurface = SosDisplaySurface.unknown,
     bool deliveryRetrying = false,
+    String? deliveryIssue,
   }) {
     final steps = <SosProgressStep>[];
     if (incidentState == SosState.acknowledged) {
@@ -100,7 +101,9 @@ class SosIncidentProgress {
           detailCode: isBackendConfirmed
               ? 'backend_incident_confirmed'
               : deliveryRetrying
-                  ? 'delivery_not_confirmed_retrying'
+                  ? deliveryIssue == 'device_not_registered'
+                      ? 'delivery_not_confirmed_device_not_registered'
+                      : 'delivery_not_confirmed_retrying'
                   : 'awaiting_backend_confirmation',
         ),
       );

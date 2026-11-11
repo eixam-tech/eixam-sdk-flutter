@@ -60,6 +60,7 @@ class MqttOperationalSosRequest {
     this.deviceCoverage,
     this.mobileBattery,
     this.mobileCoverage,
+    this.forceFreshConnection = false,
   });
 
   final DateTime timestamp;
@@ -84,6 +85,11 @@ class MqttOperationalSosRequest {
   final int? mobileBattery;
   final SdkCoverageSnapshot? mobileCoverage;
 
+  /// Transport hint, never part of the payload: publish on a new MQTT
+  /// connection (the broker re-runs auth). Set when an SOS the broker already
+  /// acknowledged was not confirmed by the backend.
+  final bool forceFreshConnection;
+
   MqttOperationalSosRequest copyWith({
     DateTime? timestamp,
     TrackingPosition? positionSnapshot,
@@ -106,6 +112,7 @@ class MqttOperationalSosRequest {
     Object? deviceCoverage = _unset,
     Object? mobileBattery = _unset,
     Object? mobileCoverage = _unset,
+    bool? forceFreshConnection,
   }) {
     return MqttOperationalSosRequest(
       timestamp: timestamp ?? this.timestamp,
@@ -159,6 +166,7 @@ class MqttOperationalSosRequest {
       mobileCoverage: identical(mobileCoverage, _unset)
           ? this.mobileCoverage
           : mobileCoverage as SdkCoverageSnapshot?,
+      forceFreshConnection: forceFreshConnection ?? this.forceFreshConnection,
     );
   }
 

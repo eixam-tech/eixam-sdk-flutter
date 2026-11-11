@@ -224,7 +224,11 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
         '[BACKGROUND_SOS] mqtt_publish_start '
         'topic=${envelope.topic} correlationId=$correlationId qos=atLeastOnce',
       );
-      await _publishSosEnvelope(envelope, action: 'trigger');
+      await _publishSosEnvelope(
+        envelope,
+        action: 'trigger',
+        forceFresh: request.forceFreshConnection,
+      );
       BleDebugRegistry.instance.recordEvent(
         '[SOS_BACKEND_RESPONSE] correlationId=$correlationId status=ok '
         'backendIncidentId=none responseSummary=mqtt_publish_accepted',
@@ -275,14 +279,20 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   Future<void> _publishSosEnvelope(
     SdkMqttEnvelope envelope, {
     required String action,
+    bool forceFresh = false,
   }) async {
     Object? lastError;
     for (var attempt = 1; attempt <= 2; attempt++) {
-      final forceFresh = attempt > 1 || !_linkProvenFresh;
-      if (forceFresh && _state == RealtimeConnectionState.connected) {
+      final reconnect = attempt > 1 || forceFresh || !_linkProvenFresh;
+      if (reconnect && _state == RealtimeConnectionState.connected) {
+        final reason = attempt > 1
+            ? 'publish_failed'
+            : forceFresh
+            ? 'acknowledged_not_confirmed'
+            : 'link_not_proven_fresh';
         sdkReleaseLog(
           'SOS_OUTBOX_MQTT_RECONNECT action=$action attempt=$attempt '
-          'reason=${attempt > 1 ? "publish_failed" : "link_not_proven_fresh"}',
+          'reason=$reason',
         );
         await disconnect();
         _manualDisconnect = false;

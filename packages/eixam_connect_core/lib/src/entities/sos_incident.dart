@@ -33,6 +33,7 @@ class SosIncident {
     this.provisionalIncidentId,
     this.preservedLocalOwnership = false,
     this.isDeliveryRetrying = false,
+    this.deliveryIssue,
   });
   final String id;
   final SosState state;
@@ -63,6 +64,15 @@ class SosIncident {
   /// retried ("Not sent yet, retrying"). Hosts must not present it as sent.
   final bool isDeliveryRetrying;
 
+  /// Why delivery keeps failing while [isDeliveryRetrying], when the SDK
+  /// knows it (for example [deliveryIssueDeviceNotRegistered]). Null when
+  /// unknown or delivered.
+  final String? deliveryIssue;
+
+  /// The backend rejects the SOS because the paired TAG is not registered to
+  /// this account and the SDK could not register it again.
+  static const String deliveryIssueDeviceNotRegistered = 'device_not_registered';
+
   SosIncidentProgress get progress => SosIncidentProgress.fromEvidence(
         incidentId: id,
         incidentState: state,
@@ -78,6 +88,7 @@ class SosIncident {
         actionability: actionability,
         displaySurface: displaySurface,
         deliveryRetrying: isDeliveryRetrying,
+        deliveryIssue: deliveryIssue,
       );
 
   SosIncident copyWith({
@@ -105,6 +116,7 @@ class SosIncident {
     String? provisionalIncidentId,
     bool? preservedLocalOwnership,
     bool? isDeliveryRetrying,
+    Object? deliveryIssue = _unset,
   }) {
     return SosIncident(
       id: id,
@@ -140,6 +152,9 @@ class SosIncident {
       preservedLocalOwnership:
           preservedLocalOwnership ?? this.preservedLocalOwnership,
       isDeliveryRetrying: isDeliveryRetrying ?? this.isDeliveryRetrying,
+      deliveryIssue: identical(deliveryIssue, _unset)
+          ? this.deliveryIssue
+          : deliveryIssue as String?,
     );
   }
 
