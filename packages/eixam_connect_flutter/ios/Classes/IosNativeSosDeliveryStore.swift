@@ -53,6 +53,7 @@ final class IosNativeSosDeliveryStore {
     static let cycleStartedAt = "native_sos_cycle_started_at"
     static let lastClosedAt = "native_sos_last_closed_at"
     static let firstFrameAfterCloseAt = "native_sos_first_frame_after_close_at"
+    static let cycleKeptAfterStop = "native_sos_cycle_kept_after_stop"
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
     static let pendingEvents = "pending_sos_events"
@@ -158,8 +159,16 @@ final class IosNativeSosDeliveryStore {
   /// cycle already handed over, in case its close frame never reached the
   /// phone (otherwise the next TAG SOS would be ignored natively). A cycle
   /// whose SOS was not handed over yet is kept: nothing is ever lost.
-  func closeDeliveredCycle() -> Bool {
-    guard cycleState == .createPending, pendingCreateRecord == nil else {
+  /// Exception: a countdown kept across a runtime stop. Native no longer
+  /// observes the TAG, Dart does: its TAG/app cancel must close it, or the
+  /// countdown would be promoted into a false SOS at its deadline. Only the
+  /// terminal of the same TAG closes it; when either node id is unknown the
+  /// terminal closes it (keeping it would risk a false SOS).
+  func closeDeliveredCycle(nodeId: Int? = nil) -> Bool {
+    let keptCountdown = cycleState == .preConfirmSeen &&
+      defaults.bool(forKey: Keys.cycleKeptAfterStop) &&
+      (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId)
+    guard keptCountdown || (cycleState == .createPending && pendingCreateRecord == nil) else {
       return false
     }
     closeCycle()
@@ -221,9 +230,10 @@ final class IosNativeSosDeliveryStore {
     return transition
   }
 
-  /// Protection stopped: native no longer observes the TAG, so a countdown
-  /// in progress must never be promoted later. Pending records stay: they
-  /// describe an SOS / cancel the TAG already produced.
+  /// Drops the TAG cycle: a countdown in progress is never promoted later.
+  /// Pending records stay: they describe an SOS / cancel the TAG already
+  /// produced. The runtime stop uses `stopObserving()`, which keeps a
+  /// running countdown.
   func resetCycle() -> Bool {
     let wasCounting = cycleState == .preConfirmSeen
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
@@ -231,6 +241,28 @@ final class IosNativeSosDeliveryStore {
     defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
     defaults.removeObject(forKey: Keys.pendingEvents)
     return wasCounting
+  }
+
+  /// Protection stopped: native no longer observes the TAG. A countdown in
+  /// progress is kept and still promoted at its deadline (F11: reopening the
+  /// app during a background TAG countdown stopped the runtime and lost the
+  /// SOS); the SDK's terminal closes it (`closeDeliveredCycle`) if Dart sees
+  /// a cancel. Any other cycle is reset as before. Returns the kept deadline,
+  /// or nil when the cycle was reset.
+  func stopObserving() -> Int? {
+    guard cycleState == .preConfirmSeen, let deadline = cycleDeadlineAt else {
+      _ = resetCycle()
+      return nil
+    }
+    defaults.removeObject(forKey: Keys.pendingEvents)
+    defaults.set(true, forKey: Keys.cycleKeptAfterStop)
+    return deadline
+  }
+
+  /// Protection armed again: native observes the TAG (and its close frame)
+  /// itself, so a kept countdown is a normal observed countdown again.
+  func resumeObserving() {
+    defaults.removeObject(forKey: Keys.cycleKeptAfterStop)
   }
 
   private func promote(reason: String, deviceId: String?) {
@@ -281,6 +313,7 @@ final class IosNativeSosDeliveryStore {
     deadlineAt: Int?
   ) {
     defaults.set(state.rawValue, forKey: Keys.cycleState)
+    defaults.removeObject(forKey: Keys.cycleKeptAfterStop)
     set(key, forKey: Keys.cycleKey)
     set(nodeId, forKey: Keys.cycleNodeId)
     set(deadlineAt, forKey: Keys.cycleDeadlineAt)

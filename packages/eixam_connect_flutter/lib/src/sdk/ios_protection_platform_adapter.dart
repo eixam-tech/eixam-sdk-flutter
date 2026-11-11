@@ -81,8 +81,11 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() {
-    return _methodChannel.invokeMethod<void>('stopProtectionRuntime');
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) {
+    return _methodChannel.invokeMethod<void>(
+      'stopProtectionRuntime',
+      keepSosCountdown ? <String, dynamic>{'keepSosCountdown': true} : null,
+    );
   }
 
   @override
@@ -179,8 +182,16 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> closeNativeSosCycle() {
-    return _methodChannel.invokeMethod<void>('closeNativeSosCycle');
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) {
+    return _methodChannel.invokeMethod<void>(
+      'closeNativeSosCycle',
+      nodeId == null && !force
+          ? null
+          : <String, dynamic>{
+              if (nodeId != null) 'nodeId': nodeId,
+              if (force) 'force': true,
+            },
+    );
   }
 
   @override

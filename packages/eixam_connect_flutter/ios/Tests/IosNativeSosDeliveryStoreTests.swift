@@ -39,6 +39,11 @@ struct IosNativeSosDeliveryStoreTests {
     countdownIsReportedAsCountdown()
     claimedCreateIsKeptOnCancel()
     resetCycleNeverPromotesAfterStop()
+    countdownKeptAcrossStopIsPromotedAtDeadline()
+    sdkCloseDropsACountdownKeptAcrossStop()
+    stopStillResetsANonCountdownCycle()
+    keptCountdownClosesOnlyForItsTag()
+    rearmedRuntimeOwnsTheKeptCountdownAgain()
     oldQueuedEventsAreNotReplayed()
     if failures > 0 {
       print("FAILED: \(failures)")
@@ -202,6 +207,87 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 30_000
     check(!store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "no promotion after stop")
     check(store.pendingCreateCount == 0, "nothing to publish")
+  }
+
+  /// F11: the app reopened during a background TAG countdown and the host
+  /// stopped the runtime; the SOS must still reach the backend.
+  static func countdownKeptAcrossStopIsPromotedAtDeadline() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:60", deviceId: nil)
+    let deadline = store.cycleDeadlineAt
+    check(deadline != nil && store.stopObserving() == deadline, "countdown kept with its deadline")
+    check(store.cycleState == .preConfirmSeen, "countdown still running after stop")
+    check(store.countdownDeadlineAt == deadline, "snapshot still shows the countdown")
+    check(!store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "no promotion before deadline")
+    clock += 20_000
+    let promoted = store.promoteExpiredCountdown(deviceId: nil)
+    check(promoted.queuedCreate && promoted.countdownStopped, "kept countdown promoted at its deadline")
+    check(store.cycleState == .createPending, "handed over")
+    check(store.pendingCreateCount == 1, "durable pending create stored")
+    check((store.peekPendingCreate()?["cycleKey"] as? String)?.hasPrefix("sos:7:60@") == true, "cycle identity kept")
+  }
+
+  /// After the stop Dart owns BLE: its TAG/app cancel (SDK terminal) closes
+  /// the kept countdown, so it is never promoted (no false SOS).
+  static func sdkCloseDropsACountdownKeptAcrossStop() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:61", deviceId: nil)
+    _ = store.stopObserving()
+    clock += 5_000
+    check(store.closeDeliveredCycle(), "SDK terminal closes the kept countdown")
+    check(store.cycleState == .idle, "cycle closed")
+    clock += 30_000
+    check(!store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "never promoted after the cancel")
+    check(store.pendingCreateCount == 0, "nothing to publish")
+  }
+
+  static func stopStillResetsANonCountdownCycle() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:62", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7:62", deviceId: nil)
+    check(store.pendingCancelCount == 1, "TAG cancel pending")
+    clock += 60_000
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:63", deviceId: nil)
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    check(store.stopObserving() == nil, "a handed-over cycle is reset, not kept")
+    check(store.cycleState == .idle, "cycle reset")
+    check(store.pendingCreateCount == 1 && store.pendingCancelCount == 1, "pending records kept")
+  }
+
+  /// A terminal of another TAG never closes the kept countdown.
+  static func keptCountdownClosesOnlyForItsTag() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:64", deviceId: nil)
+    _ = store.stopObserving()
+    check(!store.closeDeliveredCycle(nodeId: 9), "another TAG's terminal keeps the countdown")
+    check(store.cycleState == .preConfirmSeen, "countdown still running")
+    check(store.closeDeliveredCycle(nodeId: 7), "its own TAG's terminal closes it")
+    clock += 30_000
+    check(!store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "never promoted")
+
+    // A countdown whose frames carried no node id is closed by any terminal
+    // the SDK reports: keeping it would risk a false SOS.
+    let (anonymous, _) = makeStore()
+    _ = anonymous.observe(kind: .preSos, nodeId: nil, cycleKey: "sos:-:3", deviceId: nil)
+    _ = anonymous.stopObserving()
+    check(anonymous.closeDeliveredCycle(nodeId: 7), "unknown-node countdown closed by the SDK terminal")
+    clock += 30_000
+    check(!anonymous.promoteExpiredCountdown(deviceId: nil).queuedCreate, "unknown-node countdown never promoted")
+  }
+
+  /// Protection armed again: native observes the TAG itself (and its cancel
+  /// frame), so the SDK close no longer drops the countdown.
+  static func rearmedRuntimeOwnsTheKeptCountdownAgain() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .preSos, nodeId: 7, cycleKey: "sos:7:65", deviceId: nil)
+    _ = store.stopObserving()
+    store.resumeObserving()
+    check(!store.closeDeliveredCycle(nodeId: nil), "observed countdown is not closed by the SDK")
+    clock += 20_000
+    check(store.promoteExpiredCountdown(deviceId: nil).queuedCreate, "promoted at its deadline")
   }
 
   static func oldQueuedEventsAreNotReplayed() {

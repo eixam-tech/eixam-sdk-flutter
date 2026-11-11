@@ -50,6 +50,32 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
+  test(
+    'F11 stop and cycle close carry keepSosCountdown / nodeId / force',
+    () async {
+      final adapter = IosProtectionPlatformAdapter();
+
+      await adapter.stopProtectionRuntime();
+      await adapter.stopProtectionRuntime(keepSosCountdown: true);
+      await adapter.closeNativeSosCycle();
+      await adapter.closeNativeSosCycle(nodeId: 0x1234);
+      await adapter.closeNativeSosCycle(force: true);
+
+      expect(calls.map((call) => call.method), <String>[
+        'stopProtectionRuntime',
+        'stopProtectionRuntime',
+        'closeNativeSosCycle',
+        'closeNativeSosCycle',
+        'closeNativeSosCycle',
+      ]);
+      expect(calls[0].arguments, isNull);
+      expect(calls[1].arguments, <String, dynamic>{'keepSosCountdown': true});
+      expect(calls[2].arguments, isNull);
+      expect(calls[3].arguments, <String, dynamic>{'nodeId': 0x1234});
+      expect(calls[4].arguments, <String, dynamic>{'force': true});
+    },
+  );
+
   test('peeks the native pending create with the Android mapping', () async {
     final adapter = IosProtectionPlatformAdapter();
 

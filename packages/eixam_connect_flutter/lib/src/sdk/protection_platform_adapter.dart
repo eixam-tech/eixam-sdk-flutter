@@ -395,7 +395,12 @@ abstract class ProtectionPlatformAdapter {
   Future<ProtectionPlatformStartResult> startProtectionRuntime({
     required ProtectionPlatformStartRequest request,
   });
-  Future<void> stopProtectionRuntime();
+
+  /// [keepSosCountdown]: iOS keeps a running native TAG countdown across the
+  /// stop (promoted at its deadline unless the SDK closes it). Only for the
+  /// host's foreground exit with a signed-in session (F11). Android ignores
+  /// it.
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false});
   Future<void> ensureProtectionRuntimeActive({
     String reason = 'app_foreground_resume',
   });
@@ -430,8 +435,10 @@ abstract class ProtectionPlatformAdapter {
 
   /// The SOS is over for the SDK (cancelled, resolved or idle). iOS closes a
   /// native TAG cycle that was already handed over, in case its close frame
-  /// never reached the phone. No-op on Android.
-  Future<void> closeNativeSosCycle();
+  /// never reached the phone, and a countdown kept across a stop when
+  /// [nodeId] is unknown or matches its TAG. [force] (session change) also
+  /// drops a running native countdown. No-op on Android.
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false});
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -465,7 +472,7 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {}
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {}
 
   @override
   Future<void> ensureProtectionRuntimeActive({
@@ -522,7 +529,7 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle() async {}
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
 
   @override
   Future<bool> dropPendingNativeSosCreate(

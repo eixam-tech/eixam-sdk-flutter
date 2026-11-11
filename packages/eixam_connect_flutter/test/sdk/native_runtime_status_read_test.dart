@@ -341,7 +341,7 @@ class _NativeAdapter extends NoopProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {
     stopCalls++;
     snapshot = ProtectionPlatformSnapshot(
       backgroundCapabilityReady: true,

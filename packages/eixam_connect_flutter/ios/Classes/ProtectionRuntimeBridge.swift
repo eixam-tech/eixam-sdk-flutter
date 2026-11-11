@@ -162,6 +162,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         return
       }
       defaults.set(true, forKey: Keys.isArmed)
+      sosDelivery.resumeObserving()
       defaults.set(activeDeviceId, forKey: Keys.protectedDeviceId)
       storeNotificationTexts(arguments?["notificationTexts"] as? [String: Any])
       defaults.removeObject(forKey: Keys.lastFailureReason)
@@ -185,7 +186,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         "statusMessage": currentStatusMessage(),
       ])
     case "stopProtectionRuntime":
-      stopProtectionRuntime(reason: "protection_runtime_stopped")
+      stopProtectionRuntime(
+        reason: "protection_runtime_stopped",
+        keepSosCountdown: (call.arguments as? [String: Any])?["keepSosCountdown"] as? Bool == true
+      )
       result(nil)
     case "resumeProtectionRuntime":
       let reason = ((call.arguments as? [String: Any])?["reason"] as? String) ?? "app_foreground_resume"
@@ -229,7 +233,19 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       updateSosBackgroundHold(reason: "pending_cancel_acked")
       result(acked)
     case "closeNativeSosCycle":
-      if sosDelivery.closeDeliveredCycle() {
+      let arguments = call.arguments as? [String: Any]
+      if arguments?["force"] as? Bool == true, sosDelivery.cycleState == .preConfirmSeen {
+        // Session change: a running countdown never survives into the next
+        // account.
+        _ = sosDelivery.resetCycle()
+        sosCountdownTimer?.invalidate()
+        sosCountdownTimer = nil
+        logSosDelivery("NATIVE_SOS_COUNTDOWN_DROPPED_BY_SDK reason=session_changed")
+        updateSosBackgroundHold(reason: "sdk_session_changed")
+      }
+      if sosDelivery.closeDeliveredCycle(nodeId: (arguments?["nodeId"] as? NSNumber)?.intValue) {
+        sosCountdownTimer?.invalidate()
+        sosCountdownTimer = nil
         logSosDelivery("NATIVE_SOS_CYCLE_CLOSED_BY_SDK")
         updateSosBackgroundHold(reason: "sdk_sos_closed")
       }
@@ -294,17 +310,24 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     defaults.set(state.rawValue, forKey: Keys.runtimeState)
   }
 
-  private func stopProtectionRuntime(reason: String) {
+  private func stopProtectionRuntime(reason: String, keepSosCountdown: Bool = false) {
     connectionPreparation.finish()
     failPendingProtectionWrites(
       error: "The iOS Protection runtime stopped before the BLE write completed."
     )
     defaults.set(false, forKey: Keys.isArmed)
-    // Native no longer observes the TAG: a running countdown must never be
-    // promoted later (Dart's BLE path owns the next frames).
-    _ = sosDelivery.resetCycle()
-    sosCountdownTimer?.invalidate()
-    sosCountdownTimer = nil
+    // Native no longer observes the TAG (Dart's BLE path owns the next
+    // frames). Only the host's signed-in foreground exit keeps a running
+    // countdown, still promoted at its deadline; the SDK closes it if Dart
+    // sees a TAG/app cancel (F11). Every other stop drops it.
+    if keepSosCountdown, let deadline = sosDelivery.stopObserving() {
+      logSosDelivery("NATIVE_SOS_COUNTDOWN_KEPT_ON_STOP reason=\(reason)")
+      scheduleSosCountdown(deadlineAt: deadline)
+    } else {
+      _ = sosDelivery.resetCycle()
+      sosCountdownTimer?.invalidate()
+      sosCountdownTimer = nil
+    }
     updateSosBackgroundHold(reason: "protection_stopped")
     subscriptionsActive = false
     servicesDiscovered = false
@@ -1309,7 +1332,8 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   /// the app was suspended becomes the pending create now; a running one gets
   /// its timer (and background time) back.
   private func resumeNativeSosCycle(trigger: String) {
-    guard isArmed else {
+    // A countdown kept across a runtime stop is still promoted (no reconnect).
+    guard isArmed || sosDelivery.cycleState == .preConfirmSeen else {
       updateSosBackgroundHold(reason: trigger)
       return
     }

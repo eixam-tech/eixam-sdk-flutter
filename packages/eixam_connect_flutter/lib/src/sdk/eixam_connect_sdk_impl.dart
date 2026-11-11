@@ -3030,8 +3030,9 @@ class EixamConnectSdkImpl
       if (pending != null || snapshot.pendingNativeSosCancelCount > 0) {
         sdkReleaseLog('SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed');
       }
-      // The previous account's TAG cycle must not block the next one's SOS.
-      await protectionPlatformAdapter.closeNativeSosCycle();
+      // The previous account's TAG cycle must not block the next one's SOS,
+      // and its running countdown must never be promoted under the next one.
+      await protectionPlatformAdapter.closeNativeSosCycle(force: true);
     } catch (error) {
       sdkReleaseLog(
         'SOS_OUTBOX_NATIVE_RECORDS_DROP_FAILED errorType=${error.runtimeType}',
@@ -5061,6 +5062,11 @@ class EixamConnectSdkImpl
       '[SOS_REHYDRATE] trigger=app_resumed action=start',
     );
     _kickSosDelivery('app_resumed');
+    // A TAG countdown the native runtime saw in background becomes the Dart
+    // pre-SOS session, so the app shows (and can cancel) it on reopen.
+    await _syncPreSosSessionFromProtectionPlatformSnapshot(
+      trigger: 'app_resumed',
+    );
     await _restorePersistedPreSosSession(trigger: 'app_resumed');
     await _settleExpiredPreSosSession(trigger: 'app_resumed');
     await _rehydrateSosRuntimeState(
@@ -6819,7 +6825,11 @@ class EixamConnectSdkImpl
         return _protectionModeController.getStatus();
       }
     }
-    return _protectionModeController.exit();
+    // F11: the host's foreground exit keeps a running native TAG countdown
+    // (signed in only); unpair, suspension and session changes never do.
+    return _protectionModeController.exit(
+      keepNativeSosCountdown: _session != null,
+    );
   }
 
   @override
@@ -17713,6 +17723,12 @@ class EixamConnectSdkImpl
   bool _terminalWatermarkRejectsNativePendingCreate(
     ProtectionPendingNativeSosCreate pending,
   ) {
+    if (_cancelCoversNativePendingCreateCycle(pending)) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_PENDING_REJECTED reason=cycle_cancelled',
+      );
+      return true;
+    }
     final activeWatermark = _sosLifecycle.activeTerminalWatermark;
     final current = _sosLifecycle.current;
     final terminal = activeWatermark ?? (current.isTerminal ? current : null);
@@ -17755,6 +17771,56 @@ class EixamConnectSdkImpl
       nodeId: pending.nodeId,
       cycleKey: pending.cycleKey,
     );
+  }
+
+  /// M5: a TAG cycle with a cancel (TAG or app) never publishes a trigger
+  /// afterwards; it would open a new backend incident (false SOS). The
+  /// native create of that cycle is rejected when a cancel of the same TAG
+  /// (an unknown node counts as the same: one TAG per user) was observed at
+  /// or after the cycle START. Start, not `createdAt` (promotion time) or
+  /// `updatedAt` (advances on every retry). A cycle started after the
+  /// cancel is a new SOS and is admitted.
+  bool _cancelCoversNativePendingCreateCycle(
+    ProtectionPendingNativeSosCreate pending,
+  ) {
+    final cycleStartedAt = _nativePendingCreateCycleStartedAt(pending);
+    for (final cancel in <SosLifecycleSnapshot?>[
+      _sosLifecycle.current,
+      _sosLifecycle.activeTerminalWatermark,
+      _lastCancelledSosLifecycle,
+    ]) {
+      if (cancel == null || cancel.stage != SosLifecycleStage.cancelled) {
+        continue;
+      }
+      final cancelNode = cancel.nodeId;
+      final pendingNode = pending.nodeId;
+      if (cancelNode != null &&
+          pendingNode != null &&
+          _normalizeNodeId(cancelNode) != _normalizeNodeId(pendingNode)) {
+        continue;
+      }
+      if (!cancel.lastAuthoritativeObservation.toUtc().isBefore(
+        cycleStartedAt,
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Native hand-off keys are `<frameKey>@<cycleStartedMs>` (iOS and
+  /// Android); `createdAt` is the fallback for a key without a start.
+  DateTime _nativePendingCreateCycleStartedAt(
+    ProtectionPendingNativeSosCreate pending,
+  ) {
+    final key = pending.cycleKey.trim();
+    final separator = key.lastIndexOf('@');
+    final startedMs = separator < 0
+        ? null
+        : int.tryParse(key.substring(separator + 1));
+    return startedMs == null
+        ? pending.createdAt.toUtc()
+        : DateTime.fromMillisecondsSinceEpoch(startedMs, isUtc: true);
   }
 
   bool _terminalWatermarkRejectsRestoredEvidence({
@@ -18529,6 +18595,9 @@ class EixamConnectSdkImpl
 
   int? _nativeSosCycleClosedGeneration;
 
+  /// Latest cancelled lifecycle, kept after a newer generation opens (M5).
+  SosLifecycleSnapshot? _lastCancelledSosLifecycle;
+
   /// The SOS of this lifecycle generation really ended (cancelled, resolved
   /// or activation failed): a native TAG cycle already handed over must not stay open
   /// when its close frame never reached the phone (otherwise the next TAG SOS
@@ -18537,6 +18606,9 @@ class EixamConnectSdkImpl
   /// reached nobody (F8). Never during `cancelling` either: a failed cancel
   /// leaves the SOS open. Native keeps a cycle whose SOS was not handed over.
   void _closeNativeSosCycleOnLifecycleTerminal(SosLifecycleSnapshot lifecycle) {
+    if (lifecycle.stage == SosLifecycleStage.cancelled) {
+      _lastCancelledSosLifecycle = lifecycle;
+    }
     if (_disposed ||
         (lifecycle.stage != SosLifecycleStage.cancelled &&
             lifecycle.stage != SosLifecycleStage.resolved &&
@@ -18546,11 +18618,13 @@ class EixamConnectSdkImpl
     }
     _nativeSosCycleClosedGeneration = lifecycle.generation;
     unawaited(
-      protectionPlatformAdapter.closeNativeSosCycle().catchError(
-        (Object error) => sdkReleaseLog(
-          'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
-        ),
-      ),
+      protectionPlatformAdapter
+          .closeNativeSosCycle(nodeId: lifecycle.nodeId)
+          .catchError(
+            (Object error) => sdkReleaseLog(
+              'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
+            ),
+          ),
     );
   }
 

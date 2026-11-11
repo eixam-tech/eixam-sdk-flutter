@@ -1338,6 +1338,200 @@ void main() {
       },
     );
 
+    test(
+      'F11 resume during a native iOS TAG countdown publishes the pre-SOS countdown',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          sosRepository: _IncidentIdAwareSosRepository(),
+          protectionPlatformAdapter: adapter,
+        );
+        final published = <PublicPreSosStatus?>[];
+        StreamSubscription<PublicPreSosStatus?>? subscription;
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          subscription = harness.sdk.watchPreSosStatus().listen(published.add);
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
+          await pumpEventQueue(times: 8);
+
+          // The native iOS runtime owns BLE in background and saw the TAG
+          // countdown start; the app is reopened during the countdown.
+          final startedAt = DateTime.now().toUtc().subtract(
+            const Duration(seconds: 2),
+          );
+          adapter.snapshot = ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+            bleOwner: ProtectionBleOwner.iosPlugin,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            preSosLifecycleState: 'preConfirmSeen',
+            preSosOwner: 'device',
+            preSosCycleKey: 'F11-native-countdown',
+            preSosStartedAt: startedAt,
+            preSosExpectedActivationAt: startedAt.add(
+              const Duration(seconds: 20),
+            ),
+          );
+          published.clear();
+
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+          await pumpEventQueue(times: 20);
+
+          final countdowns = published.whereType<PublicPreSosStatus>().where(
+            (status) => status.cycleKey == 'F11-native-countdown',
+          );
+          expect(
+            countdowns,
+            isNotEmpty,
+            reason:
+                'the native countdown must become the Dart pre-SOS session on resume',
+          );
+          expect(countdowns.last.active, isTrue);
+          expect(countdowns.last.mirroredOnDevice, isTrue);
+          expect(await harness.sdk.getSosState(), isNot(SosState.sent));
+        } finally {
+          await subscription?.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'F11 TAG cancel seen by Dart during a native countdown kept across stop closes the native cycle',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+          ),
+        );
+        final harness = _SdkSosHarness(
+          sosRepository: _IncidentIdAwareSosRepository(),
+          protectionPlatformAdapter: adapter,
+        );
+        final messages = <String>[];
+        final subscription = BleDebugRegistry.instance.watch().listen((state) {
+          if (state.events.isNotEmpty) messages.add(state.events.last.message);
+        });
+        try {
+          await harness.deviceSosController.attach(commandWriter: (_) async {});
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
+          await pumpEventQueue(times: 8);
+          final startedAt = DateTime.now().toUtc().subtract(
+            const Duration(seconds: 2),
+          );
+          adapter.snapshot = ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+            bleOwner: ProtectionBleOwner.iosPlugin,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            preSosLifecycleState: 'preConfirmSeen',
+            preSosOwner: 'device',
+            preSosCycleKey: 'F11-native-countdown',
+            preSosOriginatorNodeId: 0x1234,
+            preSosStartedAt: startedAt,
+            preSosExpectedActivationAt: startedAt.add(
+              const Duration(seconds: 20),
+            ),
+          );
+          harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+          await pumpEventQueue(times: 20);
+          expect(await harness.sdk.getPreSosStatus(), isNotNull);
+
+          // The host stopped the native runtime (countdown kept natively);
+          // Dart owns BLE and sees the TAG countdown, then its cancel.
+          adapter.snapshot = ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+            preSosLifecycleState: 'preConfirmSeen',
+            preSosOwner: 'device',
+            preSosCycleKey: 'F11-native-countdown',
+            preSosOriginatorNodeId: 0x1234,
+            preSosStartedAt: startedAt,
+            preSosExpectedActivationAt: startedAt.add(
+              const Duration(seconds: 20),
+            ),
+          );
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginCountdownPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 10);
+          final closesBefore = adapter.closeNativeSosCycleCalls;
+          harness.deviceSosController.handleIncomingSosEventPacket(
+            _deviceCancelPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 30);
+
+          expect(
+            adapter.closeNativeSosCycleCalls,
+            greaterThan(closesBefore),
+            reason:
+                'a TAG cancel seen by Dart must close the kept native countdown\n'
+                '${messages.join('\n')}',
+          );
+          expect(
+            adapter.closeNativeSosCycleArgs.last.nodeId,
+            anyOf(isNull, 0x1234),
+            reason: 'the close targets the TAG that started the countdown',
+          );
+          expect(adapter.closeNativeSosCycleArgs.last.force, isFalse);
+          expect(harness.sosRepository.triggerCallCount, 0);
+        } finally {
+          await subscription.cancel();
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
+    test(
+      'F11 host exit keeps the native countdown only while signed in',
+      () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+          ),
+        );
+        final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.exitProtectionMode();
+          await harness.sdk.clearSession();
+          final signedOut = adapter.stopKeepSosCountdown.length;
+          await harness.sdk.exitProtectionMode();
+
+          expect(adapter.stopKeepSosCountdown.first, isTrue);
+          expect(adapter.stopKeepSosCountdown.skip(signedOut), <bool>[false]);
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
+
     group('transport-only SOS handoff preserves lifecycle', () {
       for (final platform in [
         ProtectionPlatform.android,
@@ -16910,10 +17104,13 @@ class _SnapshotProtectionPlatformAdapter extends Fake
   }
 
   int closeNativeSosCycleCalls = 0;
+  final List<({int? nodeId, bool force})> closeNativeSosCycleArgs =
+      <({int? nodeId, bool force})>[];
 
   @override
-  Future<void> closeNativeSosCycle() async {
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {
     closeNativeSosCycleCalls++;
+    closeNativeSosCycleArgs.add((nodeId: nodeId, force: force));
   }
 
   @override
@@ -16936,6 +17133,7 @@ class _SnapshotProtectionPlatformAdapter extends Fake
   final List<String> ensureRuntimeReasons = <String>[];
   int watchPlatformEventsCallCount = 0;
   int stopCalls = 0;
+  final List<bool> stopKeepSosCountdown = <bool>[];
   int startCalls = 0;
   ProtectionPendingNativeSosCreate? pendingNativeSosCreate;
   final List<String> droppedNativeSosCreateSignatures = <String>[];
@@ -16961,8 +17159,9 @@ class _SnapshotProtectionPlatformAdapter extends Fake
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {
     stopCalls++;
+    stopKeepSosCountdown.add(keepSosCountdown);
     snapshot = ProtectionPlatformSnapshot(
       platform: snapshot.platform,
       backgroundCapabilityReady: snapshot.backgroundCapabilityReady,
@@ -17840,6 +18039,274 @@ void _backgroundTagSosDeliveryTests() {
       }
     }
 
+    ProtectionPendingNativeSosCreate nativeCycleCreate({
+      required DateTime cycleStartedAt,
+      required DateTime createdAt,
+      DateTime? updatedAt,
+      String state = 'pending_mqtt',
+      int retryCount = 0,
+    }) {
+      final key = 'sos:4660:0@${cycleStartedAt.millisecondsSinceEpoch}';
+      return ProtectionPendingNativeSosCreate(
+        signature: 'native-sos-$key:$key:native-sos-1',
+        incidentId: 'native-sos-$key',
+        cycleKey: key,
+        correlationId: 'native-sos-1',
+        nodeId: 4660,
+        deviceId: '4660',
+        createdAt: createdAt,
+        updatedAt: updatedAt ?? createdAt,
+        retryCount: retryCount,
+        state: state,
+      );
+    }
+
+    test('M5(a) a native countdown promoted after Dart saw the TAG cancel of '
+        'the same cycle never publishes a trigger', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        final cycleStartedAt = DateTime.now().toUtc().subtract(
+          const Duration(seconds: 15),
+        );
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 10);
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _deviceCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 30);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+
+        // The kept native countdown of that same TAG cycle was promoted
+        // anyway (close lost / raced the deadline).
+        final record = nativeCycleCreate(
+          cycleStartedAt: cycleStartedAt,
+          createdAt: DateTime.now().toUtc(),
+        );
+        adapter.pendingNativeSosCreate = record;
+        adapter.emit(queued('create:device_cycle_active_after_timeout'));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        await pumpEventQueue(times: 10);
+
+        expect(
+          harness.sosRepository.triggerCallCount,
+          0,
+          reason: 'a cancelled TAG cycle must never publish a trigger',
+        );
+        expect(adapter.droppedNativeSosCreateSignatures, [record.signature]);
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    for (final boundary in ['tag_e1', 'device_inactive_status']) {
+      test(
+        'M5(b) a native create retained across retries (updatedAt advancing '
+        'past a restored cancel of its cycle) never publishes: $boundary',
+        () async {
+          final terminalAt = DateTime.now().toUtc().subtract(
+            const Duration(seconds: 30),
+          );
+          final secureStore = InMemorySecureKeyValueStore();
+          await _seedTerminalDeviceLifecycle(
+            secureStore: secureStore,
+            terminalAt: terminalAt,
+            deviceCycleKey: 'sos:4660:0',
+          );
+          final record = nativeCycleCreate(
+            cycleStartedAt: terminalAt.subtract(const Duration(seconds: 25)),
+            createdAt: terminalAt.subtract(const Duration(seconds: 5)),
+            updatedAt: DateTime.now().toUtc(),
+            state: 'mqtt_flush_started',
+            retryCount: 6,
+          );
+          final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+            const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.ios,
+              backgroundCapabilityReady: true,
+            ),
+          );
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            sosLifecycleSecureStore: secureStore,
+            protectionPlatformAdapter: adapter,
+          );
+          try {
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+            );
+            await harness.setSession();
+            // The TAG reported inactive after the cancel (inactive boundary).
+            if (boundary == 'tag_e1') {
+              harness.deviceSosController.handleIncomingSosEventPacket(
+                _deviceCancelPacket(),
+                source: DeviceSosTransitionSource.device,
+              );
+            } else {
+              harness.deviceRepository.emitStatus(
+                buildDeviceStatus(
+                  deviceId: 'ble-1',
+                  nodeId: 0x1234,
+                  canonicalHardwareId: 'CF:82:00:00:00:01',
+                ),
+              );
+            }
+            await pumpEventQueue(times: 10);
+
+            adapter.pendingNativeSosCreate = record;
+            adapter.emit(queued('create:scheduled_retry'));
+            await Future<void>.delayed(const Duration(milliseconds: 400));
+            await pumpEventQueue(times: 10);
+
+            expect(harness.sosRepository.triggerCallCount, 0);
+            expect(
+              adapter.droppedNativeSosCreateSignatures,
+              [record.signature],
+              reason: 'a create of a cancelled cycle is dropped, not retained',
+            );
+          } finally {
+            await harness.dispose();
+            await adapter.dispose();
+          }
+        },
+      );
+    }
+
+    test('M5 a native SOS whose TAG cycle started after the cancel is a new '
+        'SOS and is never dropped', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 10);
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _deviceCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 30);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        adapter.pendingNativeSosCreate = nativeCycleCreate(
+          cycleStartedAt: DateTime.now().toUtc(),
+          createdAt: DateTime.now().toUtc().add(const Duration(seconds: 20)),
+        );
+        adapter.emit(queued('create:device_cycle_active_after_timeout'));
+        await waitFor(
+          () => _hasDebugMessage('SOS_OUTBOX_NATIVE_PENDING_ADMITTED'),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+
+        // Admitted by the cycle-cancel guard; kept until delivered (the
+        // short pre-SOS cancel context of the same TAG may delay it).
+        expect(_hasDebugMessage('SOS_OUTBOX_NATIVE_PENDING_ADMITTED'), isTrue);
+        expect(
+          _hasDebugMessage('SOS_OUTBOX_NATIVE_PENDING_REJECTED'),
+          isFalse,
+        );
+        expect(adapter.droppedNativeSosCreateSignatures, isEmpty);
+        expect(adapter.pendingNativeSosCreate, isNotNull);
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('M5(c) after the user cancels, neither Dart\'s SOS nor the native '
+        'create of the same TAG cycle publishes another trigger', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: Duration.zero,
+      );
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        final cycleStartedAt = DateTime.now().toUtc().subtract(
+          const Duration(seconds: 20),
+        );
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await waitFor(() => harness.sosRepository.triggerCallCount > 0);
+        final record = nativeCycleCreate(
+          cycleStartedAt: cycleStartedAt,
+          createdAt: DateTime.now().toUtc(),
+        );
+        adapter.pendingNativeSosCreate = record;
+        adapter.emit(queued('create:device_cycle_active_after_timeout'));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        final triggersBeforeCancel = harness.sosRepository.triggerCallCount;
+
+        await harness.sdk.cancelSosAuthoritatively();
+        await pumpEventQueue(times: 20);
+        // Native still holds its record (e.g. not acked): it is pumped again.
+        adapter.pendingNativeSosCreate = nativeCycleCreate(
+          cycleStartedAt: cycleStartedAt,
+          createdAt: record.createdAt,
+          updatedAt: DateTime.now().toUtc(),
+        );
+        adapter.emit(queued('create:scheduled_retry'));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        await pumpEventQueue(times: 10);
+
+        expect(
+          harness.sosRepository.triggerCallCount,
+          triggersBeforeCancel,
+          reason: 'no trigger publish after the cancel',
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
     test('a TAG SOS queued natively in background is handed to the outbox; '
         'the native SOS notification is not duplicated', () async {
       final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
@@ -18109,6 +18576,12 @@ void _backgroundTagSosDeliveryTests() {
         expect(adapter.pendingNativeSosCreate, isNull);
         expect(adapter.droppedNativeSosCreateSignatures, isNotEmpty);
         expect(adapter.ackPendingNativeSosCancelCalls, greaterThan(acksBefore));
+        // F11: a running native countdown never survives into the next
+        // account.
+        expect(
+          adapter.closeNativeSosCycleArgs.where((args) => args.force),
+          isNotEmpty,
+        );
       } finally {
         await harness.dispose();
         await adapter.dispose();

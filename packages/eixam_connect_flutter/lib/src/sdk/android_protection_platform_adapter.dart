@@ -100,7 +100,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() {
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) {
     return _methodChannel.invokeMethod<void>('stopProtectionRuntime');
   }
 
@@ -213,7 +213,7 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle() async {}
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
 
   @override
   Future<bool> dropPendingNativeSosCreate(

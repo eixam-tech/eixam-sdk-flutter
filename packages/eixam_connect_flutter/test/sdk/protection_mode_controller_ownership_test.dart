@@ -173,6 +173,22 @@ void main() {
     },
   );
 
+  test('F11 exit keeps the native countdown only when asked', () async {
+    final adapter = _OrderingProtectionPlatformAdapter(
+      flutterReleased: () => true,
+    );
+    final controller = _testController(adapter);
+    addTearDown(controller.dispose);
+    addTearDown(adapter.dispose);
+
+    expect((await controller.enter()).success, isTrue);
+    await controller.exit();
+    expect((await controller.enter()).success, isTrue);
+    await controller.exit(keepNativeSosCountdown: true);
+
+    expect(adapter.stopKeepSosCountdown, <bool>[false, true]);
+  });
+
   test('exit propagates a native runtime stop failure', () async {
     final adapter = _OrderingProtectionPlatformAdapter(
       flutterReleased: () => true,
@@ -249,6 +265,85 @@ void main() {
     ]);
   });
 
+  group('F11 nativeSosCycleInFlight mapping', () {
+    final now = DateTime.now().toUtc();
+    final cases = <String, (ProtectionPlatformSnapshot, bool)>{
+      'idle': (_activeIosSnapshot(preSosLifecycleState: 'idle'), false),
+      'no lifecycle': (_activeIosSnapshot(), false),
+      'preConfirmSeen countdown running': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'preConfirmSeen',
+          preSosExpectedActivationAt: now.add(const Duration(seconds: 18)),
+        ),
+        true,
+      ),
+      'preConfirmSeen just past deadline (grace)': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'preConfirmSeen',
+          preSosExpectedActivationAt: now.subtract(const Duration(seconds: 5)),
+        ),
+        true,
+      ),
+      'preConfirmSeen deadline from recent start': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'preConfirmSeen',
+          preSosStartedAt: now.subtract(const Duration(seconds: 2)),
+        ),
+        true,
+      ),
+      'preConfirmSeen deadline from old start': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'preConfirmSeen',
+          preSosStartedAt: now.subtract(const Duration(minutes: 5)),
+        ),
+        false,
+      ),
+      'preConfirmSeen without deadline or start': (
+        _activeIosSnapshot(preSosLifecycleState: 'preConfirmSeen'),
+        false,
+      ),
+      'preConfirmSeen stale long past deadline': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'preConfirmSeen',
+          preSosExpectedActivationAt: now.subtract(const Duration(minutes: 5)),
+        ),
+        false,
+      ),
+      'createPending with durable record': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'createPending',
+          pendingNativeSosCreateCount: 1,
+        ),
+        false,
+      ),
+      'cancelPending with durable record': (
+        _activeIosSnapshot(
+          preSosLifecycleState: 'cancelPending',
+          pendingNativeSosCancelCount: 1,
+        ),
+        false,
+      ),
+    };
+    for (final entry in cases.entries) {
+      test(entry.key, () async {
+        final adapter = _OrderingProtectionPlatformAdapter(
+          flutterReleased: () => true,
+        )..snapshotOverride = entry.value.$1;
+        final controller = _testController(adapter);
+        addTearDown(controller.dispose);
+        addTearDown(adapter.dispose);
+
+        final status = await controller.rehydrate();
+
+        expect(status.nativeSosCycleInFlight, entry.value.$2);
+        expect(
+          (await controller.getStatus()).nativeSosCycleInFlight,
+          entry.value.$2,
+        );
+      });
+    }
+  });
+
   test(
     'native owner startup failure restores Flutter ownership without dual writer',
     () async {
@@ -282,6 +377,30 @@ void main() {
         ProtectionBleOwner.flutter,
       ]);
     },
+  );
+}
+
+ProtectionPlatformSnapshot _activeIosSnapshot({
+  String? preSosLifecycleState,
+  DateTime? preSosStartedAt,
+  DateTime? preSosExpectedActivationAt,
+  int pendingNativeSosCreateCount = 0,
+  int pendingNativeSosCancelCount = 0,
+}) {
+  return ProtectionPlatformSnapshot(
+    backgroundCapabilityReady: true,
+    platformRuntimeConfigured: true,
+    serviceRunning: true,
+    runtimeActive: true,
+    runtimeState: ProtectionRuntimeState.active,
+    coverageLevel: ProtectionCoverageLevel.partial,
+    platform: ProtectionPlatform.ios,
+    bleOwner: ProtectionBleOwner.iosPlugin,
+    preSosLifecycleState: preSosLifecycleState,
+    preSosStartedAt: preSosStartedAt,
+    preSosExpectedActivationAt: preSosExpectedActivationAt,
+    pendingNativeSosCreateCount: pendingNativeSosCreateCount,
+    pendingNativeSosCancelCount: pendingNativeSosCancelCount,
   );
 }
 
@@ -327,7 +446,7 @@ final class _OrderingProtectionPlatformAdapter extends Fake
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle() async {}
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
 
   @override
   Future<bool> ackPendingNativeSosCancel() async {
@@ -352,7 +471,9 @@ final class _OrderingProtectionPlatformAdapter extends Fake
   bool startObservedFlutterReleased = false;
   int startCalls = 0;
   int stopCalls = 0;
+  final List<bool> stopKeepSosCountdown = <bool>[];
   Object? stopError;
+  ProtectionPlatformSnapshot? snapshotOverride;
 
   void emit(ProtectionPlatformEvent event) => _events.add(event);
 
@@ -361,6 +482,8 @@ final class _OrderingProtectionPlatformAdapter extends Fake
 
   @override
   Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
+    final override = snapshotOverride;
+    if (override != null) return override;
     if (!started) {
       return const ProtectionPlatformSnapshot(
         backgroundCapabilityReady: true,
@@ -396,8 +519,9 @@ final class _OrderingProtectionPlatformAdapter extends Fake
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {
     stopCalls += 1;
+    stopKeepSosCountdown.add(keepSosCountdown);
     final error = stopError;
     if (error != null) throw error;
     started = false;

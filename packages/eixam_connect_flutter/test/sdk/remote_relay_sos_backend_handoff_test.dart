@@ -3874,7 +3874,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle() async {}
+  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
 
   @override
   Future<bool> ackPendingNativeSosCancel() async {
@@ -3916,7 +3916,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {}
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {}
 
   @override
   Future<void> ensureProtectionRuntimeActive({
