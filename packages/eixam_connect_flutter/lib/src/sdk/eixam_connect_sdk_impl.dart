@@ -25768,10 +25768,20 @@ class EixamConnectSdkImpl
       SosState.acknowledged,
     };
     final repository = sosRepository;
+    final status = deviceSosController.currentStatus;
+    final lifecycle = _sosLifecycle.current;
     if (terminalState != SosState.cancelled ||
         reason != 'device_terminal_event:inactive' ||
         !deliveredOrDelivering.contains(_publicSosState) ||
-        repository is! MqttOperationalSosRepository) {
+        repository is! MqttOperationalSosRepository ||
+        // Only this phone's connected TAG closing this phone's own SOS: never
+        // a relayed/remote closure nor an external-only (LoRa) incident.
+        status.transitionSource != DeviceSosTransitionSource.device ||
+        // The user's cancel on the TAG (0xE1), never a backend resolve close
+        // (0xE3) that reaches here as the same `inactive` terminal.
+        !_isOwnDeviceUserDeactivatedEvent(status) ||
+        !_isConnectedOwnDeviceSosStatus(status) ||
+        lifecycle.externalOnly) {
       return;
     }
     sdkReleaseLog('SOS_OUTBOX_TAG_CANCEL_OF_OPEN_SOS');
@@ -25779,7 +25789,9 @@ class EixamConnectSdkImpl
       repository
           .deliverDeviceCancel(
             reason: 'tag_cancel_open_sos',
-            observedAt: DateTime.now().toUtc(),
+            // The frame's own time: a newer SOS created after it is never
+            // superseded by this cancel.
+            observedAt: status.updatedAt.toUtc(),
           )
           .catchError(
             (Object error) => sdkReleaseLog(

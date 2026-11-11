@@ -380,7 +380,10 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
     // Native SOS hand-off (pending create / TAG cancel stored natively).
     // Without these the iOS events fell to `woke`: a background TAG SOS
     // reached the outbox only on a later app resume or MQTT reconnect (F7),
-    // and a native TAG cancel never reached the backend (F8).
+    // and a native TAG cancel never reached the backend (F8). iOS native
+    // emits only Queued today; Succeeded/Failed are mapped for parity with
+    // Android (a future iOS Failed for a transient error would mark the
+    // activation failed: emit it only for a definitive failure).
     case 'nativeBackendSyncQueued':
       return ProtectionPlatformEventType.nativeBackendSyncQueued;
     case 'nativeBackendSyncSucceeded':

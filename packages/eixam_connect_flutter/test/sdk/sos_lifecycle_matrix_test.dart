@@ -18439,6 +18439,132 @@ void _sosStabilizationTests() {
   });
 
   group('SOS stabilization (F6/F8)', () {
+    Future<
+      ({
+        _SnapshotTimeoutProtectionPlatformAdapter adapter,
+        _OnDemandOperationalRealtimeClient realtime,
+        MqttOperationalSosRepository repository,
+        _SdkSosHarness harness,
+      })
+    >
+    startNativeBornSos() async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtime,
+        mqttConfirmationWarningDelay: const Duration(milliseconds: 30),
+        deliveryBackoff: const <Duration>[Duration(milliseconds: 20)],
+      );
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        protectionPlatformAdapter: adapter,
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+      );
+      await harness.deviceSosController.attach(commandWriter: (_) async {});
+      await harness.sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+      );
+      await harness.setSession();
+      final now = DateTime.now().toUtc();
+      adapter.pendingNativeSosCreate = ProtectionPendingNativeSosCreate(
+        signature: 'native-sos-sos:4660:5@1:native-sos-1',
+        incidentId: 'native-sos-sos:4660:5@1',
+        cycleKey: 'sos:4660:5@1',
+        correlationId: 'native-sos-1',
+        nodeId: 0x1234,
+        deviceId: '${0x1234}',
+        createdAt: now,
+        updatedAt: now,
+        retryCount: 0,
+        state: 'pending_mqtt',
+      );
+      adapter.emit(
+        ProtectionPlatformEvent(
+          type: ProtectionPlatformEventType.nativeBackendSyncQueued,
+          timestamp: now,
+          reason: 'create:device_cycle_active',
+        ),
+      );
+      final deadline = DateTime.now().add(const Duration(seconds: 4));
+      while (realtime.publishedSos.isEmpty &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      return (
+        adapter: adapter,
+        realtime: realtime,
+        repository: repository,
+        harness: harness,
+      );
+    }
+
+    test('F8 negative: a backend resolve close (0xE3) of a native-born SOS '
+        'never sends a cancel', () async {
+      final env = await startNativeBornSos();
+      try {
+        expect(env.realtime.publishedSos, isNotEmpty, reason: 'precondition');
+        env.harness.deviceSosController.handleIncomingSosEventPacket(
+          _deviceBackendResolvedPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        expect(env.realtime.publishedSosCancels, isEmpty);
+      } finally {
+        await env.harness.dispose();
+        await env.repository.dispose();
+        await env.adapter.dispose();
+      }
+    });
+
+    test('F8 negative: a TAG cancel during its countdown (no SOS open) never '
+        'sends a cancel', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        protectionPlatformAdapter: adapter,
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+      );
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(packetId: 5),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 20);
+        harness.deviceSosController.handleIncomingSosEventPacket(
+          _deviceCancelPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        expect(realtime.publishedSos, isEmpty);
+        expect(realtime.publishedSosCancels, isEmpty);
+      } finally {
+        await harness.dispose();
+        await repository.dispose();
+        await adapter.dispose();
+      }
+    });
+
     test(
       'F8: a TAG cancel of an SOS born from the native hand-off (this '
       "phone's BLE path never tracked the cycle) reaches the backend over MQTT",
