@@ -29,6 +29,7 @@ void main() {
   late List<String> releaseLog;
 
   setUp(() async {
+    EixamConnectSdkImpl.resetTagRepairStateForTesting();
     await BleDebugRegistry.instance.resetForLifecycle();
     releaseLog = <String>[];
     sdkReleaseLogSinkForTesting = releaseLog.add;
@@ -89,7 +90,9 @@ void main() {
       expect(h.repository.reconnects - reconnectsBefore, 1);
       final status = await h.sdk.getDeviceStatus();
       expect(status.connected, isTrue);
-      expect(status.linkHealth, DeviceLinkHealth.ok);
+      // F12/F16: the in-app re-pair keeps the restart state, whatever the
+      // liveness check says.
+      expect(status.linkHealth, DeviceLinkHealth.restartRequiredAfterRepair);
     },
   );
 
@@ -411,6 +414,146 @@ void main() {
       reason: liveness().skip(before).join('\n'),
     );
     expect((await h.sdk.getDeviceStatus()).linkHealth, DeviceLinkHealth.ok);
+  });
+
+  List<String> repairLog() => releaseLog
+      .where((l) => l.startsWith('TAG_REPAIR_RESTART_REQUIRED '))
+      .toList();
+
+  test('F12/F16: the first pairing of an app session stays ok', () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.initialize();
+    await h.settle(const Duration(milliseconds: 300));
+    final status = await h.sdk.getDeviceStatus();
+    expect(status.paired, isTrue);
+    expect(status.linkHealth, DeviceLinkHealth.ok);
+    expect(repairLog(), isEmpty);
+  });
+
+  test('F12/F16: unpair then pair in the same app session -> '
+      'restartRequiredAfterRepair, sticky across later liveness ok and '
+      'published to watchers', () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.initialize();
+    await h.settle(const Duration(milliseconds: 300));
+    final published = <DeviceLinkHealth>[];
+    final sub = h.sdk.watchDeviceStatus().listen(
+      (s) => published.add(s.linkHealth),
+    );
+    addTearDown(sub.cancel);
+
+    await h.unpairAndRepair();
+    await h.settle(const Duration(milliseconds: 300));
+    expect(liveness(), contains(_line('ok', 'reply_received', 'pair')));
+    final status = await h.sdk.getDeviceStatus();
+    expect(status.paired, isTrue);
+    expect(status.linkHealth, DeviceLinkHealth.restartRequiredAfterRepair);
+    expect(published, contains(DeviceLinkHealth.restartRequiredAfterRepair));
+    expect(repairLog(), <String>[
+      'TAG_REPAIR_RESTART_REQUIRED reason=repaired_without_restart',
+    ]);
+
+    // A later successful liveness check never clears it.
+    final before = liveness().length;
+    h.resume();
+    expect(
+      await h.waitFor(
+        () => liveness().skip(before).any((l) => l.contains('result=ok')),
+      ),
+      isTrue,
+      reason: liveness().skip(before).join('\n'),
+    );
+    expect(
+      (await h.sdk.getDeviceStatus()).linkHealth,
+      DeviceLinkHealth.restartRequiredAfterRepair,
+    );
+
+    // Still reported while the native runtime owns BLE.
+    await h.handoff(owner: ProtectionBleOwner.iosPlugin);
+    expect(
+      (await h.sdk.getDeviceStatus()).linkHealth,
+      DeviceLinkHealth.restartRequiredAfterRepair,
+    );
+    expect(repairLog(), hasLength(1), reason: 'logged once');
+  });
+
+  for (final viaDisconnect in [false, true]) {
+    test('F12/F16 M1: an automatic (not user-initiated) unpair never marks '
+        'the next pairing (viaDisconnect=$viaDisconnect)', () async {
+      final h = _Harness();
+      addTearDown(h.dispose);
+      await h.initialize();
+      await h.settle(const Duration(milliseconds: 300));
+      if (viaDisconnect) {
+        await h.sdk.disconnectDevice(userInitiated: false);
+      } else {
+        await h.sdk.unpairDevice(userInitiated: false);
+      }
+      h.ble.systemAssociationAvailable = true;
+      await h.sdk.pairDevice(pairingCode: MockBleClient.demoDeviceId);
+      await h.settle(const Duration(milliseconds: 300));
+      final status = await h.sdk.getDeviceStatus();
+      expect(status.paired, isTrue);
+      expect(status.linkHealth, DeviceLinkHealth.ok);
+      expect(repairLog(), isEmpty);
+
+      // A later user unpair + re-pair still arms it.
+      await h.unpairAndRepair();
+      await h.settle(const Duration(milliseconds: 300));
+      expect(
+        (await h.sdk.getDeviceStatus()).linkHealth,
+        DeviceLinkHealth.restartRequiredAfterRepair,
+      );
+    });
+  }
+
+  test('F12/F16: an unpair in one SDK instance marks a pairing in a new '
+      'instance of the same process', () async {
+    final first = _Harness();
+    await first.initialize();
+    await first.settle(const Duration(milliseconds: 300));
+    await first.sdk.unpairDevice();
+    await first.dispose();
+
+    final second = _Harness();
+    addTearDown(second.dispose);
+    await second.initialize();
+    await second.settle(const Duration(milliseconds: 300));
+    expect(
+      (await second.sdk.getDeviceStatus()).linkHealth,
+      DeviceLinkHealth.restartRequiredAfterRepair,
+    );
+  });
+
+  test('F12/F16: an unpair with no TAG paired never marks the next '
+      'pairing', () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    // No TAG known to the phone: nothing is auto-connected at start.
+    h.ble.systemAssociationAvailable = false;
+    await h.ble.initialize();
+    await h.sdk.initialize(
+      const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+    );
+    await h.sdk.setSession(
+      const EixamSession.signed(
+        appId: 'app-demo',
+        externalUserId: 'user-demo',
+        userHash: 'signed-test',
+      ),
+    );
+    await h.settle(const Duration(milliseconds: 100));
+    expect((await h.sdk.getDeviceStatus()).paired, isFalse);
+    await h.sdk.unpairDevice();
+    h.ble.systemAssociationAvailable = true;
+    await h.sdk.pairDevice(pairingCode: MockBleClient.demoDeviceId);
+    await h.settle(const Duration(milliseconds: 300));
+    final status = await h.sdk.getDeviceStatus();
+    expect(status.paired, isTrue);
+    expect(status.linkHealth, DeviceLinkHealth.ok);
+    expect(repairLog(), isEmpty);
   });
 
   for (final owner in [

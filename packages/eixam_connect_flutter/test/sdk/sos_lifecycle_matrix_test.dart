@@ -19238,6 +19238,112 @@ void _backgroundTagSosDeliveryTests() {
         },
       );
 
+      test(
+        'F15 M2: after a mirror write timeout, the app cancel is sent to '
+        'the TAG only once that write completed, and nothing is published',
+        () async {
+          final hang = Completer<ProtectionPlatformCommandResult>();
+          final adapter = _HangingMirrorProtectionPlatformAdapter(
+            nativeReady(),
+            hang,
+          );
+          final harness = await start(
+            adapter,
+            deviceCountdown: const Duration(seconds: 20),
+          );
+          try {
+            final triggersBefore = harness.sosRepository.triggerCallCount;
+            // Returns after the 2.5 s mirror timeout; the 0x06 write is still
+            // pending in the native queue.
+            await harness.sdk.startPreSos(
+              countdown: const Duration(seconds: 20),
+            );
+            expect(opcodes(adapter), <int>[0x06]);
+
+            final cancel = harness.sdk.cancelPreSos();
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            expect(
+              opcodes(adapter),
+              isNot(contains(0x04)),
+              reason: 'the cancel never overtakes the pending countdown write',
+            );
+
+            // The late write lands on the TAG; the cancel follows it.
+            hang.complete(
+              const ProtectionPlatformCommandResult(
+                success: true,
+                route: 'testNativeOwner',
+              ),
+            );
+            await cancel;
+            expect(opcodes(adapter), <int>[0x06, 0x04]);
+            expect(await harness.sdk.getPreSosStatus(), isNull);
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            await pumpEventQueue(times: 20);
+            expect(harness.sosRepository.triggerCallCount, triggersBefore);
+          } finally {
+            if (!hang.isCompleted) {
+              hang.complete(
+                const ProtectionPlatformCommandResult(success: false),
+              );
+            }
+            await harness.dispose();
+          }
+        },
+      );
+
+      test('F15 Q1: a user cancel stops the app countdown at once; the '
+          'deadline passing while the TAG cancel waits publishes nothing',
+          () async {
+        final hang = Completer<ProtectionPlatformCommandResult>();
+        final adapter = _HangingMirrorProtectionPlatformAdapter(
+          nativeReady(),
+          hang,
+        );
+        final harness = await start(
+          adapter,
+          deviceCountdown: const Duration(seconds: 3),
+        );
+        try {
+          final triggersBefore = harness.sosRepository.triggerCallCount;
+          // Returns after the 2.5 s mirror timeout, ~0.5 s before the
+          // deadline; the 0x06 write is still pending natively.
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 3));
+          final cancel = harness.sdk.cancelPreSos();
+          // The deadline passes while the cancel waits for the write.
+          await Future<void>.delayed(const Duration(milliseconds: 1500));
+          await pumpEventQueue(times: 20);
+          expect(
+            harness.sosRepository.triggerCallCount,
+            triggersBefore,
+            reason: 'a cancelled countdown never dispatches during the wait',
+          );
+          expect(opcodes(adapter), isNot(contains(0x04)));
+
+          hang.complete(
+            const ProtectionPlatformCommandResult(
+              success: true,
+              route: 'testNativeOwner',
+            ),
+          );
+          await cancel;
+          expect(opcodes(adapter), <int>[0x06, 0x04]);
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          await pumpEventQueue(times: 20);
+          expect(harness.sosRepository.triggerCallCount, triggersBefore);
+          expect(
+            await harness.sdk.getSosState(),
+            isNot(SosState.sent),
+          );
+        } finally {
+          if (!hang.isCompleted) {
+            hang.complete(const ProtectionPlatformCommandResult(success: false));
+          }
+          await harness.dispose();
+        }
+      });
+
       test('an app cancel during the countdown reaches the TAG via the native '
           'channel', () async {
         final adapter = _SnapshotProtectionPlatformAdapter(nativeReady());

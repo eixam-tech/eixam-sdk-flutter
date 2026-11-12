@@ -73,8 +73,9 @@ class DeviceStatus {
 
   /// Whether the connected TAG's notifications are verified to arrive (see
   /// [DeviceLinkHealth]). Only [DeviceLinkHealth.restartRequired] while
-  /// [connected]; never persisted, so a restart starts from
-  /// [DeviceLinkHealth.ok].
+  /// [connected]; [DeviceLinkHealth.restartRequiredAfterRepair] while [paired]
+  /// after an in-app unpair + re-pair in this app session. Never persisted, so
+  /// a restart starts from [DeviceLinkHealth.ok].
   final DeviceLinkHealth linkHealth;
 
   /// Returns `true` when the device can be considered operational for safety

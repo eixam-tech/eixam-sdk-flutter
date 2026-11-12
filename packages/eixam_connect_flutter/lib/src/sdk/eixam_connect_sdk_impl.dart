@@ -708,9 +708,44 @@ class EixamConnectSdkImpl
   /// Test seam: timing of the TAG notification liveness checks.
   final TagNotifyLivenessTiming tagNotifyLivenessTiming;
   bool _tagNotifyLivenessPairPending = false;
+
+  /// F12/F16 mitigation: a TAG was unpaired by the user through
+  /// [unpairDevice]/[disconnectDevice] (`userInitiated`) in this process (any SDK instance; the BLE plugin state outlives an instance).
+  /// Never reset.
+  static bool _tagUnpairedThisSession = false;
+
+  /// F12/F16 mitigation: [pairDevice] was called after
+  /// [_tagUnpairedThisSession] was set; the next paired + connected status
+  /// completes that re-pair.
+  bool _tagRepairPending = false;
+
+  /// F12/F16 mitigation: a TAG pairing completed after [_tagUnpairedThisSession]
+  /// was set. Sticky until the process restarts; projected as
+  /// [DeviceLinkHealth.restartRequiredAfterRepair] while a TAG is paired.
+  static bool _tagRepairedWithoutRestart = false;
+
+  /// Test seam: a fresh process for the F12/F16 re-pair state.
+  @visibleForTesting
+  static void resetTagRepairStateForTesting() {
+    _tagUnpairedThisSession = false;
+    _tagRepairedWithoutRestart = false;
+  }
+
   static const Duration _nativeMirrorWriteTimeout = Duration(
     milliseconds: 2500,
   );
+
+  /// Upper bound an app cancel waits for a native countdown write that
+  /// outlived [_nativeMirrorWriteTimeout]: both native owners fail a pending
+  /// write after 10 s (Android `commandWriteTimeoutMs`, iOS
+  /// `protectionWriteTimeout`).
+  static const Duration _nativeMirrorCancelOrderingWait = Duration(seconds: 11);
+
+  /// F15 M2: the native countdown (0x06) write still pending after
+  /// [_nativeMirrorWriteTimeout], and its lifecycle generation. It may still
+  /// land on the TAG.
+  Future<void>? _nativeMirrorWriteInFlight;
+  int? _nativeMirrorWriteInFlightGeneration;
   static const Duration _tagNotifyLivenessSosFrameQuietWindow = Duration(
     seconds: 10,
   );
@@ -4055,9 +4090,15 @@ class EixamConnectSdkImpl
     return result;
   }
 
+  /// [userInitiated] (additive, default `true`): pass `false` when the host
+  /// unpairs as an automatic cleanup (e.g. a reconnect-timeout settle), not
+  /// because the user chose Unpair/Forget. Only a user-initiated unpair arms
+  /// the F12/F16 re-pair restart state
+  /// ([DeviceLinkHealth.restartRequiredAfterRepair]); the unpair itself is
+  /// identical either way.
   @override
-  Future<void> disconnectDevice() {
-    return unpairDevice();
+  Future<void> disconnectDevice({bool userInitiated = true}) {
+    return unpairDevice(userInitiated: userInitiated);
   }
 
   @override
@@ -4879,12 +4920,19 @@ class EixamConnectSdkImpl
         model.isNotEmpty;
   }
 
+  /// See [disconnectDevice] for [userInitiated].
   @override
-  Future<void> unpairDevice() async {
+  Future<void> unpairDevice({bool userInitiated = true}) async {
     _manualDisconnectRequested = true;
     _clearDeviceRuntimeResidueAfterManualDisconnect();
     final preferredDevice = await preferredBleDeviceStore.getPreferredDevice();
     final currentStatus = await _readCurrentDeviceStatusForUnpair();
+    if (userInitiated &&
+        (preferredDevice != null ||
+            currentStatus?.paired == true ||
+            _lastDeviceStatus?.paired == true)) {
+      _tagUnpairedThisSession = true;
+    }
     await _stopProtectionRuntimeForManualUnpair();
     await _removeAndroidBluetoothBondsForManualUnpair(
       preferredDevice: preferredDevice,
@@ -5022,9 +5070,23 @@ class EixamConnectSdkImpl
     _manualDisconnectRequested = false;
     _tagNotifyLivenessPairPending = true;
     BleDebugRegistry.instance.selectDevice(pairingCode);
+    if (_tagUnpairedThisSession) _tagRepairPending = true;
     return _cacheDeviceStatus(
       _bleAutoReconnectCoordinator.pairDeviceManually(pairingCode: pairingCode),
       reason: 'pair_device',
+    );
+  }
+
+  /// F12/F16: after an in-app unpair + re-pair without an app restart, TAG SOS
+  /// notifications may stop reaching the app and the backend (root cause
+  /// unknown; an app restart fixes it). Flags it, sticky for the process.
+  void _markTagRepairedWithoutRestartIfNeeded(DeviceStatus status) {
+    if (!_tagRepairPending || !status.paired || !status.connected) return;
+    _tagRepairPending = false;
+    if (_tagRepairedWithoutRestart) return;
+    _tagRepairedWithoutRestart = true;
+    sdkReleaseLog(
+      'TAG_REPAIR_RESTART_REQUIRED reason=repaired_without_restart',
     );
   }
 
@@ -8663,7 +8725,7 @@ class EixamConnectSdkImpl
           'path=ble_inet_sos_trigger countdown=${countdown.inSeconds}',
         );
         final deviceStatus = mirrorThroughNativeOwner
-            ? await triggerDeviceSos().timeout(_nativeMirrorWriteTimeout)
+            ? await _triggerNativeMirrorWrite(armingLifecycle.generation)
             : await triggerDeviceSos();
         if (mirrorThroughNativeOwner) {
           BleDebugRegistry.instance.recordEvent(
@@ -8774,12 +8836,72 @@ class EixamConnectSdkImpl
     });
   }
 
+  /// F15 M2: the native countdown write, bounded for the countdown. On
+  /// timeout the write keeps running natively and may still reach the TAG, so
+  /// the generation counts as mirrored (TAG frames of that episode are not a
+  /// new SOS after a cancel) and an app cancel waits for it before sending the
+  /// TAG cancel. Android's native queue is not strictly FIFO: a queued write
+  /// drained from the GATT callback thread is re-posted to the main thread
+  /// (ProtectionBleRuntimeOwner.drainQueuedCommand), where a newer command can
+  /// start first.
+  Future<DeviceSosStatus> _triggerNativeMirrorWrite(int generation) async {
+    final write = triggerDeviceSos();
+    try {
+      return await write.timeout(_nativeMirrorWriteTimeout);
+    } on TimeoutException {
+      _deviceMirrorDispatchedGenerations.add(generation);
+      late final Future<void> inFlight;
+      inFlight = write.then<void>((_) {}, onError: (Object _) {}).whenComplete(
+        () {
+          if (identical(_nativeMirrorWriteInFlight, inFlight)) {
+            _nativeMirrorWriteInFlight = null;
+            _nativeMirrorWriteInFlightGeneration = null;
+          }
+        },
+      );
+      _nativeMirrorWriteInFlight = inFlight;
+      _nativeMirrorWriteInFlightGeneration = generation;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_MIRROR_NATIVE write_in_flight generation=$generation',
+      );
+      rethrow;
+    }
+  }
+
+  /// F15 M2: an app cancel never overtakes a countdown write that may still
+  /// land on the TAG.
+  Future<void> _awaitNativeMirrorWriteBeforeCancel(int generation) async {
+    final inFlight = _nativeMirrorWriteInFlight;
+    if (inFlight == null ||
+        _nativeMirrorWriteInFlightGeneration != generation) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_MIRROR_NATIVE cancel_waits_for_write generation=$generation',
+    );
+    await inFlight.timeout(_nativeMirrorCancelOrderingWait, onTimeout: () {});
+  }
+
   @override
   Future<void> cancelPreSos() async {
     final previousClosureInFlight = _publicSosClosureInFlight;
     final lifecycleAtCancellationStart = _sosLifecycle.current;
     final pendingActivationAtCancellationStart = _pendingSosActivation;
     _publicSosClosureInFlight = _SosClosureIntent.cancel;
+    // F15 Q1: the user's cancel stops the app countdown at once, before any
+    // TAG command wait: the countdown can no longer dispatch the SOS (no
+    // revision bump, so the terminalization below still matches it). Only a
+    // failed TAG cancel (rethrown below) lets the countdown resume, as before.
+    final pendingToHold = pendingActivationAtCancellationStart;
+    final heldPendingActivation =
+        pendingToHold != null &&
+        !pendingToHold.dispatchCommitted &&
+        !pendingToHold.cancellationRequested &&
+        pendingToHold.generation == lifecycleAtCancellationStart.generation;
+    if (heldPendingActivation) {
+      pendingToHold.cancellationRequested = true;
+    }
+    var cancelCompleted = false;
     try {
       final status = await deviceSosController.getStatus();
       final activeSession = _preSosSession;
@@ -8815,7 +8937,14 @@ class EixamConnectSdkImpl
           runtimeStatus?.deviceId ??
           _lastDeviceStatus?.deviceId ??
           '-';
-      final cancelDecision = deviceConnected && commandAvailable
+      // F15 M2: a countdown write that may still land on the TAG always gets
+      // its TAG cancel while the native runtime owns the link.
+      final nativeMirrorPossiblyLanded =
+          _nativeMirrorWriteInFlightGeneration ==
+              lifecycleAtCancellationStart.generation &&
+          _isAuthoritativeNativeProtectionBleOwner;
+      final cancelDecision =
+          (deviceConnected && commandAvailable) || nativeMirrorPossiblyLanded
           ? 'send_device_cancel'
           : 'local_only_cancel';
       BleDebugRegistry.instance.recordEvent(
@@ -8843,11 +8972,25 @@ class EixamConnectSdkImpl
             '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
             'path=ble_pre_sos_cancel countdown=0',
           );
-          await _closeDeviceSos(
-            intent: _SosClosureIntent.cancel,
-            syncBackendForDeviceOriginatedCycle: false,
-            waitForDeviceAcknowledgement: false,
+          await _awaitNativeMirrorWriteBeforeCancel(
+            lifecycleAtCancellationStart.generation,
           );
+          // Never send this cancel into a newer cycle started meanwhile.
+          if (_sameSosGeneration(
+            _sosLifecycle.current,
+            lifecycleAtCancellationStart,
+          )) {
+            await _closeDeviceSos(
+              intent: _SosClosureIntent.cancel,
+              syncBackendForDeviceOriginatedCycle: false,
+              waitForDeviceAcknowledgement: false,
+            );
+          } else {
+            BleDebugRegistry.instance.recordEvent(
+              '[APP_PRE_SOS_CANCEL] action=device_cancel_skipped '
+              'reason=newer_generation',
+            );
+          }
           BleDebugRegistry.instance.recordEvent(
             '[APP_PRE_SOS_DEVICE_COMMAND] action=sent '
             'path=ble_pre_sos_cancel',
@@ -8868,7 +9011,10 @@ class EixamConnectSdkImpl
             'decision=send_device_cancel result=device_cancel_failed '
             'error=${_compactDiagnosticValue(error)}',
           );
-          rethrow;
+          // Only the F15 M2 extra attempt (the command path looked
+          // unavailable) is best effort: before it this was a local-only
+          // cancel. Otherwise unchanged.
+          if (deviceConnected && commandAvailable) rethrow;
         }
       }
       if (status.state == DeviceSosState.preConfirm) {
@@ -8889,8 +9035,19 @@ class EixamConnectSdkImpl
         '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
         'decision=$cancelDecision result=local_state_cleared',
       );
+      cancelCompleted = true;
     } finally {
       _publicSosClosureInFlight = previousClosureInFlight;
+      if (heldPendingActivation &&
+          !cancelCompleted &&
+          !pendingToHold.cancelled &&
+          identical(_pendingSosActivation, pendingToHold)) {
+        // The cancel failed: the countdown resumes (known risk M3).
+        pendingToHold.cancellationRequested = false;
+        BleDebugRegistry.instance.recordEvent(
+          '[APP_PRE_SOS_CANCEL] action=countdown_resumed reason=cancel_failed',
+        );
+      }
     }
   }
 
@@ -15359,6 +15516,11 @@ class EixamConnectSdkImpl
         staleCycle: cycleRevision,
         currentCycle: session.cycleRevision,
       );
+      return;
+    }
+    // F15 Q1: a user cancel in progress holds the app countdown.
+    if (session.owner == _SosOwner.app &&
+        _pendingSosActivation?.cancellationRequested == true) {
       return;
     }
     if (_isPreSosSessionExpired(session)) {
@@ -23959,10 +24121,12 @@ class EixamConnectSdkImpl
             lastSeen: rawStatus.lastSeen ?? DateTime.now(),
           )
         : rawStatus;
-    final linkHealth =
-        projectedStatus.connected &&
-            _tagNotifyLiveness.restartRequired &&
-            !_isProtectionPlatformOwningBle
+    _markTagRepairedWithoutRestartIfNeeded(projectedStatus);
+    final linkHealth = _tagRepairedWithoutRestart && projectedStatus.paired
+        ? DeviceLinkHealth.restartRequiredAfterRepair
+        : projectedStatus.connected &&
+              _tagNotifyLiveness.restartRequired &&
+              !_isProtectionPlatformOwningBle
         ? DeviceLinkHealth.restartRequired
         : DeviceLinkHealth.ok;
     final publicStatus = projectedStatus.linkHealth == linkHealth
