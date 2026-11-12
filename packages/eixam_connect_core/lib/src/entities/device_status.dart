@@ -2,6 +2,7 @@ import '../enums/device_lifecycle_state.dart';
 import '../enums/device_provisioning_status.dart';
 import '../enums/device_battery_level.dart';
 import '../enums/device_battery_source.dart';
+import '../enums/device_link_health.dart';
 
 /// Runtime view of the paired EIXAM device exposed by the SDK.
 ///
@@ -30,6 +31,7 @@ class DeviceStatus {
     this.lifecycleState = DeviceLifecycleState.unpaired,
     this.provisioningError,
     this.inDfuBootloader = false,
+    this.linkHealth = DeviceLinkHealth.ok,
   });
   final String deviceId;
   final int? nodeId;
@@ -69,6 +71,12 @@ class DeviceStatus {
   /// shown or used as one. Hosts show a recovery state instead.
   final bool inDfuBootloader;
 
+  /// Whether the connected TAG's notifications are verified to arrive (see
+  /// [DeviceLinkHealth]). Only [DeviceLinkHealth.restartRequired] while
+  /// [connected]; never persisted, so a restart starts from
+  /// [DeviceLinkHealth.ok].
+  final DeviceLinkHealth linkHealth;
+
   /// Returns `true` when the device can be considered operational for safety
   /// workflows such as location tracking and SOS triggering.
   bool get isReadyForSafety => paired && activated && connected;
@@ -105,6 +113,7 @@ class DeviceStatus {
     bool clearProvisioningError = false,
     bool? inDfuBootloader,
     bool clearFirmwareVersion = false,
+    DeviceLinkHealth? linkHealth,
   }) {
     return DeviceStatus(
       deviceId: deviceId ?? this.deviceId,
@@ -141,6 +150,7 @@ class DeviceStatus {
           ? null
           : (provisioningError ?? this.provisioningError),
       inDfuBootloader: inDfuBootloader ?? this.inDfuBootloader,
+      linkHealth: linkHealth ?? this.linkHealth,
     );
   }
 }

@@ -1790,6 +1790,17 @@ class MqttOperationalSosRepository
       incomingIncident: confirmed,
       reason: 'outbox_backend_confirmation',
     );
+    if (!accepted && _stateMachine.current == confirmed.state) {
+      // Already `sent`: `_emit` is a no-op for an unchanged state, but the
+      // incident changed (backend-confirmed, canonical id, reception step).
+      // Re-publish the current state so incident watchers and the lifecycle
+      // see the confirmation now, not on a later state change (F13).
+      _stateController.add(_stateMachine.current);
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_BACKEND_CONFIRMATION_REPUBLISHED reason=state_unchanged '
+        'state=${confirmed.state.name}',
+      );
+    }
     if (accepted && !_acceptedLifecycleTransitionController.isClosed) {
       _acceptedLifecycleTransitionController.add(
         MqttAcceptedSosLifecycleTransition(

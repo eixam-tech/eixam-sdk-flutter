@@ -59,6 +59,7 @@ import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_database.dart';
 import 'activity_availability_controller.dart';
 import 'tag_alerts_controller.dart';
+import 'tag_notify_liveness_monitor.dart';
 import '../data/datasources_local/tag_alert_store.dart';
 import '../tag_alerts/tag_alert_notification_ids.dart';
 import '../tag_alerts/tag_alert_permission_gateway.dart';
@@ -292,6 +293,8 @@ class EixamConnectSdkImpl
     ActivityAvailabilityStore? activityAvailabilityStore,
     @visibleForTesting this.tagBatteryProbeRequest,
     @visibleForTesting this.tagLeaseDisarmsInBackground,
+    @visibleForTesting
+    this.tagNotifyLivenessTiming = const TagNotifyLivenessTiming(),
     TagAlertStore? tagAlertStore,
     TagAlertNotifier? tagAlertNotifier,
     TagAlertPermissionGateway? tagAlertPermissions,
@@ -701,6 +704,32 @@ class EixamConnectSdkImpl
   /// background. Null means yes, on every platform: a suspended app cannot push
   /// the lease. Only the periodic push is affected, never arm-at-disconnect.
   final bool? tagLeaseDisarmsInBackground;
+
+  /// Test seam: timing of the TAG notification liveness checks.
+  final TagNotifyLivenessTiming tagNotifyLivenessTiming;
+  bool _tagNotifyLivenessPairPending = false;
+  static const Duration _tagNotifyLivenessSosFrameQuietWindow = Duration(
+    seconds: 10,
+  );
+  late final TagNotifyLivenessMonitor _tagNotifyLiveness =
+      TagNotifyLivenessMonitor(
+        timing: tagNotifyLivenessTiming,
+        skipReason: () => _tagNotifyLivenessSkipReason,
+        probe: _probeTagNotifyLiveness,
+        recover: _recoverTagNotifyLiveness,
+        onRestartRequiredChanged: (_) =>
+            scheduleMicrotask(_republishDeviceStatusForTagNotifyLiveness),
+        log: sdkReleaseLog,
+        isStatusSupportProven: () {
+          final status = _lastDeviceStatus;
+          return status != null &&
+              status.deviceId.isNotEmpty &&
+              status.deviceId == _tagStatusReplyProvenFor;
+        },
+      );
+
+  /// The TAG (transport id) that answered a `0x23` in this app session.
+  String? _tagStatusReplyProvenFor;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -1633,6 +1662,13 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
+        final replied = event.deviceRuntimeStatusPacket;
+        if (replied != null) {
+          _markTagStatusReplyProven(
+            replyDeviceId: event.deviceId,
+            replyNodeId: replied.status.nodeId,
+          );
+        }
         _ingestTagBatteryFromEvent(event);
         _trackTagPosition(event);
         if (event.type == BleIncomingEventType.telPositionBacklog) {
@@ -4979,6 +5015,7 @@ class EixamConnectSdkImpl
   @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) {
     _manualDisconnectRequested = false;
+    _tagNotifyLivenessPairPending = true;
     BleDebugRegistry.instance.selectDevice(pairingCode);
     return _cacheDeviceStatus(
       _bleAutoReconnectCoordinator.pairDeviceManually(pairingCode: pairingCode),
@@ -5018,6 +5055,7 @@ class EixamConnectSdkImpl
           );
         }
         unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
+        if (!wasResumed) _tagNotifyLiveness.onResume();
         // Only a real return from the background (paused/detached), never
         // inactive/hidden focus changes such as permission dialogs.
         if (!wasResumed && _tagBatteryProbeArmed) {
@@ -6287,6 +6325,145 @@ class EixamConnectSdkImpl
     sosStage: _sosLifecycle.current.stage,
     deviceSosState: deviceSosController.currentStatus.state,
   );
+
+  /// Credits `0x23` support only for a reply of THIS TAG: same transport id
+  /// and, when both are known, the same node id.
+  void _markTagStatusReplyProven({
+    required String? replyDeviceId,
+    required int? replyNodeId,
+  }) {
+    final status = _lastDeviceStatus;
+    if (status == null ||
+        !status.paired ||
+        status.deviceId.isEmpty ||
+        replyDeviceId != status.deviceId) {
+      return;
+    }
+    final tagNodeId = status.nodeId;
+    if (tagNodeId != null && replyNodeId != null && tagNodeId != replyNodeId) {
+      return;
+    }
+    _tagStatusReplyProvenFor = status.deviceId;
+  }
+
+  void _observeTagNotifyLiveness(DeviceStatus status) {
+    // Proof is per TAG: a TAG change or an unpair needs a new 0x23 reply; a
+    // reconnect of the same TAG keeps it.
+    if (!status.paired ||
+        (status.deviceId.isNotEmpty &&
+            status.deviceId != _tagStatusReplyProvenFor)) {
+      _tagStatusReplyProvenFor = null;
+    }
+    // Only a Flutter-owned link is checked: a native owner looks like a
+    // disconnect (timers cancelled) and its hand-back like a new connection
+    // (+5 s/+60 s/+3 min checks).
+    final connected = status.connected && !_isProtectionPlatformOwningBle;
+    final trigger = _tagNotifyLivenessPairPending ? 'pair' : 'reconnect';
+    if (connected) _tagNotifyLivenessPairPending = false;
+    _tagNotifyLiveness.onLink(
+      connected: connected,
+      deviceKey: status.paired && status.deviceId.isNotEmpty
+          ? status.deviceId
+          : null,
+      trigger: trigger,
+    );
+  }
+
+  /// Why a TAG notification liveness check (or its recovery reconnect) must
+  /// not run now; null when it may. Only the Flutter-owned link is checked;
+  /// an SOS in any stage, firmware/migration/provisioning work and a running
+  /// reconnect defer it.
+  String? get _tagNotifyLivenessSkipReason {
+    if (_disposed) return 'disposed';
+    if (_isProtectionPlatformOwningBle) return 'native_owner';
+    if (_isAppBackgrounded) return 'background';
+    // A TAG in its DFU bootloader runs no EIXAM firmware (F11). Stock
+    // Meshtastic never reaches a Flutter EIXAM link (incompatible connects are
+    // refused) and has no EIXAM command path ('path_not_ready').
+    if (_lastDeviceStatus?.inDfuBootloader == true) return 'dfu_bootloader';
+    final sos = sosRepository;
+    if (TagBatteryProbeGate.isSosActive(
+          preSosActive: _hasActivePreSosSession,
+          sosStage: _sosLifecycle.current.stage,
+          deviceSosState: deviceSosController.currentStatus.state,
+        ) ||
+        (sos is MqttOperationalSosRepository && !sos.deliveryStatus.isEmpty)) {
+      return 'sos_active';
+    }
+    final repository = deviceRepository;
+    if (repository is InMemoryDeviceRepository) {
+      final lastSosFrameAt = repository.lastSosFrameAt;
+      if (lastSosFrameAt != null &&
+          DateTime.now().difference(lastSosFrameAt) <
+              _tagNotifyLivenessSosFrameQuietWindow) {
+        return 'sos_frame_recent';
+      }
+      // Never join another caller's 0x23: its timeout may be shorter.
+      if (repository.hasPendingRuntimeStatusRequest) {
+        return 'status_request_pending';
+      }
+    }
+    if (_firmwareOtaInProgress ||
+        firmwareUpdateCoordinator?.hasActiveSession == true) {
+      return 'firmware_update';
+    }
+    if (deviceMigrationCoordinator?.ownsBleOperation == true) {
+      return 'migration';
+    }
+    if (_deviceProvisioningCoordinator?.isBusy == true) return 'provisioning';
+    if (_bleAutoReconnectCoordinator.connectionAttemptActive ||
+        _bleAutoReconnectCoordinator.reconnectCampaignActive) {
+      return 'reconnecting';
+    }
+    if (repository is! InMemoryDeviceRepository ||
+        !repository.hasCommandCapableBleRuntime) {
+      return 'path_not_ready';
+    }
+    return null;
+  }
+
+  /// One `0x23 GET_DEVICE_STATUS` on the Flutter command path: its reply only
+  /// arrives as a TAG notification. A failed write is reported as such and is
+  /// never a missed reply. Never reconnects or rebinds.
+  Future<TagNotifyProbeResult> _probeTagNotifyLiveness(Duration timeout) async {
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository ||
+        _isProtectionPlatformOwningBle ||
+        !repository.hasCommandCapableBleRuntime ||
+        repository.hasPendingRuntimeStatusRequest) {
+      return TagNotifyProbeResult.notReady;
+    }
+    try {
+      // Support is proven only by the reply event itself (its device id and
+      // node id are matched in the incoming-event listener).
+      await repository.requestRuntimeStatusForLiveness(timeout: timeout);
+      return TagNotifyProbeResult.replied;
+    } on DeviceException catch (error) {
+      return switch (error.code) {
+        'E_DEVICE_STATUS_TIMEOUT' => TagNotifyProbeResult.noReply,
+        'E_DEVICE_COMMAND_NOT_READY' => TagNotifyProbeResult.notReady,
+        _ => TagNotifyProbeResult.writeFailed,
+      };
+    } catch (_) {
+      return TagNotifyProbeResult.writeFailed;
+    }
+  }
+
+  /// Drops the Flutter-owned link; the existing unexpected-disconnect path
+  /// (reconnect coordinator backoff -> preferred reconnect) brings it back.
+  /// The monitor re-evaluates [_tagNotifyLivenessSkipReason] synchronously
+  /// right before calling this.
+  Future<bool> _recoverTagNotifyLiveness() async {
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository) return false;
+    return repository.dropBleLinkForRecovery(reason: 'notify_liveness');
+  }
+
+  void _republishDeviceStatusForTagNotifyLiveness() {
+    final raw = _lastDeviceStatus;
+    if (_disposed || raw == null) return;
+    _publishPublicDeviceStatus(rawStatus: raw, reason: 'tag_notify_liveness');
+  }
 
   /// Starts one `0x23 GET_DEVICE_STATUS` only if the command path is **already**
   /// usable, and returns null otherwise. It never goes through
@@ -13321,10 +13498,29 @@ class EixamConnectSdkImpl
       return;
     }
     if (state == 'cancelPending') {
+      // A native TAG cancel always cancels a TAG-owned or TAG-mirrored
+      // countdown, never an app countdown the TAG never ran (F9).
+      final session = _preSosSession;
+      if (session != null &&
+          session.owner == _SosOwner.app &&
+          !session.mirroredOnDevice) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NATIVE_CANCEL_PENDING_IGNORED reason=unmirrored_app_countdown',
+        );
+        return;
+      }
       _clearPreSosSession(
         reason: 'native_pre_sos_cancel_pending',
         emitIdleState: false,
       );
+      if (session != null) {
+        // The TAG closed this cycle while the native runtime owned BLE: the
+        // countdown cached by the Flutter controller is stale and must not
+        // resurrect the session on the next rehydration.
+        deviceSosController.clearPreSosLocally(
+          reason: 'native_pre_sos_cancel_pending',
+        );
+      }
       return;
     }
     if (state == 'createPending') {
@@ -20166,11 +20362,24 @@ class EixamConnectSdkImpl
         !DateTime.now().isBefore(status.expectedActivationAt!);
     final cycleKey = _deriveDeviceSosCycleKey(status);
     SosState? chosenPublicState;
+    // A closed TAG status (inactive/resolved) cached before an app-owned,
+    // unmirrored countdown started (e.g. a background TAG cancel) says
+    // nothing about that countdown (F9). An open TAG SOS is never stale.
+    final statusObservedAt = status.derivedFromBlePacket
+        ? (status.lastPacketAt ?? status.updatedAt)
+        : status.updatedAt;
+    final staleForAppCountdown =
+        session != null &&
+        session.owner == _SosOwner.app &&
+        !session.mirroredOnDevice &&
+        (status.state == DeviceSosState.inactive ||
+            status.state == DeviceSosState.resolved) &&
+        !statusObservedAt.isAfter(session.startedAt);
 
     if (session != null &&
         !sessionExpired &&
         !session.mirroredOnDevice &&
-        !status.derivedFromBlePacket) {
+        (!status.derivedFromBlePacket || staleForAppCountdown)) {
       chosenPublicState = SosState.arming;
     } else if (status.state == DeviceSosState.preConfirm &&
         !deviceCountdownExpired) {
@@ -23547,6 +23756,7 @@ class EixamConnectSdkImpl
     // stream and the native Protection status stream), so a drop observed by
     // the native owner reaches the disconnect policy too.
     _observeTagLink(publicStatus);
+    _observeTagNotifyLiveness(publicStatus);
     unawaited(
       _activityRecordings
           .inputDisconnected(
@@ -23641,7 +23851,7 @@ class EixamConnectSdkImpl
         'reason=flutter_ble_owner',
       );
     }
-    final publicStatus = projection.visibleConnected && !rawStatus.connected
+    final projectedStatus = projection.visibleConnected && !rawStatus.connected
         ? rawStatus.copyWith(
             connected: true,
             lifecycleState: rawStatus.activated
@@ -23650,6 +23860,15 @@ class EixamConnectSdkImpl
             lastSeen: rawStatus.lastSeen ?? DateTime.now(),
           )
         : rawStatus;
+    final linkHealth =
+        projectedStatus.connected &&
+            _tagNotifyLiveness.restartRequired &&
+            !_isProtectionPlatformOwningBle
+        ? DeviceLinkHealth.restartRequired
+        : DeviceLinkHealth.ok;
+    final publicStatus = projectedStatus.linkHealth == linkHealth
+        ? projectedStatus
+        : projectedStatus.copyWith(linkHealth: linkHealth);
 
     BleDebugRegistry.instance.recordEvent(
       '[DEVICE_FLOW] sdk_public_device_status '
@@ -24109,7 +24328,8 @@ class EixamConnectSdkImpl
         previous.firmwareVersion != next.firmwareVersion ||
         previous.signalQuality != next.signalQuality ||
         previous.lifecycleState != next.lifecycleState ||
-        previous.provisioningError != next.provisioningError;
+        previous.provisioningError != next.provisioningError ||
+        previous.linkHealth != next.linkHealth;
   }
 
   Future<void> _resumeDeathManMonitoringIfNeeded() async {
@@ -28373,6 +28593,7 @@ class EixamConnectSdkImpl
       availabilityDisposalError = error;
       availabilityDisposalStack = stack;
     }
+    _tagNotifyLiveness.dispose();
     _tagLeaseTicker?.cancel();
     _tagLeaseTicker = null;
     unawaited(_tagRekeySub?.cancel());

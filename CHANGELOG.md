@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — a native TAG cancel never wipes an app countdown (F9)
+
+- A native Protection snapshot in `cancelPending` (a TAG cancel seen by the native runtime) always cancels a TAG-owned or TAG-mirrored countdown (and settles the countdown cached by the Flutter controller, so it is never resurrected and never sent), and never clears an app countdown that was never mirrored to the TAG. Before, it also cleared a new app countdown: `getPreSosStatus()` right after `startPreSos()` synced the stale snapshot and returned null, so nothing was sent. No timestamps are compared. Before, `getPreSosStatus()` right after `startPreSos()` synced that stale snapshot, cleared the new app countdown and returned null, so nothing was sent.
+- Device rehydration (`getPreSosStatus`, resume, …) no longer clears an app-owned, unmirrored pre-SOS countdown with a closed (inactive/resolved) TAG status cached before that countdown started (e.g. the inactive state left by a background TAG cancel while the native runtime owns BLE). A TAG status observed after the start still clears it as before.
+
+## Unreleased — backend SOS confirmation always reaches watchers (F13)
+
+- `MqttOperationalSosRepository`: an outbox backend confirmation (`_applyOutboxTriggerConfirmation`) while the repository is already `sent` re-publishes the state, so `watchCurrentIncident` / `currentSosIncidentProgressStream` and the SOS lifecycle see the confirmed incident ("SOS received by Eixam") at once instead of on a later state change. Same-state listeners were already exercised by actuator-only updates.
+
+## Unreleased — TAG notification liveness safety net (F12)
+
+- While the Flutter BLE path owns a connected TAG (never while the native Protection runtime owns BLE), the SDK checks that notifications still arrive: one `0x23 GET_DEVICE_STATUS`, whose reply only arrives as a notification, expected within 8 s. Checks run +5 s, +60 s and +3 min after every connect/pair/reconnect, on app resume and every 10 min. Skipped in background; deferred (no BLE traffic, no reconnect) while a pre-SOS/SOS is open or the SOS outbox has pending work, and during firmware update, migration, provisioning or a running reconnect.
+- Two consecutive missing replies with successful writes drop the TAG link once through the existing unexpected-disconnect reconnect path. If replies are still missing after that reconnect, new `DeviceStatus.linkHealth` is `DeviceLinkHealth.restartRequired` (hosts: "Restart EIXAM to finish connecting your TAG"); a later successful check returns it to `ok`. A failed write is never a missed reply. Additive, default `ok`, not persisted.
+- Release logs `TAG_NOTIFY_LIVENESS result=ok|missed|recovered|failed|skipped reason=… trigger=…` (no identifiers).
+- Guards: the restart state is never raised during an SOS (re-evaluated when it ends) and is never shown while the native runtime owns BLE (hand-back to Flutter reschedules the checks); no check (so no drop) within 10 s of a TAG SOS frame or while another `0x23` is pending; the drop itself never starts during an SOS (re-checked right before it); the follow-up reconnect is not held back. The drop and the restart state need a `0x23` reply from that TAG (same transport id and, when known, node id) earlier in the app session (proven firmware support); a TAG in its DFU bootloader is never probed.
+- `InMemoryDeviceRepository`: a runtime status with no effective change no longer starts a new state generation (it is still persisted). Before, the runtime echo of a reconnect result cancelled the reconnect's own emit when the reconnect-time `0x23` got no reply, so a reconnected TAG stayed "disconnected".
+
 ## Unreleased — background TAG SOS is always delivered over MQTT (F4/F5)
 
 - SOS trigger and cancel go through a durable, ordered MQTT outbox (`SosDeliveryOutbox`): persisted before the first attempt (survives process death), retried with bounded backoff (1, 2, 4, 8, 15, then every 30 s) until the backend confirms (`processed`/`cancelled` event, or the read-only active-SOS endpoint), same incident identity on every attempt, a cancel supersedes older queued triggers and never precedes or closes a newer SOS. No REST trigger or cancel (`trigger_must_use_mqtt` unchanged; resolve still uses REST, no MQTT resolve exists in the backend).

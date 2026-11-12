@@ -18549,6 +18549,439 @@ void _backgroundTagSosDeliveryTests() {
       }
     });
 
+    test('F9: a stale native cancelPending never wipes a new app countdown; '
+        'the app SOS is sent when it elapses', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          bleOwner: ProtectionBleOwner.androidService,
+          preSosLifecycleState: 'cancelPending',
+          preSosStartedAt: DateTime.now().toUtc().subtract(
+            const Duration(minutes: 5),
+          ),
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 10);
+        final triggersBefore = harness.sosRepository.triggerCallCount;
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 300),
+        );
+        final status = await harness.sdk.getPreSosStatus();
+
+        expect(status, isNotNull, reason: 'the app countdown must survive');
+        expect(status!.expectedActivationAt, isNotNull);
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        await pumpEventQueue(times: 20);
+        expect(
+          harness.sosRepository.triggerCallCount,
+          greaterThan(triggersBefore),
+          reason: 'the app SOS is sent when the countdown elapses',
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('H1: a native TAG cancel of the same cycle still cancels a mirrored '
+        'app countdown; nothing is sent', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(backgroundCapabilityReady: true),
+      );
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        connectedBle: true,
+      );
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 10);
+        final triggersBefore = harness.sosRepository.triggerCallCount;
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 500),
+        );
+        // The TAG confirms the mirrored countdown.
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 5);
+        final started = await harness.sdk.getPreSosStatus();
+        expect(started, isNotNull);
+        expect(started!.mirroredOnDevice, isTrue);
+
+        // The user cancels on the TAG; the native runtime tracked this cycle.
+        adapter.snapshot = ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          bleOwner: ProtectionBleOwner.androidService,
+          preSosLifecycleState: 'cancelPending',
+          preSosStartedAt: started.startedAt,
+        );
+        expect(await harness.sdk.getPreSosStatus(), isNull);
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        await pumpEventQueue(times: 20);
+        expect(
+          harness.sosRepository.triggerCallCount,
+          triggersBefore,
+          reason: 'never sent after a TAG cancel',
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('H1: a native TAG cancel cancels a TAG-owned countdown; nothing is '
+        'sent', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(backgroundCapabilityReady: true),
+      );
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        connectedBle: true,
+        deviceCountdown: const Duration(milliseconds: 500),
+      );
+      try {
+        await harness.deviceSosController.attach(commandWriter: (_) async {});
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 10);
+        final triggersBefore = harness.sosRepository.triggerCallCount;
+        // The TAG starts its own countdown.
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginCountdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await pumpEventQueue(times: 5);
+        final started = await harness.sdk.getPreSosStatus();
+        expect(started, isNotNull);
+        expect(started!.owner, PublicPreSosOwner.device);
+
+        adapter.snapshot = const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          bleOwner: ProtectionBleOwner.androidService,
+          preSosLifecycleState: 'cancelPending',
+        );
+        expect(await harness.sdk.getPreSosStatus(), isNull);
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        await pumpEventQueue(times: 20);
+        expect(
+          harness.sosRepository.triggerCallCount,
+          triggersBefore,
+          reason: 'never sent after a TAG cancel',
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    test('H1: a native cancelPending without a start time never clears an '
+        'unmirrored app countdown (iOS); the app SOS is sent', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          bleOwner: ProtectionBleOwner.iosPlugin,
+          preSosLifecycleState: 'cancelPending',
+        ),
+      );
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 10);
+        final triggersBefore = harness.sosRepository.triggerCallCount;
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 300),
+        );
+        final status = await harness.sdk.getPreSosStatus();
+        expect(status, isNotNull, reason: 'the app countdown must survive');
+        expect(status!.mirroredOnDevice, isFalse);
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        await pumpEventQueue(times: 20);
+        expect(
+          harness.sosRepository.triggerCallCount,
+          greaterThan(triggersBefore),
+          reason: 'the app SOS is sent when the countdown elapses',
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    for (final mirrored in [true, false]) {
+      test('H1: after a relaunch a native TAG cancel '
+          '${mirrored ? 'cancels the restored mirrored' : 'keeps the restored unmirrored'} '
+          'app countdown', () async {
+        final localStore = MemorySharedPrefsSdkStore();
+        final secureStore = InMemorySecureKeyValueStore();
+        final first = _SdkSosHarness(
+          localStore: localStore,
+          sosLifecycleSecureStore: secureStore,
+          connectedBle: mirrored,
+        );
+        DateTime startedAt;
+        try {
+          if (mirrored) {
+            await first.deviceSosController.attach(commandWriter: (_) async {});
+          }
+          await first.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await first.setSession();
+          await first.sdk.startPreSos(countdown: const Duration(seconds: 2));
+          if (mirrored) {
+            first.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginCountdownPacket(),
+              source: DeviceSosTransitionSource.device,
+            );
+            await pumpEventQueue(times: 5);
+          }
+          final started = (await first.sdk.getPreSosStatus())!;
+          expect(started.mirroredOnDevice, mirrored);
+          startedAt = started.startedAt;
+        } finally {
+          await first.dispose();
+        }
+
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            bleOwner: ProtectionBleOwner.androidService,
+            preSosLifecycleState: 'cancelPending',
+            preSosStartedAt: startedAt,
+          ),
+        );
+        final second = _SdkSosHarness(
+          localStore: localStore,
+          sosLifecycleSecureStore: secureStore,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await second.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await second.setSession();
+          final restored = await second.sdk.getPreSosStatus();
+          await Future<void>.delayed(const Duration(milliseconds: 2500));
+          await pumpEventQueue(times: 20);
+          if (mirrored) {
+            expect(restored, isNull);
+            expect(
+              second.sosRepository.triggerCallCount,
+              0,
+              reason: 'never sent after a TAG cancel',
+            );
+          } else {
+            expect(restored, isNotNull);
+            expect(
+              second.sosRepository.triggerCallCount,
+              greaterThan(0),
+              reason: 'the restored app SOS is sent',
+            );
+          }
+        } finally {
+          await second.dispose();
+          await adapter.dispose();
+        }
+      });
+    }
+
+    test('M2: a cached ACTIVE TAG SOS is never treated as stale: an app hold '
+        'never adds a second SOS', () async {
+      var deviceNow = DateTime.now().toUtc().subtract(
+        const Duration(minutes: 5),
+      );
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+          serviceRunning: true,
+          runtimeActive: true,
+          bleOwner: ProtectionBleOwner.androidService,
+        ),
+      );
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        deviceClock: () => deviceNow,
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+      );
+      var sequence = 0;
+      try {
+        // A TAG SOS that went ACTIVE before the app hold (no cancel).
+        for (var i = 0; i < 2; i++) {
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginActivePacketForCycle(packetId: 4),
+            source: DeviceSosTransitionSource.device,
+            resolutionContext: _physicalResolutionContext(
+              receiveSequence: ++sequence,
+              terminal: false,
+              receiveSequenceDomain: 'M2',
+            ),
+          );
+          deviceNow = deviceNow.add(const Duration(seconds: 21));
+        }
+        expect(
+          harness.deviceSosController.currentStatus.state,
+          DeviceSosState.active,
+        );
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await pumpEventQueue(times: 20);
+        final triggersBefore = harness.sosRepository.triggerCallCount;
+        deviceNow = DateTime.now().toUtc();
+
+        await harness.sdk.startPreSos(
+          countdown: const Duration(milliseconds: 400),
+        );
+        await harness.sdk.getPreSosStatus();
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await pumpEventQueue(times: 20);
+
+        expect(
+          harness.sosRepository.triggerCallCount,
+          triggersBefore,
+          reason: 'the app hold must not start a second SOS',
+        );
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
+    for (final cancelAfterStart in [false, true]) {
+      test(
+        'F9c: a TAG cancel cached ${cancelAfterStart ? 'AFTER' : 'before'} '
+        'the app countdown started '
+        '${cancelAfterStart ? 'still clears it' : 'never clears it; the app SOS is sent'}',
+        () async {
+          var deviceNow = DateTime.now().toUtc().subtract(
+            const Duration(minutes: 5),
+          );
+          final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+            const ProtectionPlatformSnapshot(
+              platform: ProtectionPlatform.android,
+              backgroundCapabilityReady: true,
+              serviceRunning: true,
+              runtimeActive: true,
+              bleOwner: ProtectionBleOwner.androidService,
+            ),
+          );
+          final harness = _SdkSosHarness(
+            protectionPlatformAdapter: adapter,
+            deviceClock: () => deviceNow,
+          );
+          var sequence = 0;
+          void tagSosThenCancel() {
+            // TAG SOS past its countdown (active), then the TAG cancel.
+            for (var i = 0; i < 2; i++) {
+              harness.deviceSosController.handleIncomingSosPacket(
+                _deviceOriginActivePacketForCycle(packetId: 3),
+                source: DeviceSosTransitionSource.device,
+                resolutionContext: _physicalResolutionContext(
+                  receiveSequence: ++sequence,
+                  terminal: false,
+                  receiveSequenceDomain: 'F9c',
+                ),
+              );
+              deviceNow = deviceNow.add(const Duration(seconds: 21));
+            }
+            harness.deviceSosController.handleIncomingSosEventPacket(
+              _deviceCancelPacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: ++sequence,
+                terminal: true,
+                receiveSequenceDomain: 'F9c',
+              ),
+            );
+          }
+
+          try {
+            if (!cancelAfterStart) {
+              // Background TAG SOS + TAG cancel, minutes before the app hold.
+              tagSosThenCancel();
+            }
+            await harness.sdk.initialize(
+              const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+            );
+            await harness.setSession();
+            await pumpEventQueue(times: 10);
+            final triggersBefore = harness.sosRepository.triggerCallCount;
+            deviceNow = DateTime.now().toUtc();
+
+            await harness.sdk.startPreSos(
+              countdown: const Duration(milliseconds: 400),
+            );
+            if (cancelAfterStart) {
+              tagSosThenCancel();
+              await pumpEventQueue(times: 10);
+            }
+            final status = await harness.sdk.getPreSosStatus();
+
+            if (!cancelAfterStart) {
+              expect(
+                status,
+                isNotNull,
+                reason: 'the app countdown must survive',
+              );
+              await Future<void>.delayed(const Duration(milliseconds: 700));
+              await pumpEventQueue(times: 20);
+              expect(
+                harness.sosRepository.triggerCallCount,
+                greaterThan(triggersBefore),
+                reason: 'the app SOS is sent when the countdown elapses',
+              );
+            } else {
+              expect(
+                status,
+                isNull,
+                reason: 'a TAG cancel observed after the start still clears it',
+              );
+            }
+          } finally {
+            await harness.dispose();
+            await adapter.dispose();
+          }
+        },
+      );
+    }
+
     test('logout drops native SOS records of the previous account', () async {
       final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
         ProtectionPlatformSnapshot(

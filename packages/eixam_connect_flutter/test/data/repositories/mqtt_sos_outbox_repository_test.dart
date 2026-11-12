@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_remote/sos_remote_data_source.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_history_dto.dart';
 import 'package:eixam_connect_flutter/src/data/dtos/sos_incident_dto.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/mqtt_operational_sos_repository.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:eixam_connect_flutter/src/diagnostics/sdk_release_log.dart';
 import 'package:eixam_connect_flutter/src/sdk/operational_realtime_client.dart';
 import 'package:eixam_connect_flutter/src/sdk/sdk_mqtt_contract.dart';
@@ -271,6 +273,65 @@ void main() {
     expect(restartedRealtime.publishedSos.first.cycleKey, 'sos:7:8');
     await eventually(() => !repository.deliveryStatus.pendingTrigger);
     expect(remote.restTriggerCalls, 0);
+  });
+
+  test('F13: a backend confirmation while the repository is already `sent` '
+      'still wakes incident watchers (confirmed reception)', () async {
+    // Trigger delivered over MQTT but never confirmed (no event, no read).
+    realtime.failSosPublishes = 1000;
+    await repository.triggerSos(
+      triggerSource: 'ble_device_runtime_status',
+      originatorNodeId: 7,
+      incidentId: 'native-sos-7-13',
+      cycleKey: 'sos:7:13',
+    );
+    await eventually(() => realtime.sosPublishAttempts >= 1);
+    await repository.dispose();
+    // The repository already shows the SOS as `sent`, still unconfirmed
+    // (e.g. a takeover/restore), with the trigger still in the outbox.
+    final persisted = LocalStateSerializers.sosIncidentFromJson(
+      (await store.readJson(SharedPrefsSdkStore.sosIncidentKey))!,
+    );
+    expect(persisted.isBackendConfirmed, isFalse);
+    await store.saveJson(
+      SharedPrefsSdkStore.sosIncidentKey,
+      LocalStateSerializers.sosIncidentToJson(
+        persisted.copyWith(state: SosState.sent),
+      ),
+    );
+    await store.saveString(SharedPrefsSdkStore.sosStateKey, 'sent');
+
+    final restartedRealtime = _Realtime();
+    realtime = restartedRealtime;
+    remote.active = null;
+    restartedRealtime.onSosPublished = () => remote.active = _activeDto('b-13');
+    repository = build();
+    await repository.restoreState();
+    expect(await repository.getSosState(), SosState.sent);
+    final seen = <SosIncident?>[];
+    final subscription = repository.watchCurrentIncident().listen(seen.add);
+    addTearDown(subscription.cancel);
+    await eventually(() => seen.isNotEmpty);
+    expect(seen.last!.isBackendConfirmed, isFalse);
+
+    // PUBACK + backend read confirm the outbox head.
+    await eventually(() => !repository.deliveryStatus.pendingTrigger);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect((await repository.getCurrentIncident())!.isBackendConfirmed, isTrue);
+    expect(await repository.getSosState(), SosState.sent);
+    expect(
+      seen.last?.isBackendConfirmed,
+      isTrue,
+      reason:
+          'watchers must see the confirmed incident without waiting for '
+          'a later state change',
+    );
+    expect(seen.last!.id, 'b-13');
+    expect(
+      seen.last!.progress.steps.first.detailCode,
+      'backend_incident_confirmed',
+    );
   });
 
   test('a backend close during trigger retries retires the trigger: no '
