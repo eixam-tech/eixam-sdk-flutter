@@ -472,8 +472,14 @@ class FakeDeviceRepository
   @override
   Future<DeviceStatus> refreshDeviceStatus() async {
     refreshCallCount++;
+    final error = refreshError;
+    if (error != null) throw error;
     return _status;
   }
+
+  /// Thrown by [refreshDeviceStatus], e.g. the Android Flutter runtime while
+  /// the native runtime owns BLE (`E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED`).
+  Object? refreshError;
 
   @override
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {

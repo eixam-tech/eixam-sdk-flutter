@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — app SOS countdown reaches the TAG while the native runtime owns BLE (F15)
+
+- With the native Protection runtime owning the TAG link (Android: the Flutter runtime refuses refreshes, `E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED`), an app SOS hold now sends the countdown to the TAG through the native command channel (`SOS_DEVICE_MIRROR_DECISION reason=native_owner_command_ready`) instead of skipping it (`command_channel_not_ready`). The TAG confirmation marks it mirrored as before, so a TAG cancel of that cycle cancels it. A failed native write never blocks the backend SOS (`SOS_DEVICE_MIRROR_NATIVE result=failed reason=<code>`; success `result=sent`). Flutter-owned links unchanged; no ownership change.
+- The app countdown deadline is anchored to the user's hold; the native mirror write is bounded to 2.5 s (`SOS_DEVICE_MIRROR_NATIVE result=failed reason=timeout`), so a slow or failing TAG write never delays the backend SOS.
+- A native pending create queued by the TAG's own timer (which can expire up to ~2 s before the app countdown it mirrors) is no longer published while the app countdown runs: the app dispatch at its deadline sends the SOS and the native create is acked as the same SOS; an app cancel drops it (`SOS_OUTBOX_NATIVE_CREATE_DEFERRED` / `SOS_OUTBOX_NATIVE_CREATE_SETTLED_BY_APP_COUNTDOWN`).
+
 ## Unreleased — a native TAG cancel never wipes an app countdown (F9)
 
 - A native Protection snapshot in `cancelPending` (a TAG cancel seen by the native runtime) always cancels a TAG-owned or TAG-mirrored countdown (and settles the countdown cached by the Flutter controller, so it is never resurrected and never sent), and never clears an app countdown that was never mirrored to the TAG. Before, it also cleared a new app countdown: `getPreSosStatus()` right after `startPreSos()` synced the stale snapshot and returned null, so nothing was sent. No timestamps are compared. Before, `getPreSosStatus()` right after `startPreSos()` synced that stale snapshot, cleared the new app countdown and returned null, so nothing was sent.

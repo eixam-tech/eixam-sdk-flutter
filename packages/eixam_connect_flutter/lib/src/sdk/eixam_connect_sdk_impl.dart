@@ -708,6 +708,9 @@ class EixamConnectSdkImpl
   /// Test seam: timing of the TAG notification liveness checks.
   final TagNotifyLivenessTiming tagNotifyLivenessTiming;
   bool _tagNotifyLivenessPairPending = false;
+  static const Duration _nativeMirrorWriteTimeout = Duration(
+    milliseconds: 2500,
+  );
   static const Duration _tagNotifyLivenessSosFrameQuietWindow = Duration(
     seconds: 10,
   );
@@ -3064,7 +3067,9 @@ class EixamConnectSdkImpl
         await protectionPlatformAdapter.ackPendingNativeSosCancel();
       }
       if (pending != null || snapshot.pendingNativeSosCancelCount > 0) {
-        sdkReleaseLog('SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed');
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed',
+        );
       }
       // The previous account's TAG cycle must not block the next one's SOS,
       // and its running countdown must never be promoted under the next one.
@@ -8612,10 +8617,18 @@ class EixamConnectSdkImpl
       lifecycleRevision: armingLifecycle.revision,
       operationRevision: ++_pendingSosActivationRevision,
     );
-    final canMirrorPreSosOnDevice = runtimeStatus != null;
+    // F15: while the native runtime owns the TAG link (its command path
+    // ready), the Flutter runtime cannot report a command-ready status, but
+    // the countdown still reaches the TAG through the native command channel.
+    final mirrorThroughNativeOwner =
+        runtimeStatus == null && _isAuthoritativeNativeProtectionBleOwner;
+    final canMirrorPreSosOnDevice =
+        runtimeStatus != null || mirrorThroughNativeOwner;
     _logSosDeviceMirrorDecision(
       attempt: canMirrorPreSosOnDevice,
-      reason: canMirrorPreSosOnDevice
+      reason: mirrorThroughNativeOwner
+          ? 'native_owner_command_ready'
+          : canMirrorPreSosOnDevice
           ? 'connected_command_ready_tag'
           : executionCapability.hasConnectedDevice
           ? 'command_channel_not_ready'
@@ -8637,6 +8650,9 @@ class EixamConnectSdkImpl
       'nodeId=${runtimeStatus?.nodeId?.toString() ?? "-"} '
       'hardwareId=${runtimeStatus?.canonicalHardwareId ?? "-"}',
     );
+    // The countdown is anchored to the user's hold, never to how long the
+    // TAG write takes (F15).
+    final userTriggeredAt = DateTime.now();
     if (canMirrorPreSosOnDevice) {
       try {
         BleDebugRegistry.instance.recordEvent(
@@ -8646,7 +8662,14 @@ class EixamConnectSdkImpl
           '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
           'path=ble_inet_sos_trigger countdown=${countdown.inSeconds}',
         );
-        final deviceStatus = await triggerDeviceSos();
+        final deviceStatus = mirrorThroughNativeOwner
+            ? await triggerDeviceSos().timeout(_nativeMirrorWriteTimeout)
+            : await triggerDeviceSos();
+        if (mirrorThroughNativeOwner) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_MIRROR_NATIVE result=sent',
+          );
+        }
         _deviceMirrorDispatchedGenerations.add(armingLifecycle.generation);
         mirroredOnDevice =
             deviceStatus.derivedFromBlePacket &&
@@ -8681,12 +8704,22 @@ class EixamConnectSdkImpl
           owner: owner,
           cycleKey:
               observedDeviceCycleKey ?? _newLocalPreSosCycleKey(localStartedAt),
-          originatorNodeId: deviceStatus.nodeId ?? runtimeStatus.nodeId,
+          originatorNodeId: deviceStatus.nodeId ?? runtimeStatus?.nodeId,
           packetId: deviceStatus.packetId,
           activationPayload: activationPayload,
         );
         return;
       } catch (error) {
+        if (mirrorThroughNativeOwner) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_MIRROR_NATIVE result=failed reason='
+            '${error is TimeoutException
+                ? 'timeout'
+                : error is EixamSdkException
+                ? error.code
+                : error.runtimeType}',
+          );
+        }
         BleDebugRegistry.instance.recordEvent(
           '[APP_PRE_SOS_DEVICE_COMMAND] action=skip '
           'reason=send_failed bleConnected=true cmd=${deviceSosController.longCommandAvailable} '
@@ -8703,7 +8736,7 @@ class EixamConnectSdkImpl
       );
     }
 
-    final startedAt = DateTime.now();
+    final startedAt = userTriggeredAt;
     _syncPreSosSession(
       startedAt: startedAt,
       expectedActivationAt: startedAt.add(countdown),
@@ -8847,6 +8880,7 @@ class EixamConnectSdkImpl
         cycleKey: activeSession?.cycleKey,
         hasBackendIncident: hasIncidentId,
       );
+      await _settleNativeCreateDeferredToAppCountdown(cancelled: true);
       _clearPreSosSession(
         reason: 'public_pre_sos_cancelled',
         emitIdleState: true,
@@ -14059,18 +14093,19 @@ class EixamConnectSdkImpl
       }
       _sosDeliveryHoldReported = pending;
       unawaited(
-        protectionPlatformAdapter.setSosDeliveryPending(pending).catchError(
-          (Object error) => sdkReleaseLog(
-            'SOS_OUTBOX_DELIVERY_HOLD_FAILED errorType=${error.runtimeType}',
-          ),
-        ),
+        protectionPlatformAdapter
+            .setSosDeliveryPending(pending)
+            .catchError(
+              (Object error) => sdkReleaseLog(
+                'SOS_OUTBOX_DELIVERY_HOLD_FAILED errorType=${error.runtimeType}',
+              ),
+            ),
       );
     }
 
     report(repository.deliveryStatus);
     _sosDeliveryHoldSub = repository.watchDeliveryStatus().listen(report);
-    repository.unconfirmedTriggerPrecheck =
-        _ensureSosReportingDeviceRegistered;
+    repository.unconfirmedTriggerPrecheck = _ensureSosReportingDeviceRegistered;
   }
 
   /// An SOS the broker acknowledged was not confirmed by the backend. The
@@ -14288,6 +14323,52 @@ class EixamConnectSdkImpl
     _emitPublicSosState(SosState.sending, source: trigger);
   }
 
+  /// Native create queued (by the TAG's own timer) while the app countdown
+  /// still runs: published only through the app dispatch at its deadline.
+  String? _nativeCreateDeferredToAppCountdown;
+
+  bool get _appCountdownOwnsNativeCreate {
+    final operation = _pendingSosActivation;
+    return _preSosSession?.owner == _SosOwner.app &&
+        operation != null &&
+        _isPendingSosActivationCurrent(operation) &&
+        !operation.dispatchCommitted;
+  }
+
+  /// After the app countdown: the deferred native create is the same SOS. It
+  /// is acked once the app dispatch produced an incident, dropped on cancel.
+  Future<void> _settleNativeCreateDeferredToAppCountdown({
+    required bool cancelled,
+    SosIncident? incident,
+  }) async {
+    final signature = _nativeCreateDeferredToAppCountdown;
+    if (signature == null || (!cancelled && incident == null)) return;
+    _nativeCreateDeferredToAppCountdown = null;
+    try {
+      if (cancelled) {
+        await protectionPlatformAdapter.dropPendingNativeSosCreate(
+          signature,
+          reason: 'app_countdown_cancelled',
+        );
+      } else {
+        await protectionPlatformAdapter.ackPendingNativeSosCreate(
+          signature,
+          backendIncidentId: _isLocalAppSosIncidentId(incident!.id)
+              ? null
+              : incident.id,
+        );
+      }
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CREATE_SETTLED_BY_APP_COUNTDOWN '
+        'result=${cancelled ? "dropped" : "acked"}',
+      );
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CREATE_SETTLE_FAILED errorType=${error.runtimeType}',
+      );
+    }
+  }
+
   bool _reconcileNativeCreateWithPendingAppActivation({
     required String trigger,
   }) {
@@ -14361,6 +14442,20 @@ class EixamConnectSdkImpl
         trigger: trigger,
       )) {
         return;
+      }
+      // F15: the TAG's own timer can expire up to ~2 s before the app
+      // countdown it mirrors. Never publish before the app deadline.
+      if (_appCountdownOwnsNativeCreate) {
+        _nativeCreateDeferredToAppCountdown = pending.signature;
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_CREATE_DEFERRED reason=app_countdown_running',
+        );
+        return;
+      }
+      // No app countdown owns it any more (e.g. the app dispatch failed):
+      // the normal flush settles it, so a later app cancel never drops it.
+      if (_nativeCreateDeferredToAppCountdown == pending.signature) {
+        _nativeCreateDeferredToAppCountdown = null;
       }
       final confirmedIncident = await sosRepository.getCurrentIncident();
       if (_hasNonRuntimeVisibleSosIncident(confirmedIncident)) {
@@ -15338,6 +15433,10 @@ class EixamConnectSdkImpl
       if (operation != null && !operation.dispatchResult.isCompleted) {
         operation.dispatchResult.complete();
       }
+      await _settleNativeCreateDeferredToAppCountdown(
+        cancelled: false,
+        incident: incident,
+      );
       if (operation != null &&
           (!_isPendingSosActivationCurrent(operation) ||
               operation.cancellationRequested)) {
@@ -26037,10 +26136,7 @@ class EixamConnectSdkImpl
       'decision=accept_terminal incidentId=${terminalIncident.id} '
       'canonicalIncidentId=${terminalIncident.id} reason=$reason',
     );
-    _deliverTagCancelOfOpenSos(
-      reason: reason,
-      terminalState: terminalState,
-    );
+    _deliverTagCancelOfOpenSos(reason: reason, terminalState: terminalState);
     _emitPublicSosState(terminalState, source: 'device_terminal_event');
     _emitOperationalDiagnostics();
   }

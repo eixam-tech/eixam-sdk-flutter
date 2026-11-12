@@ -17221,6 +17221,26 @@ class _SnapshotProtectionPlatformAdapter extends Fake
   }
 }
 
+/// The native write of the app countdown (0x06) hangs (GATT callback never
+/// arrives); every other command is accepted.
+final class _HangingMirrorProtectionPlatformAdapter
+    extends _SnapshotProtectionPlatformAdapter {
+  _HangingMirrorProtectionPlatformAdapter(super.snapshot, this.hang);
+
+  final Completer<ProtectionPlatformCommandResult> hang;
+
+  @override
+  Future<ProtectionPlatformCommandResult> sendProtectionCommand({
+    required ProtectionPlatformCommandRequest request,
+  }) {
+    if (request.bytes.first == 0x06) {
+      commands.add(request);
+      return hang.future;
+    }
+    return super.sendProtectionCommand(request: request);
+  }
+}
+
 final class _SnapshotTimeoutProtectionPlatformAdapter
     extends _SnapshotProtectionPlatformAdapter {
   _SnapshotTimeoutProtectionPlatformAdapter(super.snapshot);
@@ -18981,6 +19001,265 @@ void _backgroundTagSosDeliveryTests() {
         },
       );
     }
+
+    group('F15 app countdown mirrored through the native owner', () {
+      ProtectionPlatformSnapshot nativeReady({String? preSosState}) =>
+          ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: true,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: true,
+            protectedDeviceId: 'CF:82:00:00:00:01',
+            activeDeviceId: 'CF:82:00:00:00:01',
+            bleHardwareId: 'CF:82:00:00:00:01',
+            preSosLifecycleState: preSosState,
+          );
+
+      Future<_SdkSosHarness> start(
+        _SnapshotProtectionPlatformAdapter adapter, {
+        Duration deviceCountdown = const Duration(milliseconds: 500),
+      }) async {
+        final harness = _SdkSosHarness(
+          protectionPlatformAdapter: adapter,
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: deviceCountdown,
+        );
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await harness.sdk.rehydrateProtectionState();
+        await pumpEventQueue(times: 10);
+        // Android: the Flutter runtime refuses refreshes while native owns BLE.
+        harness.deviceRepository.refreshError = const DeviceException(
+          'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+          'E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED',
+        );
+        return harness;
+      }
+
+      List<int> opcodes(_SnapshotProtectionPlatformAdapter adapter) =>
+          adapter.commands.map((c) => c.bytes.first).toList();
+
+      test('the countdown reaches the TAG via the native channel; a native '
+          'TAG cancel of it cancels it and nothing is sent', () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(nativeReady());
+        final harness = await start(adapter);
+        try {
+          final triggersBefore = harness.sosRepository.triggerCallCount;
+          await harness.sdk.startPreSos(
+            countdown: const Duration(milliseconds: 500),
+          );
+          expect(opcodes(adapter), contains(0x06));
+          // The TAG confirms its countdown (frame ingested from native).
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginCountdownPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 5);
+          expect(
+            (await harness.sdk.getPreSosStatus())!.mirroredOnDevice,
+            isTrue,
+          );
+
+          adapter.snapshot = nativeReady(preSosState: 'cancelPending');
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+          await Future<void>.delayed(const Duration(milliseconds: 900));
+          await pumpEventQueue(times: 20);
+          expect(harness.sosRepository.triggerCallCount, triggersBefore);
+        } finally {
+          await harness.dispose();
+        }
+      });
+
+      test(
+        'a failed native write never blocks or delays the backend SOS',
+        () async {
+          final adapter = _SnapshotProtectionPlatformAdapter(
+            nativeReady(),
+            commandResult: Completer<ProtectionPlatformCommandResult>()
+              ..complete(
+                const ProtectionPlatformCommandResult(
+                  success: false,
+                  route: 'testNativeOwner',
+                  error: 'E_NATIVE_WRITE_FAILED',
+                ),
+              ),
+          );
+          final harness = await start(adapter);
+          try {
+            final triggersBefore = harness.sosRepository.triggerCallCount;
+            await harness.sdk.startPreSos(
+              countdown: const Duration(milliseconds: 400),
+            );
+            expect(opcodes(adapter), contains(0x06));
+            expect(
+              _hasDebugMessage('SOS_DEVICE_MIRROR_NATIVE result=failed'),
+              isTrue,
+            );
+            final status = await harness.sdk.getPreSosStatus();
+            expect(status, isNotNull);
+            expect(status!.mirroredOnDevice, isFalse);
+            await Future<void>.delayed(const Duration(milliseconds: 800));
+            await pumpEventQueue(times: 20);
+            expect(
+              harness.sosRepository.triggerCallCount,
+              greaterThan(triggersBefore),
+            );
+          } finally {
+            await harness.dispose();
+          }
+        },
+      );
+
+      test('M1: a native pending create before the app deadline is not '
+          'published early; exactly one trigger at the app deadline', () async {
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          nativeReady(),
+        );
+        final harness = await start(
+          adapter,
+          deviceCountdown: const Duration(milliseconds: 1500),
+        );
+        try {
+          final triggersBefore = harness.sosRepository.triggerCallCount;
+          await harness.sdk.startPreSos(
+            countdown: const Duration(milliseconds: 1500),
+          );
+          // The TAG countdown (native timer, anchored ~2 s earlier) expires
+          // first: native queues its create while the app countdown runs.
+          adapter
+            ..pendingNativeSosCreate = nativeCreate('sos:4660:9')
+            ..snapshot = nativeReady(preSosState: 'createPending');
+          await harness.sdk.getPreSosStatus();
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+          await pumpEventQueue(times: 20);
+          expect(
+            harness.sosRepository.triggerCallCount,
+            triggersBefore,
+            reason: 'nothing is published before the app deadline',
+          );
+
+          await Future<void>.delayed(const Duration(milliseconds: 1400));
+          await pumpEventQueue(times: 30);
+          expect(harness.sosRepository.triggerCallCount, triggersBefore + 1);
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      });
+
+      test('M1: an app cancel after the native pending create arrived sends '
+          'nothing at all', () async {
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          nativeReady(),
+        );
+        final harness = await start(
+          adapter,
+          deviceCountdown: const Duration(milliseconds: 1500),
+        );
+        try {
+          final triggersBefore = harness.sosRepository.triggerCallCount;
+          await harness.sdk.startPreSos(
+            countdown: const Duration(milliseconds: 1500),
+          );
+          adapter
+            ..pendingNativeSosCreate = nativeCreate('sos:4660:10')
+            ..snapshot = nativeReady(preSosState: 'createPending');
+          await harness.sdk.getPreSosStatus();
+          await Future<void>.delayed(const Duration(milliseconds: 400));
+          adapter.snapshot = nativeReady();
+          await harness.sdk.cancelPreSos();
+          await Future<void>.delayed(const Duration(milliseconds: 1600));
+          await pumpEventQueue(times: 30);
+
+          expect(harness.sosRepository.triggerCallCount, triggersBefore);
+          expect(adapter.pendingNativeSosCreate, isNull);
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      });
+
+      test(
+        'M2: a hanging native mirror write never delays the app SOS',
+        () async {
+          final hang = Completer<ProtectionPlatformCommandResult>();
+          final adapter = _HangingMirrorProtectionPlatformAdapter(
+            nativeReady(),
+            hang,
+          );
+          final harness = await start(
+            adapter,
+            deviceCountdown: const Duration(seconds: 3),
+          );
+          try {
+            final triggersBefore = harness.sosRepository.triggerCallCount;
+            final messages = <String>[];
+            final debug = BleDebugRegistry.instance.watch().listen((state) {
+              if (state.events.isNotEmpty) {
+                messages.add(state.events.last.message);
+              }
+            });
+            addTearDown(debug.cancel);
+            unawaited(
+              harness.sdk.startPreSos(countdown: const Duration(seconds: 3)),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 3800));
+            expect(
+              messages,
+              contains('SOS_DEVICE_MIRROR_NATIVE result=failed reason=timeout'),
+            );
+            await pumpEventQueue(times: 30);
+            expect(
+              harness.sosRepository.triggerCallCount,
+              greaterThan(triggersBefore),
+              reason: 'sent at trigger time + countdown, not after the write',
+            );
+          } finally {
+            if (!hang.isCompleted) {
+              hang.complete(
+                const ProtectionPlatformCommandResult(success: false),
+              );
+            }
+            await harness.dispose();
+          }
+        },
+      );
+
+      test('an app cancel during the countdown reaches the TAG via the native '
+          'channel', () async {
+        final adapter = _SnapshotProtectionPlatformAdapter(nativeReady());
+        final harness = await start(adapter);
+        try {
+          await harness.sdk.startPreSos(countdown: const Duration(seconds: 20));
+          harness.deviceSosController.handleIncomingSosPacket(
+            _deviceOriginCountdownPacket(),
+            source: DeviceSosTransitionSource.device,
+          );
+          await pumpEventQueue(times: 5);
+          adapter.commands.clear();
+
+          await harness.sdk.cancelPreSos();
+
+          expect(opcodes(adapter), contains(0x04));
+          expect(await harness.sdk.getPreSosStatus(), isNull);
+        } finally {
+          await harness.dispose();
+        }
+      });
+    });
 
     test('logout drops native SOS records of the previous account', () async {
       final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
