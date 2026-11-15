@@ -508,7 +508,17 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     guard isArmed,
           let target = defaults.string(forKey: Keys.protectedDeviceId),
           UUID(uuidString: target) == peripheral.identifier else { return }
-    _ = connectionPreparation.begin(peripheral.identifier)
+    guard centralManager?.state == .poweredOn else {
+      // F17a: state restoration arrives before power-on; iOS ignores a
+      // discovery requested now. Keep the peripheral; power-on rediscovers.
+      protectedPeripheral = peripheral
+      peripheral.delegate = self
+      updateRuntimeState(.recovering)
+      os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default,
+             "NATIVE_BLE_DISCOVERY_DEFERRED reason=not_powered_on restored=\(restored)")
+      return
+    }
+    connectionPreparation.startDiscovery(peripheral.identifier)
     protectedPeripheral = peripheral
     peripheral.delegate = self
     servicesDiscovered = false
@@ -526,6 +536,28 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       recordRestorationEvent(type: "restorationRehydrated", reason: "corebluetooth_restored_connected_peripheral")
     }
     peripheral.discoverServices([Self.eixamServiceUuid])
+  }
+
+  /// F17a: a connected protected peripheral without services / a writable
+  /// characteristic (restored link) is discovered again; SOS frames kept
+  /// arriving but nothing could be written to the TAG.
+  private func rediscoverIfNeeded(trigger: String) {
+    guard let peripheral = protectedPeripheral,
+          connectionPreparation.shouldRediscover(
+            armed: isArmed,
+            poweredOn: centralManager?.state == .poweredOn,
+            peripheralConnected: peripheral.state == .connected,
+            servicesDiscovered: servicesDiscovered,
+            subscriptionsActive: subscriptionsActive,
+            hasCommandCharacteristic: cmdCharacteristic != nil || inetCharacteristic != nil
+          ) else {
+      return
+    }
+    os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default,
+           "NATIVE_BLE_REDISCOVERY_AFTER_RESTORE trigger=\(trigger)")
+    connectionPreparation.noteRediscovery()
+    connectionPreparation.finish()
+    handleConnectedPeripheral(peripheral, restored: false)
   }
 
   private func recordWake(reason: String) {
@@ -846,6 +878,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
 
     let shouldUseCmd = command.forceCmdCharacteristic || command.payload.count > 20
     guard let characteristic = shouldUseCmd ? (cmdCharacteristic ?? inetCharacteristic) : (inetCharacteristic ?? cmdCharacteristic) else {
+      rediscoverIfNeeded(trigger: "command")
       let error = "The iOS Protection runtime does not have a writable command characteristic ready yet."
       defaults.set(error, forKey: Keys.lastCommandError)
       command.result(commandResult(success: false, route: route, result: nil, error: error))
@@ -973,6 +1006,9 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
         if protectedPeripheral?.state == .connected && subscriptionsActive {
           updateRuntimeState(.active)
           defaults.removeObject(forKey: Keys.degradationReason)
+        } else if protectedPeripheral?.state == .connected {
+          // Restored link: discover what restoration could not.
+          rediscoverIfNeeded(trigger: "powered_on")
         } else {
           updateRuntimeState(.recovering)
           attemptProtectionReconnect(trigger: "bluetooth_powered_on")
@@ -1138,10 +1174,23 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
     peripheral.setNotifyValue(true, for: telCharacteristic)
     peripheral.setNotifyValue(true, for: sosCharacteristic)
+    if telCharacteristic.isNotifying && sosCharacteristic.isNotifying {
+      // F17a: a restored link is already notifying; iOS may not call
+      // didUpdateNotificationStateFor again, so become active here.
+      markSubscriptionsActive(peripheral)
+    }
   }
 
   func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
     if let error {
+      if telCharacteristic?.isNotifying == true && sosCharacteristic?.isNotifying == true {
+        // Restored link activated early: both notifications still work.
+        os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default,
+               "NATIVE_BLE_NOTIFY_ERROR_IGNORED reason=both_notifying")
+        return
+      }
+      // Not ready: a frame / command / snapshot rediscovers (rate-limited).
+      subscriptionsActive = false
       updateRuntimeState(.recovering)
       let reason = "The iOS Protection runtime could not enable notifications for \(characteristic.uuid.uuidString.lowercased()): \(error.localizedDescription)"
       defaults.set(reason, forKey: Keys.lastFailureReason)
@@ -1153,20 +1202,29 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
     let telReady = telCharacteristic?.isNotifying == true
     let sosReady = sosCharacteristic?.isNotifying == true
-    subscriptionsActive = telReady && sosReady
-
-    if subscriptionsActive {
-      connectionPreparation.finish(peripheral.identifier)
-      updateRuntimeState(.active)
-      defaults.removeObject(forKey: Keys.degradationReason)
-      defaults.removeObject(forKey: Keys.readinessFailureReason)
-      defaults.removeObject(forKey: Keys.lastFailureReason)
-      recordBleEvent(type: "subscriptionsActive")
-      recordEvent(type: "runtimeActive", reason: "notifications_restored")
+    if telReady && sosReady {
+      markSubscriptionsActive(peripheral)
+    } else {
+      subscriptionsActive = false
     }
   }
 
+  private func markSubscriptionsActive(_ peripheral: CBPeripheral) {
+    guard !subscriptionsActive else { return }
+    subscriptionsActive = true
+    connectionPreparation.finish(peripheral.identifier)
+    updateRuntimeState(.active)
+    defaults.removeObject(forKey: Keys.degradationReason)
+    defaults.removeObject(forKey: Keys.readinessFailureReason)
+    defaults.removeObject(forKey: Keys.lastFailureReason)
+    recordBleEvent(type: "subscriptionsActive")
+    recordEvent(type: "runtimeActive", reason: "notifications_restored")
+  }
+
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+    if error == nil, peripheral.identifier == protectedPeripheral?.identifier {
+      rediscoverIfNeeded(trigger: "frame")
+    }
     if error != nil {
       let reason = "ios_ble_notify_error"
       defaults.set(reason, forKey: Keys.lastFailureReason)
