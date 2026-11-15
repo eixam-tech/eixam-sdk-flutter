@@ -79,6 +79,26 @@ internal object ProtectionSosLifecycleLogic {
         return "$key@$started"
     }
 
+    /**
+     * F17b/M5: the SDK ended an SOS (any terminal). A handed-over cycle
+     * (createPending whose create the SDK claimed) closes, so a runtime restart
+     * never re-creates it. A running countdown and an unclaimed create (maybe a
+     * newer SOS) are never touched.
+     */
+    fun onSdkClose(
+        currentState: ProtectionSosLifecycleState,
+        hasUnclaimedNativeCreate: Boolean,
+    ): ProtectionSosLifecycleState =
+        if (currentState == ProtectionSosLifecycleState.createPending && !hasUnclaimedNativeCreate) {
+            ProtectionSosLifecycleState.idle
+        } else {
+            currentState
+        }
+
+    /** Rehydrate re-queues a native create only for an open, unclosed cycle. */
+    fun shouldRequeueCreateOnRehydrate(state: ProtectionSosLifecycleState): Boolean =
+        state == ProtectionSosLifecycleState.createPending
+
     data class CloseOutcome(
         val nextState: ProtectionSosLifecycleState,
         val shouldCancelBackend: Boolean,

@@ -446,7 +446,11 @@ final class _OrderingProtectionPlatformAdapter extends Fake
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) async {}
 
   @override
   Future<bool> ackPendingNativeSosCancel() async {

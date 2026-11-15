@@ -195,6 +195,7 @@ internal class ProtectionForegroundService : Service() {
         private const val preConfirmNotificationId = 6022
         private const val activeNotificationId = 6023
         private const val resolvedNotificationId = 6024
+        private const val staleStoppedNotificationId = 6025
         private const val defaultReconnectBackoffMs = 5000L
         private const val logTag = "EixamProtectionService"
         private const val actionStart = "dev.eixam.connect.flutter.action.PROTECTION_START"
@@ -257,6 +258,18 @@ internal class ProtectionForegroundService : Service() {
                 type = "sosResolved",
                 title = runtimeStore.protectionSosResolvedTitle(),
                 body = runtimeStore.protectionSosResolvedBody(),
+            )
+        }
+
+        /** F17b: the app stopped on the TAG an SOS that was already closed. */
+        fun showSosStaleStoppedNotification(context: Context) {
+            val runtimeStore = ProtectionRuntimeStore(context)
+            showEventNotification(
+                context = context,
+                notificationId = staleStoppedNotificationId,
+                type = "sosStaleStopped",
+                title = runtimeStore.protectionSosStaleStoppedTitle(),
+                body = runtimeStore.protectionSosStaleStoppedBody(),
             )
         }
 

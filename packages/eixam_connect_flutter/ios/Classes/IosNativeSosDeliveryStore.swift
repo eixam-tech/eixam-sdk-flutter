@@ -20,6 +20,13 @@ enum IosNativeSosCycleState: String {
   case createPending
 }
 
+/// The SDK's terminal for an SOS the TAG never confirmed closing: the TAG
+/// gets the same command the SDK sends (cancel `0x04`, resolve `0x07`).
+enum IosSosTerminalKind: String {
+  case cancel
+  case resolve
+}
+
 struct IosNativeSosTransition: Equatable {
   /// A new pending create was stored: emit `nativeBackendSyncQueued(create)`.
   var queuedCreate = false
@@ -29,6 +36,13 @@ struct IosNativeSosTransition: Equatable {
   var countdownDeadlineAt: Int?
   /// The countdown ended without promotion (closed): drop its timer.
   var countdownStopped = false
+  /// F17b: the TAG still runs an SOS the SDK closed: write this command.
+  var stopTag: IosSosTerminalKind?
+  /// F17b: first stop of this guard: tell the user (once).
+  var staleStopNotice = false
+  /// F17b: a guarded frame waits for a countdown burst: call
+  /// `evaluateStaleCandidate()` at this time (ms since epoch).
+  var evaluateStaleAt: Int?
 }
 
 final class IosNativeSosDeliveryStore {
@@ -40,6 +54,17 @@ final class IosNativeSosDeliveryStore {
   /// is backdated to the first of them once the quiet window has passed.
   static let closeBurstMs = 5_000
   static let eventQueueCapacity = 64
+  /// F17b stale guard. Firmware (verified): every BLE SOS push is sent twice
+  /// (SOS then TEL characteristic, ms apart); a TAG countdown pushes in its
+  /// first 2 s every 500 ms (4 pushes); an ACTIVE/ACK SOS pushes once per
+  /// retry (2/8/20 s, then 60 s; the 60 s TEL resend can add a second push
+  /// soon after). Frames carry no phase bit (sosType is 3).
+  static let staleDuplicateMs = 300
+  static let staleBurstWindowMs = 1_700
+  static let staleBurstPushes = 3
+  static let staleDecisionMs = 2_000
+  static let staleGapMs = 90_000
+  static let staleGuardMaxMs = 600_000
   static let sosEventTypes: Set<String> = [
     "ownDeviceSosLifecycleObserved",
     "nativeBackendSyncQueued",
@@ -57,6 +82,16 @@ final class IosNativeSosDeliveryStore {
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
     static let pendingEvents = "pending_sos_events"
+    static let staleGuardKind = "native_sos_stale_guard_kind"
+    static let staleGuardNodeId = "native_sos_stale_guard_node_id"
+    static let staleGuardArmedAt = "native_sos_stale_guard_armed_at"
+    static let staleGuardLastFrameAt = "native_sos_stale_guard_last_frame_at"
+    static let staleGuardLinkDropped = "native_sos_stale_guard_link_dropped"
+    static let staleGuardCandidateAt = "native_sos_stale_guard_candidate_at"
+    static let staleGuardCandidatePushes = "native_sos_stale_guard_candidate_pushes"
+    static let staleGuardLastPushAt = "native_sos_stale_guard_last_push_at"
+    static let staleGuardNoticeShown = "native_sos_stale_guard_notice_shown"
+    static let lastSosFrameAt = "native_sos_last_frame_at"
   }
 
   private let defaults: UserDefaults
@@ -90,6 +125,10 @@ final class IosNativeSosDeliveryStore {
     var transition = IosNativeSosTransition()
     switch kind {
     case .preSos, .active:
+      defaults.set(now(), forKey: Keys.lastSosFrameAt)
+      if let guarded = observeGuardedFrame(nodeId: nodeId) {
+        return guarded
+      }
       // Firmware sosType 1..3 is the SOS kind / fix quality, not the
       // countdown phase: the TAG sends the same frames from the start of its
       // 20 s countdown (Android: first SOS frame starts the countdown). The
@@ -132,6 +171,8 @@ final class IosNativeSosDeliveryStore {
         break
       }
     case .cancelled, .resolved:
+      // The TAG's own close: it confirmed the stop (or closed by itself).
+      disarmStaleGuard()
       let state = cycleState
       if state == .createPending, kind == .cancelled {
         // Never claimed by the SDK: nothing reached the broker, so the
@@ -164,15 +205,152 @@ final class IosNativeSosDeliveryStore {
   /// countdown would be promoted into a false SOS at its deadline. Only the
   /// terminal of the same TAG closes it; when either node id is unknown the
   /// terminal closes it (keeping it would risk a false SOS).
-  func closeDeliveredCycle(nodeId: Int? = nil) -> Bool {
+  /// F17b: with [terminal], a handed-over SOS the TAG never confirmed
+  /// closing arms the stale guard: the TAG still runs it (the SDK's own stop
+  /// may not have reached it), so its frames must stop it, never open a new
+  /// incident.
+  func closeDeliveredCycle(nodeId: Int? = nil, terminal: IosSosTerminalKind? = nil) -> Bool {
     let keptCountdown = cycleState == .preConfirmSeen &&
       defaults.bool(forKey: Keys.cycleKeptAfterStop) &&
       (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId)
-    guard keptCountdown || (cycleState == .createPending && pendingCreateRecord == nil) else {
+    let handedOver = cycleState == .createPending && pendingCreateRecord == nil
+    guard keptCountdown || handedOver else {
       return false
     }
+    let guardNode = cycleNodeId ?? nodeId
+    let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
     closeCycle()
+    if handedOver, let terminal {
+      armStaleGuard(terminal, nodeId: guardNode, linkDropped: linkDropped)
+    }
     return true
+  }
+
+  // MARK: - F17b stale guard
+
+  var staleGuardKind: IosSosTerminalKind? {
+    IosSosTerminalKind(rawValue: defaults.string(forKey: Keys.staleGuardKind) ?? "")
+  }
+
+  /// Right after arming: the TAG link is up and its SOS frames are recent,
+  /// so the stop can be written now (the frame path covers the rest).
+  var staleStopToSendNow: IosSosTerminalKind? {
+    guard let kind = staleGuardKind,
+          let lastFrame = defaults.object(forKey: Keys.lastSosFrameAt) as? Int,
+          now() - lastFrame <= Self.staleGapMs,
+          !defaults.bool(forKey: Keys.staleGuardLinkDropped) else {
+      return nil
+    }
+    return kind
+  }
+
+  /// The TAG link dropped. The guard survives it (A1): after a reconnect the
+  /// TAG may still run the SOS the SDK closed.
+  func noteLinkDropped() {
+    defaults.set(true, forKey: Keys.staleGuardLinkDropped)
+  }
+
+  /// The TAG link is back. An armed guard measures its gap from now: a TAG
+  /// still running the closed SOS sends a frame within 60 s.
+  func noteLinkUp() {
+    // Always: a drop may have gone unreported (Bluetooth off, process death).
+    if staleGuardKind != nil {
+      defaults.set(now(), forKey: Keys.staleGuardLastFrameAt)
+    }
+    defaults.set(false, forKey: Keys.staleGuardLinkDropped)
+  }
+
+  /// No countdown burst followed the guarded frame: it belongs to the SOS
+  /// the SDK closed. Stop it again; tell the user once.
+  func evaluateStaleCandidate() -> IosNativeSosTransition {
+    var transition = IosNativeSosTransition()
+    guard let kind = staleGuardKind,
+          let candidateAt = defaults.object(forKey: Keys.staleGuardCandidateAt) as? Int,
+          now() - candidateAt > Self.staleBurstWindowMs else {
+      return transition
+    }
+    defaults.removeObject(forKey: Keys.staleGuardCandidateAt)
+    defaults.removeObject(forKey: Keys.staleGuardCandidatePushes)
+    transition.stopTag = kind
+    if !defaults.bool(forKey: Keys.staleGuardNoticeShown) {
+      defaults.set(true, forKey: Keys.staleGuardNoticeShown)
+      transition.staleStopNotice = true
+    }
+    return transition
+  }
+
+  private func armStaleGuard(_ kind: IosSosTerminalKind, nodeId: Int?, linkDropped: Bool) {
+    disarmStaleGuard()
+    defaults.set(kind.rawValue, forKey: Keys.staleGuardKind)
+    set(nodeId, forKey: Keys.staleGuardNodeId)
+    defaults.set(now(), forKey: Keys.staleGuardArmedAt)
+    defaults.set(now(), forKey: Keys.staleGuardLastFrameAt)
+    defaults.set(linkDropped, forKey: Keys.staleGuardLinkDropped)
+  }
+
+  /// Also the session change (`force`): a guard never crosses accounts.
+  func disarmStaleGuard() {
+    for key in [Keys.staleGuardKind, Keys.staleGuardNodeId, Keys.staleGuardArmedAt,
+                Keys.staleGuardLastFrameAt, Keys.staleGuardLinkDropped,
+                Keys.staleGuardCandidateAt, Keys.staleGuardCandidatePushes,
+                Keys.staleGuardLastPushAt, Keys.staleGuardNoticeShown] {
+      defaults.removeObject(forKey: key)
+    }
+  }
+
+  /// nil: not guarded, handle the frame normally. Otherwise the guard's
+  /// decision for this countdown/active frame.
+  private func observeGuardedFrame(nodeId: Int?) -> IosNativeSosTransition? {
+    guard staleGuardKind != nil else { return nil }
+    let timestamp = now()
+    let armedAt = defaults.object(forKey: Keys.staleGuardArmedAt) as? Int ?? timestamp
+    let lastFrameAt = defaults.object(forKey: Keys.staleGuardLastFrameAt) as? Int ?? armedAt
+    let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
+    let guardNode = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
+    if guardNode != nil && nodeId != nil && guardNode != nodeId {
+      return nil  // another TAG: not this guard's business (never disarms it)
+    }
+    if timestamp - armedAt > Self.staleGuardMaxMs ||
+       (!linkDropped && timestamp - lastFrameAt > Self.staleGapMs) {
+      // Cap, or the TAG went idle (gap without a link drop).
+      disarmStaleGuard()
+      return nil
+    }
+    if let lastPush = defaults.object(forKey: Keys.staleGuardLastPushAt) as? Int,
+       timestamp - lastPush < Self.staleDuplicateMs {
+      return IosNativeSosTransition()  // the TEL copy of the same push
+    }
+    defaults.set(timestamp, forKey: Keys.staleGuardLastPushAt)
+    defaults.set(timestamp, forKey: Keys.staleGuardLastFrameAt)
+    defaults.set(false, forKey: Keys.staleGuardLinkDropped)
+    if let candidateAt = defaults.object(forKey: Keys.staleGuardCandidateAt) as? Int,
+       timestamp - candidateAt <= Self.staleBurstWindowMs {
+      let pushes = (defaults.object(forKey: Keys.staleGuardCandidatePushes) as? Int ?? 1) + 1
+      defaults.set(pushes, forKey: Keys.staleGuardCandidatePushes)
+      guard pushes >= Self.staleBurstPushes else {
+        return IosNativeSosTransition()
+      }
+      // Countdown burst: a new SOS, counted from its first push.
+      disarmStaleGuard()
+      let deadline = candidateAt + Self.countdownMs
+      setCycle(.preConfirmSeen, key: nil, nodeId: nodeId, deadlineAt: deadline)
+      defaults.set(candidateAt, forKey: Keys.cycleStartedAt)
+      defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+      var transition = IosNativeSosTransition()
+      if timestamp >= deadline {
+        transition = promoteExpiredCountdown(deviceId: nil)
+      } else {
+        transition.countdownDeadlineAt = deadline
+      }
+      return transition
+    }
+    // An earlier candidate whose decision was missed (suspended) was the
+    // closed SOS: stop it now. This push opens the next candidate.
+    var transition = evaluateStaleCandidate()
+    defaults.set(timestamp, forKey: Keys.staleGuardCandidateAt)
+    defaults.set(1, forKey: Keys.staleGuardCandidatePushes)
+    transition.evaluateStaleAt = timestamp + Self.staleDecisionMs
+    return transition
   }
 
   /// Native countdown deadline while it runs: the snapshot must show a

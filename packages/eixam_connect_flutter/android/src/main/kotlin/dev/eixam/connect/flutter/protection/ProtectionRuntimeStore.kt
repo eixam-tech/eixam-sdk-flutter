@@ -247,6 +247,16 @@ internal class ProtectionRuntimeStore(context: Context) {
                 "protectionSosResolvedBody",
             )
             .putNotificationText(
+                keyProtectionSosStaleStoppedTitle,
+                notificationTexts,
+                "protectionSosStaleStoppedTitle",
+            )
+            .putNotificationText(
+                keyProtectionSosStaleStoppedBody,
+                notificationTexts,
+                "protectionSosStaleStoppedBody",
+            )
+            .putNotificationText(
                 keyNearbyMessageChannelName,
                 notificationTexts,
                 "nearbyMessageChannelName",
@@ -393,6 +403,15 @@ internal class ProtectionRuntimeStore(context: Context) {
 
     fun protectionSosResolvedBody(): String =
         notificationText(keyProtectionSosResolvedBody, "SOS")
+
+    fun protectionSosStaleStoppedTitle(): String =
+        notificationText(keyProtectionSosStaleStoppedTitle, "SOS stopped on your TAG")
+
+    fun protectionSosStaleStoppedBody(): String =
+        notificationText(
+            keyProtectionSosStaleStoppedBody,
+            "We stopped on your TAG an SOS that had already ended.",
+        )
 
     fun nearbyMessageChannelName(): String =
         notificationText(keyNearbyMessageChannelName, "Nearby")
@@ -955,6 +974,59 @@ internal class ProtectionRuntimeStore(context: Context) {
         editor.apply()
     }
 
+    /** F17b stale-SOS guard; survives process death. */
+    fun loadSosStaleGuard(): ProtectionSosStaleGuardState? {
+        if (!preferences.contains(keyStaleGuardTerminal)) return null
+        return ProtectionSosStaleGuardState.fromPersisted(
+            mapOf(
+                "terminal" to preferences.getString(keyStaleGuardTerminal, null),
+                "nodeId" to preferences.getIntOrNull(keyStaleGuardNodeId),
+                "armedAt" to preferences.getLong(keyStaleGuardArmedAt, 0L).takeIf { it > 0L },
+                "lastFrameAt" to preferences.getLong(keyStaleGuardLastFrameAt, 0L).takeIf { it > 0L },
+                "linkDroppedSinceLastFrame" to preferences.getBoolean(keyStaleGuardLinkDropped, true),
+                "noticeShown" to preferences.getBoolean(keyStaleGuardNoticeShown, false),
+            ),
+        )
+    }
+
+    fun saveSosStaleGuard(state: ProtectionSosStaleGuardState?) {
+        val editor = preferences.edit()
+        if (state == null) {
+            editor.remove(keyStaleGuardTerminal)
+                .remove(keyStaleGuardNodeId)
+                .remove(keyStaleGuardArmedAt)
+                .remove(keyStaleGuardLastFrameAt)
+                .remove(keyStaleGuardLinkDropped)
+                .remove(keyStaleGuardNoticeShown)
+        } else {
+            editor.putString(keyStaleGuardTerminal, state.terminal.wire)
+                .putLong(keyStaleGuardArmedAt, state.armedAt)
+                .putBoolean(keyStaleGuardLinkDropped, state.linkDroppedSinceLastFrame)
+                .putBoolean(keyStaleGuardNoticeShown, state.noticeShown)
+            if (state.nodeId == null) editor.remove(keyStaleGuardNodeId) else editor.putInt(keyStaleGuardNodeId, state.nodeId)
+            if (state.lastFrameAt == null) {
+                editor.remove(keyStaleGuardLastFrameAt)
+            } else {
+                editor.putLong(keyStaleGuardLastFrameAt, state.lastFrameAt)
+            }
+        }
+        editor.apply()
+    }
+
+    fun recordOwnSosFrameObserved(at: Long) {
+        preferences.edit().putLong(keyLastOwnSosFrameAt, at).apply()
+    }
+
+    fun recordOwnSosCloseObserved(at: Long) {
+        preferences.edit().putLong(keyLastOwnSosCloseAt, at).apply()
+    }
+
+    fun lastOwnSosFrameAt(): Long? =
+        preferences.getLong(keyLastOwnSosFrameAt, 0L).takeIf { it > 0L }
+
+    fun lastOwnSosCloseAt(): Long? =
+        preferences.getLong(keyLastOwnSosCloseAt, 0L).takeIf { it > 0L }
+
     fun clearPreSosLifecycle() {
         preferences.edit()
             .putString(keyPreSosLifecycleState, "idle")
@@ -1492,6 +1564,18 @@ internal class ProtectionRuntimeStore(context: Context) {
             "notification_protection_sos_resolved_title"
         private const val keyProtectionSosResolvedBody =
             "notification_protection_sos_resolved_body"
+        private const val keyProtectionSosStaleStoppedTitle =
+            "notification_protection_sos_stale_stopped_title"
+        private const val keyProtectionSosStaleStoppedBody =
+            "notification_protection_sos_stale_stopped_body"
+        private const val keyStaleGuardTerminal = "sos_stale_guard_terminal"
+        private const val keyStaleGuardNodeId = "sos_stale_guard_node_id"
+        private const val keyStaleGuardArmedAt = "sos_stale_guard_armed_at"
+        private const val keyStaleGuardLastFrameAt = "sos_stale_guard_last_frame_at"
+        private const val keyStaleGuardLinkDropped = "sos_stale_guard_link_dropped"
+        private const val keyStaleGuardNoticeShown = "sos_stale_guard_notice_shown"
+        private const val keyLastOwnSosFrameAt = "sos_last_own_frame_at"
+        private const val keyLastOwnSosCloseAt = "sos_last_own_close_at"
         private const val keyNearbyMessageChannelName = "notification_nearby_message_channel_name"
         private const val keyNearbyMessageChannelDescription =
             "notification_nearby_message_channel_description"

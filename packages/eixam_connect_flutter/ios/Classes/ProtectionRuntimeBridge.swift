@@ -65,6 +65,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     static let notificationProtectionSosActiveBody = "notification_protection_sos_active_body"
     static let notificationProtectionSosResolvedTitle = "notification_protection_sos_resolved_title"
     static let notificationProtectionSosResolvedBody = "notification_protection_sos_resolved_body"
+    static let notificationProtectionSosStaleStoppedTitle = "notification_protection_sos_stale_stopped_title"
+    static let notificationProtectionSosStaleStoppedBody = "notification_protection_sos_stale_stopped_body"
     static let notificationProtectionSosCancelledTitle = "notification_protection_sos_cancelled_title"
     static let notificationProtectionSosCancelledBody = "notification_protection_sos_cancelled_body"
     static let notificationNearbyMessageChannelName = "notification_nearby_message_channel_name"
@@ -96,6 +98,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     now: { Date().millisecondsSince1970 }
   )
   private var sosCountdownTimer: Timer?
+  private var staleDecisionTimer: Timer?
   private var sosBackgroundTask: UIBackgroundTaskIdentifier = .invalid
   private var sosDeliveryPendingInDart = false
 
@@ -234,6 +237,13 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       result(acked)
     case "closeNativeSosCycle":
       let arguments = call.arguments as? [String: Any]
+      if arguments?["force"] as? Bool == true, sosDelivery.staleGuardKind != nil {
+        // Session change: an F17b guard never crosses accounts.
+        sosDelivery.disarmStaleGuard()
+        staleDecisionTimer?.invalidate()
+        staleDecisionTimer = nil
+        logSosDelivery("NATIVE_SOS_STALE_GUARD_DISARMED reason=session_changed")
+      }
       if arguments?["force"] as? Bool == true, sosDelivery.cycleState == .preConfirmSeen {
         // Session change: a running countdown never survives into the next
         // account.
@@ -243,10 +253,23 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         logSosDelivery("NATIVE_SOS_COUNTDOWN_DROPPED_BY_SDK reason=session_changed")
         updateSosBackgroundHold(reason: "sdk_session_changed")
       }
-      if sosDelivery.closeDeliveredCycle(nodeId: (arguments?["nodeId"] as? NSNumber)?.intValue) {
+      let terminal = IosSosTerminalKind(rawValue: arguments?["terminal"] as? String ?? "")
+      if sosDelivery.closeDeliveredCycle(
+        nodeId: (arguments?["nodeId"] as? NSNumber)?.intValue,
+        terminal: terminal
+      ) {
         sosCountdownTimer?.invalidate()
         sosCountdownTimer = nil
         logSosDelivery("NATIVE_SOS_CYCLE_CLOSED_BY_SDK")
+        if let kind = sosDelivery.staleGuardKind {
+          // F17b: the TAG never confirmed closing this SOS; Dart's own stop
+          // may not reach it (Dart can see the TAG disconnected while this
+          // runtime holds the link). Stop it from here.
+          logSosDelivery("NATIVE_SOS_STALE_GUARD_ARMED terminal=\(kind.rawValue)")
+          if let now = sosDelivery.staleStopToSendNow {
+            sendStaleStop(now, reason: "sdk_close")
+          }
+        }
         updateSosBackgroundHold(reason: "sdk_sos_closed")
       }
       result(nil)
@@ -372,6 +395,14 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     setNotificationText(
       texts["protectionSosResolvedBody"] as? String,
       forKey: Keys.notificationProtectionSosResolvedBody
+    )
+    setNotificationText(
+      texts["protectionSosStaleStoppedTitle"] as? String,
+      forKey: Keys.notificationProtectionSosStaleStoppedTitle
+    )
+    setNotificationText(
+      texts["protectionSosStaleStoppedBody"] as? String,
+      forKey: Keys.notificationProtectionSosStaleStoppedBody
     )
     setNotificationText(
       texts["notificationSosCancelledTitle"] as? String,
@@ -932,6 +963,8 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
     if central.state != .poweredOn {
       connectionPreparation.finish()
+      // No didDisconnect for Bluetooth off / reset: the F17b guard must know.
+      sosDelivery.noteLinkDropped()
     }
     switch central.state {
     case .poweredOn:
@@ -985,6 +1018,7 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    sosDelivery.noteLinkUp()
     handleConnectedPeripheral(peripheral, restored: restoredLastLaunch)
     restoredLastLaunch = false
   }
@@ -999,6 +1033,7 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    sosDelivery.noteLinkDropped()
     connectionPreparation.finish(peripheral.identifier)
     failPendingProtectionWrites(
       error: "The iOS Protection runtime disconnected before the BLE write completed."
@@ -1382,7 +1417,65 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       logSosDelivery("NATIVE_SOS_CANCEL_PENDING_STORED dartAttached=\(eventSink != nil)")
       emitEvent(type: "nativeBackendSyncQueued", reason: "cancel:device_cycle_closed")
     }
+    applyStaleGuardTransition(transition)
     updateSosBackgroundHold(reason: reason)
+  }
+
+  // MARK: - F17b stale guard
+
+  private func applyStaleGuardTransition(_ transition: IosNativeSosTransition) {
+    if let at = transition.evaluateStaleAt {
+      staleDecisionTimer?.invalidate()
+      let delay = max(0, Double(at - Date().millisecondsSince1970) / 1000.0)
+      staleDecisionTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        guard let self else { return }
+        self.staleDecisionTimer = nil
+        self.applyStaleGuardTransition(self.sosDelivery.evaluateStaleCandidate())
+      }
+    }
+    if let kind = transition.stopTag {
+      sendStaleStop(kind, reason: "stale_frame")
+    }
+    if transition.staleStopNotice {
+      postStaleStopNotification()
+    }
+  }
+
+  /// The SDK's own terminal command: cancel `0x04`, resolve `0x07` (SOS ACK),
+  /// on the CMD characteristic. Only for an SOS the SDK already closed.
+  private func sendStaleStop(_ kind: IosSosTerminalKind, reason: String) {
+    let label = kind == .cancel ? "SOS CANCEL" : "SOS ACK"
+    let bytes = kind == .cancel ? [0x04] : [0x07]
+    enqueueProtectionCommand(label: label, bytes: bytes, forceCmdCharacteristic: true) { [weak self] value in
+      let ok = (value as? [String: Any])?["success"] as? Bool ?? false
+      self?.logSosDelivery("NATIVE_SOS_STALE_STOP_SENT terminal=\(kind.rawValue) reason=\(reason) accepted=\(ok)")
+    }
+  }
+
+  private func postStaleStopNotification() {
+    UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+      guard let self, self.isNotificationAuthorized(settings.authorizationStatus) else { return }
+      let content = UNMutableNotificationContent()
+      content.sound = .default
+      content.categoryIdentifier = "ios_sos_notification"
+      content.userInfo = [
+        "payload": "sos:stale_stopped",
+        "source": "ios_sos_notification",
+        "route": "sos",
+        "kind": "staleStopped",
+      ]
+      content.title = self.notificationText(
+        Keys.notificationProtectionSosStaleStoppedTitle, fallback: "SOS stopped on your TAG")
+      content.body = self.notificationText(
+        Keys.notificationProtectionSosStaleStoppedBody,
+        fallback: "We stopped on your TAG an SOS that had already ended.")
+      let request = UNNotificationRequest(
+        identifier: "ios_sos_stale_stopped",
+        content: content,
+        trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+      )
+      UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
   }
 
   private func scheduleSosCountdown(deadlineAt: Int) {
@@ -1535,6 +1628,12 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
     receivedAt: Int
   ) -> Bool {
+    // F17b: frames of an SOS the SDK closed go to the native guard only,
+    // never to Dart as a live SOS (the guard admits a countdown burst).
+    if (parsed.kind == .preSos || parsed.kind == .active),
+       sosDelivery.staleGuardKind != nil {
+      return true
+    }
     guard parsed.kind == .preSos || parsed.kind == .active,
           defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.cancelled.rawValue,
           let cancelledAt = defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,

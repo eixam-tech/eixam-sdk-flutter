@@ -82,6 +82,9 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosActiveBody': texts.protectionSosActiveBody,
             'protectionSosResolvedTitle': texts.protectionSosResolvedTitle,
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
+            'protectionSosStaleStoppedTitle':
+                texts.protectionSosStaleStoppedTitle,
+            'protectionSosStaleStoppedBody': texts.protectionSosStaleStoppedBody,
             'nearbyMessageChannelName': texts.nearbyMessageChannelName,
             'nearbyMessageChannelDescription':
                 texts.nearbyMessageChannelDescription,
@@ -213,7 +216,22 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) {
+    return _methodChannel.invokeMethod<void>(
+      'closeNativeSosCycle',
+      nodeId == null && !force && terminal == null
+          ? null
+          : <String, dynamic>{
+              if (nodeId != null) 'nodeId': nodeId,
+              if (force) 'force': true,
+              if (terminal != null) 'terminal': terminal,
+            },
+    );
+  }
 
   @override
   Future<bool> dropPendingNativeSosCreate(

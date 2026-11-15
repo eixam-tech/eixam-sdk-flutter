@@ -68,6 +68,9 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosActiveBody': texts.protectionSosActiveBody,
             'protectionSosResolvedTitle': texts.protectionSosResolvedTitle,
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
+            'protectionSosStaleStoppedTitle':
+                texts.protectionSosStaleStoppedTitle,
+            'protectionSosStaleStoppedBody': texts.protectionSosStaleStoppedBody,
             'nearbyMessageChannelName': texts.nearbyMessageChannelName,
             'nearbyMessageChannelDescription':
                 texts.nearbyMessageChannelDescription,
@@ -182,14 +185,19 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) {
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) {
     return _methodChannel.invokeMethod<void>(
       'closeNativeSosCycle',
-      nodeId == null && !force
+      nodeId == null && !force && terminal == null
           ? null
           : <String, dynamic>{
               if (nodeId != null) 'nodeId': nodeId,
               if (force) 'force': true,
+              if (terminal != null) 'terminal': terminal,
             },
     );
   }

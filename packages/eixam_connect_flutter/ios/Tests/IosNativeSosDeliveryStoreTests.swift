@@ -45,6 +45,19 @@ struct IosNativeSosDeliveryStoreTests {
     keptCountdownClosesOnlyForItsTag()
     rearmedRuntimeOwnsTheKeptCountdownAgain()
     oldQueuedEventsAreNotReplayed()
+    staleClosedSosIsStoppedAfterReconnect()
+    staleResolvedSosGetsTheResolveCommand()
+    countdownBurstAfterReconnectIsANewSos()
+    tagCloseEndsTheGuardAndTheNextPressIsAdmitted()
+    frameGapWithoutLinkDropEndsTheGuard()
+    guardEndsAfterTenMinutes()
+    closeWithRecentFramesStopsTheTagAtOnce()
+    tagAlreadyClosedArmsNoGuard()
+    reconnectRestartsTheGapClock()
+    resendPairIsNotACountdown()
+    otherTagNeverEndsTheGuard()
+    unreportedDropRestartsTheGapClockAtReconnect()
+    sessionChangeEndsTheGuard()
     if failures > 0 {
       print("FAILED: \(failures)")
       exit(1)
@@ -455,5 +468,187 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 20_000
     _ = store.promoteExpiredCountdown(deviceId: nil)
     check(store.countdownDeadlineAt == nil, "no countdown once handed over")
+  }
+
+  // MARK: - F17b stale guard (2026-11-15: the stop never reached the TAG; its
+  // retry frames opened new incidents after every app cancel / portal resolve)
+
+  /// One TAG push as it really arrives: the SOS-characteristic frame and its
+  /// TEL copy a few ms later (firmware sendSOSViaBLE()).
+  private static func push(_ store: IosNativeSosDeliveryStore, key: String, node: Int = 7) -> IosNativeSosTransition {
+    let first = store.observe(kind: .active, nodeId: node, cycleKey: key, deviceId: nil)
+    clock += 5
+    let copy = store.observe(kind: .active, nodeId: node, cycleKey: key, deviceId: nil)
+    check(copy.countdownDeadlineAt == nil && !copy.queuedCreate && copy.stopTag == nil, "the TEL copy is the same push")
+    clock -= 5
+    return first
+  }
+
+  /// A retry push of the closed SOS: no countdown burst after it.
+  private static func staleFrame(_ store: IosNativeSosDeliveryStore, key: String) -> IosNativeSosTransition {
+    let first = push(store, key: key)
+    check(first.queuedCreate == false && first.countdownDeadlineAt == nil, "a guarded push never starts an SOS at once")
+    check(first.evaluateStaleAt == clock + 2_000, "decided after the burst window")
+    clock += 2_000
+    return store.evaluateStaleCandidate()
+  }
+
+  static func staleClosedSosIsStoppedAfterReconnect() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:70")
+    // App cancel while the TAG link is down: the TAG keeps the SOS.
+    store.noteLinkDropped()
+    check(store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "SDK closes the handed-over cycle")
+    check(store.staleGuardKind == .cancel, "guard armed with the cancel")
+    clock += 200_000  // reconnect minutes later (A1: a link drop keeps the guard)
+    let stopped = staleFrame(store, key: "sos:7:71")
+    check(stopped.stopTag == .cancel, "stop sent with the matching command")
+    check(stopped.staleStopNotice, "the user is told once")
+    check(store.pendingCreateCount == 0 && store.cycleState == .idle, "no new incident")
+    clock += 60_000  // the next retry frame of the same SOS
+    let again = staleFrame(store, key: "sos:7:72")
+    check(again.stopTag == .cancel, "stop resent while the TAG keeps the SOS")
+    check(!again.staleStopNotice, "notice only once per guard")
+    check(store.pendingCreateCount == 0, "still no new incident")
+  }
+
+  static func staleResolvedSosGetsTheResolveCommand() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:73")
+    check(store.closeDeliveredCycle(nodeId: 7, terminal: .resolve), "portal resolve closes it")
+    clock += 40_000
+    check(staleFrame(store, key: "sos:7:74").stopTag == .resolve, "resolve gets the resolve command")
+  }
+
+  static func countdownBurstAfterReconnectIsANewSos() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:75")
+    store.noteLinkDropped()
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 120_000
+    let firstFrame = clock
+    _ = push(store, key: "sos:7:0")
+    clock += 500  // the TAG countdown pushes every 500 ms for 2 s (each twice)
+    check(push(store, key: "sos:7:0").countdownDeadlineAt == nil, "two pushes are not yet a countdown")
+    clock += 500
+    let burst = push(store, key: "sos:7:0")
+    check(burst.countdownDeadlineAt == firstFrame + 20_000, "third push: countdown = a new SOS from its first push")
+    check(burst.stopTag == nil, "a new SOS is never stopped")
+    check(store.staleGuardKind == nil, "guard ended")
+    clock += 2_000
+    check(store.evaluateStaleCandidate().stopTag == nil, "no late stop for the burst")
+  }
+
+  static func tagCloseEndsTheGuardAndTheNextPressIsAdmitted() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:76")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 30_000
+    _ = staleFrame(store, key: "sos:7:77")
+    clock += 1_000
+    let confirm = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    check(!confirm.queuedCancel && store.pendingCancelCount == 0, "the TAG's confirmation never re-cancels the backend")
+    check(store.staleGuardKind == nil, "the TAG confirmed the stop: guard ended")
+    clock += 60_000
+    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:3", deviceId: nil)
+    check(press.countdownDeadlineAt == clock + 20_000, "a later single frame is a new SOS again")
+  }
+
+  static func frameGapWithoutLinkDropEndsTheGuard() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:78")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 10_000
+    _ = staleFrame(store, key: "sos:7:79")
+    clock += 95_000  // longer than the TAG's 60 s retry: the TAG went idle
+    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:4", deviceId: nil)
+    check(press.countdownDeadlineAt == clock + 20_000, "after a gap a press is admitted")
+    check(store.staleGuardKind == nil, "gap ended the guard")
+  }
+
+  static func guardEndsAfterTenMinutes() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:80")
+    store.noteLinkDropped()
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 601_000
+    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:5", deviceId: nil)
+    check(press.countdownDeadlineAt == clock + 20_000, "10 min cap: admitted")
+    check(store.staleGuardKind == nil, "cap ended the guard")
+  }
+
+  static func closeWithRecentFramesStopsTheTagAtOnce() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:81")
+    clock += 1_000
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .resolve)
+    check(store.staleStopToSendNow == .resolve, "TAG link up and SOS frames recent: stop it now")
+  }
+
+  static func tagAlreadyClosedArmsNoGuard() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:82")
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    check(store.staleGuardKind == nil, "the TAG already stopped: nothing to guard")
+    check(store.staleStopToSendNow == nil, "nothing to send")
+  }
+
+  static func reconnectRestartsTheGapClock() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:83")
+    store.noteLinkDropped()
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 300_000
+    store.noteLinkUp()
+    clock += 30_000
+    check(staleFrame(store, key: "sos:7:84").stopTag == .cancel, "first frame after reconnect is still the closed SOS")
+    store.noteLinkDropped()
+    clock += 5_000
+    store.noteLinkUp()
+    clock += 95_000  // reconnected, but no frame for 95 s: the TAG is idle
+    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:6", deviceId: nil)
+    check(press.countdownDeadlineAt == clock + 20_000, "idle after reconnect: a press is admitted")
+  }
+
+  static func resendPairIsNotACountdown() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:85")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 30_000
+    // 60 s TEL resend followed by an immediate retry: two pushes 800 ms apart.
+    _ = push(store, key: "sos:7:86")
+    clock += 800
+    check(push(store, key: "sos:7:87").countdownDeadlineAt == nil, "a resend pair is not a countdown")
+    clock += 1_200
+    check(store.evaluateStaleCandidate().stopTag == .cancel, "the pair is the closed SOS: stopped")
+    check(store.pendingCreateCount == 0 && store.cycleState == .idle, "no new incident")
+  }
+
+  static func otherTagNeverEndsTheGuard() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:88")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 10_000
+    _ = store.observe(kind: .active, nodeId: 99, cycleKey: "sos:99:1", deviceId: nil)
+    check(store.staleGuardKind == .cancel, "another TAG's frame never ends this guard")
+  }
+
+  static func unreportedDropRestartsTheGapClockAtReconnect() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:89")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .resolve)
+    clock += 120_000  // Bluetooth off / process death: no didDisconnect
+    store.noteLinkUp()
+    clock += 20_000
+    check(staleFrame(store, key: "sos:7:90").stopTag == .resolve, "still the closed SOS after reconnect")
+  }
+
+  static func sessionChangeEndsTheGuard() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:91")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    store.disarmStaleGuard()
+    check(store.staleGuardKind == nil, "no guard crosses accounts")
   }
 }

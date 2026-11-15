@@ -175,6 +175,15 @@ enum NativeProtectionCommandReadinessFailure {
   operationQueueFailed,
 }
 
+/// F17b: the TAG command kind native must write for an SOS the SDK closed
+/// (cancel `0x04`, resolve `0x07`); none for an activation failure.
+@visibleForTesting
+String? nativeSosCycleTerminalFor(SosLifecycleStage stage) => switch (stage) {
+  SosLifecycleStage.cancelled => 'cancel',
+  SosLifecycleStage.resolved => 'resolve',
+  _ => null,
+};
+
 @visibleForTesting
 class NativeProtectionCommandReadiness {
   const NativeProtectionCommandReadiness({
@@ -19076,7 +19085,10 @@ class EixamConnectSdkImpl
     _nativeSosCycleClosedGeneration = lifecycle.generation;
     unawaited(
       protectionPlatformAdapter
-          .closeNativeSosCycle(nodeId: lifecycle.nodeId)
+          .closeNativeSosCycle(
+            nodeId: lifecycle.nodeId,
+            terminal: nativeSosCycleTerminalFor(lifecycle.stage),
+          )
           .catchError(
             (Object error) => sdkReleaseLog(
               'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',

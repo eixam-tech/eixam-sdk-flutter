@@ -308,6 +308,17 @@ internal object ProtectionRuntimeBridge {
                     else store.ackPendingExternalRelayCancel(signature),
                 )
             }
+            "closeNativeSosCycle" -> {
+                // F17b: the SDK ended an SOS. The native runtime closes its cycle and
+                // stops the TAG itself when it may still be running that SOS.
+                val arguments = call.arguments as? Map<*, *>
+                ensureRuntimeOwner(context).closeNativeSosCycle(
+                    terminalWire = arguments?.get("terminal") as? String,
+                    nodeId = (arguments?.get("nodeId") as? Number)?.toInt(),
+                    force = arguments?.get("force") as? Boolean ?: false,
+                )
+                result.success(null)
+            }
             "resumeProtectionRuntime" -> {
                 val reason =
                     (call.arguments as? Map<*, *>)?.get("reason") as? String

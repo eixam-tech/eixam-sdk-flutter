@@ -1494,6 +1494,11 @@ void main() {
             reason: 'the close targets the TAG that started the countdown',
           );
           expect(adapter.closeNativeSosCycleArgs.last.force, isFalse);
+          expect(
+            adapter.closeNativeSosCycleArgs.last.terminal,
+            'cancel',
+            reason: 'F17b: native stops a TAG that missed the cancel',
+          );
           expect(harness.sosRepository.triggerCallCount, 0);
         } finally {
           await subscription.cancel();
@@ -17104,13 +17109,21 @@ class _SnapshotProtectionPlatformAdapter extends Fake
   }
 
   int closeNativeSosCycleCalls = 0;
-  final List<({int? nodeId, bool force})> closeNativeSosCycleArgs =
-      <({int? nodeId, bool force})>[];
+  final List<({int? nodeId, bool force, String? terminal})>
+  closeNativeSosCycleArgs = <({int? nodeId, bool force, String? terminal})>[];
 
   @override
-  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) async {
     closeNativeSosCycleCalls++;
-    closeNativeSosCycleArgs.add((nodeId: nodeId, force: force));
+    closeNativeSosCycleArgs.add((
+      nodeId: nodeId,
+      force: force,
+      terminal: terminal,
+    ));
   }
 
   @override

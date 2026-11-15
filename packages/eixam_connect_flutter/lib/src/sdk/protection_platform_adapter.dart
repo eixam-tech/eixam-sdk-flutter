@@ -437,8 +437,15 @@ abstract class ProtectionPlatformAdapter {
   /// native TAG cycle that was already handed over, in case its close frame
   /// never reached the phone, and a countdown kept across a stop when
   /// [nodeId] is unknown or matches its TAG. [force] (session change) also
-  /// drops a running native countdown. No-op on Android.
-  Future<void> closeNativeSosCycle({int? nodeId, bool force = false});
+  /// drops a running native countdown. [terminal] (`cancel` / `resolve`,
+  /// F17b): the SDK's terminal of a handed-over SOS; when the TAG never
+  /// confirmed closing it, native writes the matching TAG command itself and
+  /// stops (never re-opens) the SOS if the TAG keeps sending it.
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  });
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -529,7 +536,11 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
-  Future<void> closeNativeSosCycle({int? nodeId, bool force = false}) async {}
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) async {}
 
   @override
   Future<bool> dropPendingNativeSosCreate(
