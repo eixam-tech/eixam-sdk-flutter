@@ -514,8 +514,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       protectedPeripheral = peripheral
       peripheral.delegate = self
       updateRuntimeState(.recovering)
-      os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default,
-             "NATIVE_BLE_DISCOVERY_DEFERRED reason=not_powered_on restored=\(restored)")
+      logBle("NATIVE_BLE_DISCOVERY_DEFERRED reason=not_powered_on restored=\(restored)")
       return
     }
     connectionPreparation.startDiscovery(peripheral.identifier)
@@ -538,6 +537,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     peripheral.discoverServices([Self.eixamServiceUuid])
   }
 
+  private func recordWake(reason: String) {
+    defaults.set(Date().millisecondsSince1970, forKey: Keys.lastWakeAt)
+    defaults.set(reason, forKey: Keys.lastWakeReason)
+    emitEvent(type: "woke", reason: reason)
+  }
+
   /// F17a: a connected protected peripheral without services / a writable
   /// characteristic (restored link) is discovered again; SOS frames kept
   /// arriving but nothing could be written to the TAG.
@@ -553,18 +558,16 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
           ) else {
       return
     }
-    os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default,
-           "NATIVE_BLE_REDISCOVERY_AFTER_RESTORE trigger=\(trigger)")
+    logBle("NATIVE_BLE_REDISCOVERY_AFTER_RESTORE trigger=\(trigger)")
     connectionPreparation.noteRediscovery()
     connectionPreparation.finish()
     handleConnectedPeripheral(peripheral, restored: false)
   }
 
-  private func recordWake(reason: String) {
-    defaults.set(Date().millisecondsSince1970, forKey: Keys.lastWakeAt)
-    defaults.set(reason, forKey: Keys.lastWakeReason)
-    emitEvent(type: "woke", reason: reason)
+  private func logBle(_ message: String) {
+    os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default, message)
   }
+
 
   private func recordEvent(type: String, reason: String?) {
     let timestamp = Date().millisecondsSince1970
