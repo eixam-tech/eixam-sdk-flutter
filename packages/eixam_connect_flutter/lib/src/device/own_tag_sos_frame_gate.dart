@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'ble_debug_registry.dart';
+import '../diagnostics/sdk_release_log.dart';
 
 /// F17c: the native store's answer for one own-TAG SOS frame that Dart
 /// received through its own BLE link (flutter_blue_plus).
@@ -70,7 +70,7 @@ final class OwnTagSosFrameGate {
       process();
       return;
     }
-    _tail = _tail.then((_) async {
+    _enqueue('start', () async {
       var verdict = OwnTagSosFrameVerdict.proceed;
       try {
         verdict = await classifier(frame);
@@ -78,13 +78,13 @@ final class OwnTagSosFrameGate {
         verdict = OwnTagSosFrameVerdict.proceed;
       }
       if (verdict == OwnTagSosFrameVerdict.suppress) {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS_STALE_DECISION dart_frame=suppressed '
+        sdkReleaseLog(
+          'SOS_OUTBOX_STALE_FRAME_SUPPRESSED '
           'characteristic=${frame.characteristic}',
         );
         return;
       }
-      process();
+      _runHandler('start', process);
     });
   }
 
@@ -99,7 +99,7 @@ final class OwnTagSosFrameGate {
       process();
       return;
     }
-    _tail = _tail.then((_) async {
+    _enqueue('event', () async {
       if (frame.isClose) {
         try {
           await classifier(frame);
@@ -107,8 +107,42 @@ final class OwnTagSosFrameGate {
           // The classifier logs its own failures.
         }
       }
-      process();
+      _runHandler('event', process);
     });
+  }
+
+  /// H-B: the chain never breaks. A step that throws (the frame handler, a
+  /// log sink, anything) is release-logged and the next frame still runs;
+  /// one bad frame must never silently drop every later SOS frame.
+  void _enqueue(String stage, Future<void> Function() step) {
+    _tail = _tail.then((_) async {
+      try {
+        await step();
+      } catch (error) {
+        _logFailure(stage, error);
+      }
+    });
+  }
+
+  /// A throwing handler is logged; the frame was admitted, so nothing else
+  /// is skipped.
+  void _runHandler(String stage, void Function() process) {
+    try {
+      process();
+    } catch (error) {
+      _logFailure(stage, error);
+    }
+  }
+
+  static void _logFailure(String stage, Object error) {
+    try {
+      sdkReleaseLog(
+        'SOS_OUTBOX_STALE_GATE_HANDLER_FAILED stage=$stage '
+        'errorType=${error.runtimeType}',
+      );
+    } catch (_) {
+      // Logging must never break the frame chain.
+    }
   }
 
   /// A close frame handled elsewhere: forwarded to native, in order.

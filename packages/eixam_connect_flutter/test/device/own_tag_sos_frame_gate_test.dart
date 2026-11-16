@@ -8,6 +8,7 @@ import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/own_tag_sos_frame_gate.dart';
+import 'package:eixam_connect_flutter/src/diagnostics/sdk_release_log.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
@@ -144,6 +145,73 @@ void main() {
       );
       await gate.idle;
       expect(processed, 1);
+    });
+
+    test(
+      'H-B: a throwing frame handler never breaks the chain; later frames '
+      'are still classified and handled, and the error is release-logged',
+      () async {
+        final releaseLines = <String>[];
+        sdkReleaseLogSinkForTesting = releaseLines.add;
+        addTearDown(() => sdkReleaseLogSinkForTesting = null);
+        final gate = OwnTagSosFrameGate();
+        final classified = <int>[];
+        gate.setClassifier((frame) async {
+          classified.add(frame.bytes.first);
+          return OwnTagSosFrameVerdict.proceed;
+        });
+        final handled = <String>[];
+        OwnTagSosFrameReport report(int id, {bool close = false}) =>
+            OwnTagSosFrameReport(
+              bytes: <int>[id],
+              characteristic: 'sos',
+              receivedAt: DateTime.now(),
+              isClose: close,
+            );
+        gate.submitStartFrame(report(1), () => throw StateError('frame 1'));
+        gate.submitEventFrame(
+          report(2, close: true),
+          () => throw StateError('event 2'),
+        );
+        gate.submitStartFrame(report(3), () => handled.add('start 3'));
+        gate.submitEventFrame(report(4), () => handled.add('event 4'));
+        await gate.idle;
+        expect(classified, <int>[
+          1,
+          2,
+          3,
+        ], reason: 'every frame reaches native');
+        expect(handled, <String>['start 3', 'event 4']);
+        expect(
+          releaseLines.where(
+            (line) => line.startsWith('SOS_OUTBOX_STALE_GATE_HANDLER_FAILED'),
+          ),
+          hasLength(2),
+        );
+      },
+    );
+
+    test('a suppressed frame is release-logged', () async {
+      final releaseLines = <String>[];
+      sdkReleaseLogSinkForTesting = releaseLines.add;
+      addTearDown(() => sdkReleaseLogSinkForTesting = null);
+      final gate = OwnTagSosFrameGate()
+        ..setClassifier((_) async => OwnTagSosFrameVerdict.suppress);
+      var processed = 0;
+      gate.submitStartFrame(
+        OwnTagSosFrameReport(
+          bytes: const <int>[1],
+          characteristic: 'tel',
+          receivedAt: DateTime.now(),
+        ),
+        () => processed++,
+      );
+      await gate.idle;
+      expect(processed, 0);
+      expect(
+        releaseLines,
+        contains('SOS_OUTBOX_STALE_FRAME_SUPPRESSED characteristic=tel'),
+      );
     });
 
     test('a TAG close frame never overtakes an earlier SOS push still being '
