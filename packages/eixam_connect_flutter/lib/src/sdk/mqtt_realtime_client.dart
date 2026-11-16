@@ -255,6 +255,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
   @override
   Future<void> publishOperationalSosCancel({
     required DateTime timestamp,
+    int? ageMs,
   }) async {
     final session = sessionContext.currentSession;
     if (session == null) {
@@ -268,6 +269,7 @@ class MqttRealtimeClient implements RealtimeClient, OperationalRealtimeClient {
       sdkUserId: legacy ? '' : MqttTopicSegment.sdkUserIdFrom(session),
       legacyUserId: legacy ? MqttTopicSegment.legacyUserIdFrom(session) : null,
       timestamp: timestamp,
+      ageMs: ageMs,
     );
     await _publishSosEnvelope(envelope, action: 'cancel');
   }

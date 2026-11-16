@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — SOS cancel carries `ageMs`
+
+- The operational SOS cancel on `sos/alerts/<sdkUserId>` now carries an
+  optional integer `ageMs`: milliseconds since the cancel was created on the
+  phone, recomputed at every publish attempt (outbox retries and after a
+  restart). Monotonic clock in-process; wall-clock difference to the persisted
+  creation time after a restart; clamped to >= 0. The backend dates the cancel
+  as receive time − `ageMs`. `timestamp` and `cancel: true` are unchanged for
+  older backends; triggers and HTTP are unchanged. No public API change; hosts
+  need no source changes. Details: `docs/ai_context/BACKEND_INTEGRATION.md`.
+
 ## Unreleased — SOS episode identity for the backend
 
 - The cycle-bound relay SOS publish now carries `mesh.cycle`, and the relay
