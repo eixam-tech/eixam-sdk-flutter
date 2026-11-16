@@ -61,26 +61,28 @@ class ProtectionSosStaleGuardTest {
 
         val newSos get() = outcomes.any { it.action == ProtectionSosStaleAction.newSos }
         val stops get() = outcomes.count { it.sendStop }
-        val notices get() = outcomes.count { it.showNotice }
+        val prompts get() = outcomes.count { it.openPrompt }
         val passedToLifecycle get() = outcomes.count { it.passesToLifecycle }
     }
 
     // --- C1 / C2: classification -------------------------------------------
 
     @Test
-    fun `duplicate copies 5 ms apart are the closed SOS, never a new SOS`() {
+    fun `duplicate copies 5 ms apart are one ambiguous push - a prompt, never a stop or a new SOS`() {
         val run = Run(armedConnected())
         run.frame(t0 + 20_000L)
         assertEquals(ProtectionSosStaleAction.duplicate, run.frame(t0 + 20_005L).action)
         run.finish(t0 + 22_000L)
         assertFalse(run.newSos)
-        assertEquals(1, run.stops)
-        assertEquals(1, run.notices)
+        assertEquals("F17c: never stopped without the user", 0, run.stops)
+        assertEquals(1, run.prompts)
+        assertEquals(ProtectionSosStaleAction.prompt, run.outcomes.last().action)
+        assertEquals(t0 + 22_000L + ProtectionSosStaleGuard.promptMs, run.state!!.promptDeadlineAt)
         assertEquals("frames swallowed, never to the lifecycle or Dart", 0, run.passedToLifecycle)
     }
 
     @Test
-    fun `barrier plus retry pair 800 ms apart, each duplicated, is the closed SOS`() {
+    fun `barrier plus retry pair 800 ms apart, each duplicated, is ambiguous`() {
         val run = Run(armedConnected())
         val at = t0 + 60_000L
         run.frame(at)
@@ -89,7 +91,8 @@ class ProtectionSosStaleGuardTest {
         run.frame(at + 805L)
         run.finish(at + 2_000L)
         assertFalse(run.newSos)
-        assertEquals(1, run.stops)
+        assertEquals(0, run.stops)
+        assertEquals(1, run.prompts)
     }
 
     @Test
@@ -108,20 +111,21 @@ class ProtectionSosStaleGuardTest {
     }
 
     @Test
-    fun `a push after the window resolves the old candidate as stale and opens a new one`() {
+    fun `a push after the window resolves the old candidate as ambiguous and opens a new one`() {
         val run = Run(armedConnected())
         val at = t0 + 20_000L
         run.frame(at)
         val later = ProtectionSosStaleGuard.onFrame(run.state, node, at + 1_800L)
         assertEquals(ProtectionSosStaleAction.pending, later.action)
-        assertTrue("old candidate stopped", later.sendStop)
+        assertFalse("never stopped without the user", later.sendStop)
+        assertTrue("old candidate asks the user", later.openPrompt)
         assertEquals(at + 1_800L, later.state!!.candidateFirstAt)
     }
 
     // --- A1 and reconnect --------------------------------------------------
 
     @Test
-    fun `cancel while disconnected then reconnect with ACTIVE frames sends cancel stop and notice`() {
+    fun `cancel while disconnected then reconnect with ACTIVE frames prompts once, No writes the cancel stop`() {
         val armed = armedDisconnected()
         assertTrue("disconnected at arm counts as a link drop", armed.linkDroppedSinceLastFrame)
         assertFalse(guard.shouldSendStopOnArm(lastSosFrameAt = t0 - 5_000L, connected = false, now = t0))
@@ -129,21 +133,26 @@ class ProtectionSosStaleGuardTest {
         run.frame(t0 + 301_000L)
         run.frame(t0 + 301_004L)
         run.finish(t0 + 303_000L)
-        run.frame(t0 + 362_000L)
-        run.finish(t0 + 364_000L)
+        run.frame(t0 + 310_000L)
+        run.finish(t0 + 312_000L)
         assertFalse(run.newSos)
-        assertEquals(2, run.stops)
-        assertEquals("notice once per guard", 1, run.notices)
+        assertEquals(0, run.stops)
+        assertEquals("one prompt at a time", 1, run.prompts)
+        val no = guard.onAnswer(run.state, "stopTag", t0 + 315_000L)
+        assertEquals(ProtectionSosStaleAction.stop, no.action)
+        assertTrue(no.sendStop && no.closePrompt && !no.openSos)
         assertArrayEquals(byteArrayOf(0x04), run.state!!.terminal.stopPayload)
         assertEquals("SOS CANCEL", run.state!!.terminal.commandLabel)
     }
 
     @Test
-    fun `resolve sends the resolve stop`() {
+    fun `resolve prompts with its kind and No writes the resolve stop`() {
         val run = Run(armedDisconnected(ProtectionSosStaleTerminal.resolve))
         run.frame(t0 + 61_000L)
         run.finish(t0 + 63_000L)
-        assertEquals(1, run.stops)
+        assertEquals(0, run.stops)
+        assertEquals(1, run.prompts)
+        assertTrue(guard.onAnswer(run.state, "stopTag", t0 + 64_000L).sendStop)
         assertArrayEquals(byteArrayOf(0x07), run.state!!.terminal.stopPayload)
         assertEquals("SOS ACK", run.state!!.terminal.commandLabel)
     }
@@ -169,14 +178,14 @@ class ProtectionSosStaleGuardTest {
     }
 
     @Test
-    fun `reconnect writes no stop and the first single frame after it gets the stop`() {
+    fun `reconnect writes no stop and the first single frame after it asks the user`() {
         val reconnectAt = t0 + 120_000L
         val run = Run(guard.onReconnected(armedDisconnected(), reconnectAt))
         assertEquals("nothing before a frame", 0, run.stops)
         run.frame(reconnectAt + 40_000L)
         run.finish(reconnectAt + 42_000L)
-        assertEquals(1, run.stops)
-        assertEquals(1, run.notices)
+        assertEquals(0, run.stops)
+        assertEquals(1, run.prompts)
     }
 
     @Test
@@ -216,7 +225,7 @@ class ProtectionSosStaleGuardTest {
     }
 
     @Test
-    fun `the guard ends after 10 minutes`() {
+    fun `the record ends after one day`() {
         val outcome = guard.onFrame(armedDisconnected(), node, t0 + ProtectionSosStaleGuard.capMs + 1L)
         assertEquals("cap", outcome.reason)
     }
@@ -252,8 +261,8 @@ class ProtectionSosStaleGuardTest {
                 hasUnclaimedNativeCreate = false,
             ),
         )
-        assertFalse(
-            "never on a running countdown",
+        assertTrue(
+            "F17c: a running countdown's cancel is an unconfirmed stop too",
             guard.shouldArm(
                 ProtectionSosStaleTerminal.cancel,
                 ProtectionSosLifecycleState.preConfirmSeen,
@@ -284,13 +293,13 @@ class ProtectionSosStaleGuardTest {
 
     /** F17c-cdc: app cancel 8 s into the native countdown, TAG out of range. */
     @Test
-    fun `an sdk cancel ends the running countdown and arms nothing`() {
+    fun `an sdk cancel ends the running countdown and arms the record like any stop`() {
         val countdown = ProtectionSosLifecycleState.preConfirmSeen
         val cancel = ProtectionSosStaleTerminal.cancel
         assertTrue(guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 8_000L))
         assertTrue(guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 1_000L))
-        assertFalse(
-            "a cancelled countdown never arms the guard",
+        assertTrue(
+            "F17c: one rule; a cancelled countdown arms the record",
             guard.shouldArm(cancel, countdown, false, null, t0 + 8_000L),
         )
         assertFalse(
@@ -481,6 +490,10 @@ class ProtectionSosStaleGuardTest {
                     state = guard.onSessionChanged(state)
                     observed = null
                 }
+                "answer" -> {
+                    outcome = guard.onAnswer(state, args["choice"]!!, t)
+                    state = outcome.state
+                }
                 "sdk_open" -> state = null
                 else -> throw AssertionError("$name: unknown event ${event[1]}")
             }
@@ -497,7 +510,14 @@ class ProtectionSosStaleGuardTest {
             }
             val stop = if (outcome?.sendStop == true) state?.terminal?.wire ?: "?" else "none"
             assertEquals("$label: stop", want["stop"] ?: "none", stop)
-            assertEquals("$label: notice", want["notice"] == "true", outcome?.showNotice == true)
+            assertEquals("$label: opened", want["opened"] == "true", outcome?.openPrompt == true)
+            want["kind"]?.let { assertEquals("$label: kind", it, state?.terminal?.wire) }
+            want["prompt"]?.let {
+                assertEquals("$label: prompt", it, if (state?.promptDeadlineAt != null) "open" else "closed")
+            }
+            if (outcome?.action == ProtectionSosStaleAction.sosOpened) {
+                assertTrue("$label: the SOS is opened", outcome.openSos)
+            }
             want["armed"]?.let { assertEquals("$label: armed", it == "true", state != null) }
             } catch (failure: AssertionError) {
                 // Every failing step is reported, not only the first one.
@@ -573,14 +593,66 @@ class ProtectionSosStaleGuardTest {
             ),
         )
         assertFalse(
-            "a cycle last seen beyond the cap is not this SOS",
+            "a cycle last seen long ago is not this SOS",
             guard.shouldArm(
                 ProtectionSosStaleTerminal.cancel,
                 ProtectionSosLifecycleState.idle,
                 hasUnclaimedNativeCreate = false,
                 observed = observed,
-                now = t0 + 20_000L + ProtectionSosStaleGuard.capMs + 1,
+                now = t0 + 20_000L + ProtectionSosStaleGuard.observedRecentMs + 1,
             ),
         )
+    }
+
+    /** F17c: a Dart-seen SOS arms on its SDK terminal at any age (one rule, no 18 s threshold). */
+    @Test
+    fun `an sos seen only through dart arms at any age`() {
+        val sos = ProtectionSosForwardedFrame(close = false, nodeId = node)
+        val observed = guard.onForwardedFrame(null, null, sos, t0).observed
+        assertTrue(
+            guard.shouldArm(
+                ProtectionSosStaleTerminal.cancel,
+                ProtectionSosLifecycleState.idle,
+                hasUnclaimedNativeCreate = false,
+                observed = observed,
+                now = t0 + 1_000L,
+            ),
+        )
+    }
+
+    @Test
+    fun `the prompt timeout opens the SOS only at its deadline and the record survives process death`() {
+        val run = Run(armedDisconnected())
+        run.frame(t0 + 30_000L)
+        run.finish(t0 + 32_000L)
+        val deadline = run.state!!.promptDeadlineAt!!
+        val restored = ProtectionSosStaleGuardState.fromPersisted(run.state!!.toPersisted())!!
+        assertEquals(deadline, restored.promptDeadlineAt)
+        assertEquals(ProtectionSosStaleAction.none, guard.onAnswer(restored, "timeout", deadline - 1).action)
+        val timeout = guard.onAnswer(restored, "timeout", deadline)
+        assertEquals(ProtectionSosStaleAction.sosOpened, timeout.action)
+        assertTrue(timeout.openSos && timeout.closePrompt && !timeout.sendStop)
+        assertNull(timeout.state)
+    }
+
+    @Test
+    fun `send SOS opens the SOS and never writes a stop`() {
+        val run = Run(armedDisconnected(ProtectionSosStaleTerminal.resolve))
+        run.frame(t0 + 30_000L)
+        run.finish(t0 + 32_000L)
+        val send = guard.onAnswer(run.state, "sendSos", t0 + 33_000L)
+        assertEquals(ProtectionSosStaleAction.sosOpened, send.action)
+        assertTrue(send.openSos)
+        assertFalse(send.sendStop)
+        assertNull(send.state)
+    }
+
+    @Test
+    fun `no answer is accepted without an open prompt`() {
+        for (choice in listOf("sendSos", "stopTag", "timeout")) {
+            val outcome = guard.onAnswer(armedConnected(), choice, t0 + 1_000L)
+            assertEquals(ProtectionSosStaleAction.none, outcome.action)
+            assertFalse(outcome.openSos || outcome.sendStop)
+        }
     }
 }

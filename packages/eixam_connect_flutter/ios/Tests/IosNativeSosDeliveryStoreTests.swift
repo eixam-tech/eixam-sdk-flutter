@@ -1,11 +1,13 @@
 import Darwin
 import Foundation
+import UserNotifications
 
 /// Run with swiftc alongside the store and the classifier (for the kind enum):
 ///   swiftc -parse-as-library -o /tmp/ios_sos_delivery_tests \
 ///     Classes/IosBleSosFrameClassifier.swift \
 ///     Classes/TelAggregateReassembler.swift \
 ///     Classes/IosNativeSosDeliveryStore.swift \
+///     Classes/IosSosPromptNotification.swift \
 ///     Tests/IosNativeSosDeliveryStoreTests.swift && /tmp/ios_sos_delivery_tests
 ///
 /// Mirrors Android's ProtectionSosLifecycleLogic / runtime-store pending
@@ -46,7 +48,7 @@ struct IosNativeSosDeliveryStoreTests {
     keptCountdownClosesOnlyForItsTag()
     rearmedRuntimeOwnsTheKeptCountdownAgain()
     oldQueuedEventsAreNotReplayed()
-    staleClosedSosIsStoppedAfterReconnect()
+    ambiguousClosedSosAsksAfterReconnect()
     staleResolvedSosGetsTheResolveCommand()
     countdownBurstAfterReconnectIsANewSos()
     tagCloseEndsTheGuardAndTheNextPressIsAdmitted()
@@ -64,6 +66,11 @@ struct IosNativeSosDeliveryStoreTests {
     burstThroughDartNeverOpensTheNativeCycle()
     newSdkSosDropsAPendingDecision()
     sessionChangeForgetsTheDartCycle()
+    promptTimeoutOpensTheSosThroughTheNativeCreate()
+    promptSurvivesAnAppRestart()
+    answersNeedAnOpenPrompt()
+    promptNotificationActions()
+    promptNotificationIsANormalLocalNotification()
     sharedStaleGuardScenarios()
     if failures > 0 {
       print("FAILED: \(failures)")
@@ -423,8 +430,9 @@ struct IosNativeSosDeliveryStoreTests {
   }
 
   /// F17c-cdc: the app cancels the TAG countdown (8 s in) while the TAG is out
-  /// of range: the countdown never becomes a native create. No guard is armed
-  /// (a reconnect with ACTIVE retries is ambiguous: accepted duplicate).
+  /// of range: the countdown never becomes a native create. F17c prompt: the
+  /// unconfirmed stop arms the record; the ACTIVE retry after the reconnect is
+  /// ambiguous: the user is asked, nothing is stopped.
   static func sdkCancelOfARunningCountdownEndsIt() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
@@ -432,15 +440,18 @@ struct IosNativeSosDeliveryStoreTests {
     store.noteLinkDropped()
     check(store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "the SDK cancel ends the countdown")
     check(store.cycleState == .idle, "countdown closed")
-    check(store.staleGuardKind == nil, "no guard armed")
+    check(store.staleGuardKind == .cancel, "unconfirmed stop recorded")
     clock += 12_000
     _ = store.promoteExpiredCountdown(deviceId: nil)
     check(store.pendingCreateCount == 0, "a cancelled countdown is never promoted")
     clock += 10_000
     store.noteLinkUp()
     let retry = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
-    check(store.lastStaleAction == "notArmed" && retry.stopTag == nil, "no stop written")
-    check(store.pendingCreateCount == 0, "no native create from the cancelled countdown")
+    check(store.lastStaleAction == "pending" && retry.stopTag == nil, "held, no stop written")
+    clock += 2_000
+    let decided = store.evaluateStaleCandidate()
+    check(decided.openPromptDeadlineAt == clock + 30_000 && decided.stopTag == nil, "ambiguous: ask, never stop")
+    check(store.pendingCreateCount == 0, "no native create before the answer")
   }
 
   static func framesRightAfterACloseNeverOpenAnSos() {
@@ -521,23 +532,70 @@ struct IosNativeSosDeliveryStoreTests {
     return store.evaluateStaleCandidate()
   }
 
-  static func staleClosedSosIsStoppedAfterReconnect() {
+  static func ambiguousClosedSosAsksAfterReconnect() {
     let (store, _) = makeStore()
     deliver(store, key: "sos:7:70")
     // App cancel while the TAG link is down: the TAG keeps the SOS.
     store.noteLinkDropped()
     check(store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "SDK closes the handed-over cycle")
-    check(store.staleGuardKind == .cancel, "guard armed with the cancel")
-    clock += 200_000  // reconnect minutes later (A1: a link drop keeps the guard)
-    let stopped = staleFrame(store, key: "sos:7:71")
-    check(stopped.stopTag == .cancel, "stop sent with the matching command")
-    check(stopped.staleStopNotice, "the user is told once")
-    check(store.pendingCreateCount == 0 && store.cycleState == .idle, "no new incident")
+    check(store.staleGuardKind == .cancel, "record armed with the cancel")
+    clock += 200_000  // reconnect minutes later (A1: a link drop keeps the record)
+    let asked = staleFrame(store, key: "sos:7:71")
+    check(asked.stopTag == nil, "F17c: never stopped without the user")
+    check(asked.openPromptDeadlineAt == clock + 30_000, "the user is asked, 30 s")
+    check(store.pendingCreateCount == 0 && store.cycleState == .idle, "no incident before the answer")
+    clock += 5_000
+    let no = store.answerPrompt("stopTag")
+    check(no.stopTag == .cancel && !no.queuedCreate, "No: the cancel stop, no incident")
+    check(store.promptDeadlineAt == nil && store.staleGuardKind == .cancel, "prompt closed, record kept")
     clock += 60_000  // the next retry frame of the same SOS
     let again = staleFrame(store, key: "sos:7:72")
-    check(again.stopTag == .cancel, "stop resent while the TAG keeps the SOS")
-    check(!again.staleStopNotice, "notice only once per guard")
+    check(again.stopTag == .cancel, "within the No consent: stopped again")
+    check(again.openPromptDeadlineAt == nil, "never asked twice for the same answer")
     check(store.pendingCreateCount == 0, "still no new incident")
+  }
+
+  static func promptTimeoutOpensTheSosThroughTheNativeCreate() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:92")
+    store.noteLinkDropped()
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .resolve)
+    clock += 100_000
+    let asked = staleFrame(store, key: "sos:7:93")
+    let deadline = asked.openPromptDeadlineAt ?? 0
+    clock = deadline - 1
+    check(!store.answerPrompt("timeout").queuedCreate, "not before the deadline")
+    clock = deadline
+    let timeout = store.answerPrompt("timeout")
+    check(store.lastStaleAction == "sosOpened", "timeout sends the SOS")
+    check(timeout.queuedCreate && timeout.stopTag == nil, "native create queued, nothing stopped")
+    check(store.pendingCreateCount == 1 && store.cycleState == .createPending, "a normal native SOS")
+    check(store.staleGuardKind == nil && store.promptDeadlineAt == nil, "record and prompt ended")
+  }
+
+  static func promptSurvivesAnAppRestart() {
+    let suite = UUID().uuidString
+    let (store, defaults) = makeStore(suite: suite)
+    deliver(store, key: "sos:7:94")
+    store.noteLinkDropped()
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 100_000
+    let deadline = staleFrame(store, key: "sos:7:95").openPromptDeadlineAt
+    let restarted = IosNativeSosDeliveryStore(defaults: defaults, now: { clock })
+    check(restarted.staleGuardKind == .cancel, "unconfirmed stop persisted")
+    check(restarted.promptDeadlineAt == deadline && deadline != nil, "open prompt persisted")
+    clock += 40_000
+    check(restarted.answerPrompt("timeout").queuedCreate, "a deadline passed while dead: the SOS is sent")
+  }
+
+  static func answersNeedAnOpenPrompt() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:96")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    for choice in ["sendSos", "stopTag", "timeout"] {
+      let t = store.answerPrompt(choice)
+      check(store.lastStaleAction == "none" && !t.queuedCreate && t.stopTag == nil, "\(choice): no prompt, nothing")
+    }
   }
 
   static func staleResolvedSosGetsTheResolveCommand() {
@@ -545,7 +603,8 @@ struct IosNativeSosDeliveryStoreTests {
     deliver(store, key: "sos:7:73")
     check(store.closeDeliveredCycle(nodeId: 7, terminal: .resolve), "portal resolve closes it")
     clock += 40_000
-    check(staleFrame(store, key: "sos:7:74").stopTag == .resolve, "resolve gets the resolve command")
+    check(staleFrame(store, key: "sos:7:74").openPromptDeadlineAt != nil, "resolve: ask")
+    check(store.answerPrompt("stopTag").stopTag == .resolve, "No gets the resolve command")
   }
 
   static func countdownBurstAfterReconnectIsANewSos() {
@@ -599,9 +658,9 @@ struct IosNativeSosDeliveryStoreTests {
     deliver(store, key: "sos:7:80")
     store.noteLinkDropped()
     _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
-    clock += 601_000
+    clock += 86_401_000
     let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:5", deviceId: nil)
-    check(press.countdownDeadlineAt == clock + 20_000, "10 min cap: admitted")
+    check(press.countdownDeadlineAt == clock + 20_000, "one-day cap: admitted")
     check(store.staleGuardKind == nil, "cap ended the guard")
   }
 
@@ -630,7 +689,8 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 300_000
     store.noteLinkUp()
     clock += 30_000
-    check(staleFrame(store, key: "sos:7:84").stopTag == .cancel, "first frame after reconnect is still the closed SOS")
+    check(staleFrame(store, key: "sos:7:84").openPromptDeadlineAt != nil, "first frame after reconnect: ask")
+    _ = store.answerPrompt("stopTag")
     store.noteLinkDropped()
     clock += 5_000
     store.noteLinkUp()
@@ -649,7 +709,8 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 800
     check(push(store, key: "sos:7:87").countdownDeadlineAt == nil, "a resend pair is not a countdown")
     clock += 1_200
-    check(store.evaluateStaleCandidate().stopTag == .cancel, "the pair is the closed SOS: stopped")
+    let pair = store.evaluateStaleCandidate()
+    check(pair.stopTag == nil && pair.openPromptDeadlineAt != nil, "the pair is ambiguous: ask")
     check(store.pendingCreateCount == 0 && store.cycleState == .idle, "no new incident")
   }
 
@@ -669,7 +730,7 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 120_000  // Bluetooth off / process death: no didDisconnect
     store.noteLinkUp()
     clock += 20_000
-    check(staleFrame(store, key: "sos:7:90").stopTag == .resolve, "still the closed SOS after reconnect")
+    check(staleFrame(store, key: "sos:7:90").openPromptDeadlineAt != nil, "still ambiguous after reconnect: ask")
   }
 
   static func sessionChangeEndsTheGuard() {
@@ -715,13 +776,13 @@ struct IosNativeSosDeliveryStoreTests {
     check(first.verdict == "suppress", "stale frame through Dart is held")
     clock += 2_000
     let decided = store.evaluateStaleCandidate()
-    check(decided.stopTag == .cancel, "stop required with the cancel command")
+    check(decided.stopTag == nil && decided.openPromptDeadlineAt != nil, "ambiguous: ask")
 
     let (fresh, _) = makeStore()
     _ = fresh.observeForwardedSosFrame(kind: .active, nodeId: 7)
     clock += 5_000
-    check(!fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "a countdown cancel arms nothing")
-    check(fresh.staleGuardKind == nil, "no guard for a countdown")
+    check(fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "F17c: one rule, a countdown cancel too")
+    check(fresh.staleGuardKind == .cancel, "unconfirmed stop recorded at any age")
   }
 
   static func burstThroughDartNeverOpensTheNativeCycle() {
@@ -760,6 +821,45 @@ struct IosNativeSosDeliveryStoreTests {
     clock += 30_000
     store.disarmStaleGuardForSessionChange()
     check(!store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "previous account's cycle arms nothing")
+  }
+
+  // MARK: - F17c prompt notification (owner decision 16/11/2026)
+
+  static func promptNotificationActions() {
+    let texts = IosSosPromptNotification.Texts()
+    let actions = IosSosPromptNotification.actions(texts: texts)
+    check(actions.count == 2, "two actions")
+    check(actions[0].identifier == IosSosPromptNotification.sendActionIdentifier &&
+          actions[0].title == "Send SOS", "Send SOS first")
+    check(!actions[0].options.contains(.authenticationRequired), "Send SOS: one tap, no unlock")
+    check(!actions[0].options.contains(.foreground), "Send SOS: answered without opening the app")
+    check(actions[1].title == "No, stop the TAG", "No second")
+    check(actions[1].options.contains(.authenticationRequired), "No requires the unlock")
+    check(IosSosPromptNotification.choice(forActionIdentifier: IosSosPromptNotification.sendActionIdentifier) == "sendSos", "send maps")
+    check(IosSosPromptNotification.choice(forActionIdentifier: IosSosPromptNotification.stopActionIdentifier) == "stopTag", "stop maps")
+    check(IosSosPromptNotification.choice(forActionIdentifier: UNNotificationDefaultActionIdentifier) == nil, "a tap only opens the app")
+    check(IosSosPromptNotification.choice(forActionIdentifier: UNNotificationDismissActionIdentifier) == nil, "dismiss answers nothing (timeout applies)")
+    let other = UNNotificationCategory(identifier: "host", actions: [], intentIdentifiers: [], options: [])
+    let stale = UNNotificationCategory(identifier: IosSosPromptNotification.categoryIdentifier, actions: [], intentIdentifiers: [], options: [])
+    let merged = IosSosPromptNotification.merged([other, stale], texts: texts)
+    check(merged.count == 2 && merged.contains(where: { $0.identifier == "host" }), "host categories kept")
+    check(merged.first(where: { $0.identifier == IosSosPromptNotification.categoryIdentifier })?.actions.count == 2, "own category replaced")
+  }
+
+  static func promptNotificationIsANormalLocalNotification() {
+    var texts = IosSosPromptNotification.Texts()
+    texts.title = "Tu TAG sigue en SOS"
+    let content = IosSosPromptNotification.content(texts: texts, terminal: "cancel", deadlineAtMs: 42)
+    check(content.title == "Tu TAG sigue en SOS", "localized title")
+    check(content.body.contains("30 s"), "the 30 s countdown is in the text")
+    check(content.categoryIdentifier == IosSosPromptNotification.categoryIdentifier, "carries both actions")
+    if #available(macOS 12.0, *) {
+      check(content.interruptionLevel == .active, "interruption level .active")
+      check(content.interruptionLevel != .timeSensitive, "never time-sensitive (no entitlement)")
+      check(IosSosPromptNotification.stoppedContent(texts: texts).interruptionLevel == .active, "confirmation .active")
+    }
+    check(IosSosPromptNotification.isPrompt(userInfo: content.userInfo, identifier: "x"), "recognised by source")
+    check(!IosSosPromptNotification.isPrompt(userInfo: [:], identifier: "42001"), "SOS notifications are not the prompt")
   }
 
   /// The scenario fixture shared with the Android guard and the Dart contract test.
@@ -863,6 +963,10 @@ struct IosNativeSosDeliveryStoreTests {
         } else {
           _ = store.observe(kind: .cancelled, nodeId: node, cycleKey: "sos:\(node)", deviceId: nil)
         }
+      case "answer":
+        clock = base + t
+        transition = store.answerPrompt(args["choice"] ?? "")
+        action = store.lastStaleAction
       case "link_drop":
         store.noteLinkDropped()
       case "link_up":
@@ -882,7 +986,17 @@ struct IosNativeSosDeliveryStoreTests {
       }
       let stop = transition.stopTag?.rawValue ?? "none"
       check(stop == (want["stop"] ?? "none"), "\(label): stop \(stop) != \(want["stop"] ?? "none")")
-      check(transition.staleStopNotice == (want["notice"] == "true"), "\(label): notice")
+      check((transition.openPromptDeadlineAt != nil) == (want["opened"] == "true"), "\(label): opened")
+      if let kind = want["kind"] {
+        check(store.staleGuardKind?.rawValue == kind, "\(label): kind \(store.staleGuardKind?.rawValue ?? "none") != \(kind)")
+      }
+      if let prompt = want["prompt"] {
+        let got = store.promptDeadlineAt != nil ? "open" : "closed"
+        check(got == prompt, "\(label): prompt \(got) != \(prompt)")
+      }
+      if action == "sosOpened" {
+        check(transition.queuedCreate && store.pendingCreateCount == 1, "\(label): the SOS is opened")
+      }
       if let armed = want["armed"] {
         check((store.staleGuardKind != nil) == (armed == "true"), "\(label): armed != \(armed)")
       }
