@@ -59,6 +59,7 @@ import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_database.dart';
 import 'activity_availability_controller.dart';
 import 'tag_alerts_controller.dart';
+import 'ambiguous_tag_sos_prompt_tracker.dart';
 import 'tag_notify_liveness_monitor.dart';
 import '../data/datasources_local/tag_alert_store.dart';
 import '../tag_alerts/tag_alert_notification_ids.dart';
@@ -259,7 +260,8 @@ class EixamConnectSdkImpl
         ActivityRecordingControl,
         ActivityRecordingHistoryControl,
         ActivityRecordingDeleteControl,
-        SosIncidentProgressProvider {
+        SosIncidentProgressProvider,
+        AmbiguousTagSosPromptControl {
   EixamConnectSdkImpl({
     required this.sosRepository,
     required this.trackingRepository,
@@ -346,6 +348,12 @@ class EixamConnectSdkImpl
           activityAvailabilityStore ??
           SharedPrefsActivityAvailabilityStore(_localStore),
       remote: activityAvailabilityRemoteDataSource,
+      clock: _clock,
+    );
+    _ambiguousSosPrompt = AmbiguousTagSosPromptTracker(
+      read: () => this.protectionPlatformAdapter.getOwnTagSosPrompt(),
+      answer: (choice) =>
+          this.protectionPlatformAdapter.answerOwnTagSosPrompt(choice),
       clock: _clock,
     );
     _tagAlerts = TagAlertsController(
@@ -687,6 +695,22 @@ class EixamConnectSdkImpl
   late final ActivityRecordingController _activityRecordings;
   late final ActivityAvailabilityController _activityAvailability;
   late final TagAlertsController _tagAlerts;
+
+  /// F17c: the native ambiguous TAG SOS prompt, mirrored for the host.
+  late final AmbiguousTagSosPromptTracker _ambiguousSosPrompt;
+
+  @override
+  AmbiguousTagSosPrompt? get currentAmbiguousTagSosPrompt =>
+      _ambiguousSosPrompt.current;
+
+  @override
+  Stream<AmbiguousTagSosPrompt?> watchAmbiguousTagSosPrompt() =>
+      _ambiguousSosPrompt.watch();
+
+  @override
+  Future<AmbiguousTagSosAnswerOutcome> answerAmbiguousTagSosPrompt(
+    AmbiguousTagSosChoice choice,
+  ) => _ambiguousSosPrompt.answer(choice);
 
   /// Test seam for the foreground battery probe; defaults to the public
   /// [getDeviceRuntimeStatus].
@@ -1925,6 +1949,9 @@ class EixamConnectSdkImpl
             );
           },
         );
+    // F17c: a prompt native opened while Dart was not listening (app opened
+    // from the notification, restart during the 30 s).
+    unawaited(_ambiguousSosPrompt.refresh('events_attached'));
   }
 
   void _reconcileProtectionDisconnectLifecycle({
@@ -3107,6 +3134,8 @@ class EixamConnectSdkImpl
     // The previous account's TAG cycle and stale guard must not block or stop
     // the next one's SOS, and its running countdown must never be promoted
     // under the next one. First, before any other await (F17c M2).
+    // F17c: the previous account's prompt is never shown or answered.
+    _ambiguousSosPrompt.clear('session_changed');
     try {
       await protectionPlatformAdapter.closeNativeSosCycle(force: true);
     } catch (error) {
@@ -3114,6 +3143,7 @@ class EixamConnectSdkImpl
         'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
       );
     }
+    unawaited(_ambiguousSosPrompt.refresh('session_changed'));
     try {
       final pending = await protectionPlatformAdapter
           .peekPendingNativeSosCreate();
@@ -5135,6 +5165,7 @@ class EixamConnectSdkImpl
         }
         final sosRehydration = _rehydrateSosStateOnAppResume();
         unawaited(sosRehydration);
+        unawaited(_ambiguousSosPrompt.refresh('app_resumed'));
         _pushTagLinkSnapshot();
         if (_isProtectionPlatformOwningBle) {
           unawaited(_protectionModeController.rehydrate());
@@ -14740,7 +14771,7 @@ class EixamConnectSdkImpl
         return;
       }
       if (!_sosLifecycle.current.isOpen) {
-        await _sosLifecycle.beginActivating(
+        final opened = await _sosLifecycle.beginActivating(
           origin: SosLifecycleOrigin.connectedLocalDevice,
           triggerSource: pending.triggerSource,
           deviceId: pending.deviceId,
@@ -14748,6 +14779,23 @@ class EixamConnectSdkImpl
           hardwareId: pending.hardwareId,
           startNewGenerationAfterTerminal: true,
         );
+        if (opened.stage == SosLifecycleStage.activating &&
+            opened.localIncidentId == null) {
+          // The native create IS this generation's incident: its id is the
+          // provisional id the backend echoes. Without it, the backend
+          // `processed` of a native create opened after an earlier terminal
+          // (generation >= 2: the F17c prompt's Send / timeout, a second
+          // background TAG SOS) was ignored as identity_mismatch and the SOS
+          // stayed `sending`.
+          await _sosLifecycle.confirmActive(
+            origin: SosLifecycleOrigin.connectedLocalDevice,
+            localIncidentId: pending.incidentId,
+            triggerSource: pending.triggerSource,
+            deviceId: pending.deviceId,
+            nodeId: originatorNodeId,
+            hardwareId: pending.hardwareId,
+          );
+        }
       }
       final dispatchGeneration = _sosLifecycle.current.generation;
       final incident = await _publishSosForGeneration(
@@ -17576,10 +17624,17 @@ class EixamConnectSdkImpl
         // retries within the same physical episode. Neither a changed counter
         // nor unconsumed bytes prove that a mirrored terminal episode ended.
         // Require an observed physical closure before reopening that episode.
+        // F17c: native (the single classifier) saw a new TAG countdown burst
+        // after a stop the TAG never confirmed: a genuine new SOS, never
+        // dropped by this closure fence.
+        final nativeNewCountdown =
+            deviceSosController.ownTagSosFrameGate.admittingVerdict ==
+            OwnTagSosFrameVerdict.newSos;
         final canAccept =
             freshReceiveAfterTerminal ||
             terminalFromPreviousProcess ||
-            backendOnlyAppGeneration;
+            backendOnlyAppGeneration ||
+            nativeNewCountdown;
         if (canAccept) {
           admission = PhysicalSosStartAdmission(
             decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
@@ -17589,6 +17644,8 @@ class EixamConnectSdkImpl
                 ? 'current_session_start_after_restored_terminal'
                 : backendOnlyAppGeneration
                 ? 'backend_only_generation_then_physical_start'
+                : nativeNewCountdown
+                ? 'native_classifier_new_countdown'
                 : 'unconsumed_physical_start_after_terminal',
             allowFreshStartAfterTerminal: true,
           );
@@ -25361,6 +25418,11 @@ class EixamConnectSdkImpl
   }
 
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
+    if (event.type == ProtectionPlatformEventType.ownTagSosPromptOpened ||
+        event.type == ProtectionPlatformEventType.ownTagSosPromptClosed) {
+      unawaited(_ambiguousSosPrompt.refresh(event.type.name));
+      return;
+    }
     if (event.type == ProtectionPlatformEventType.ownTagSosStopRequired) {
       unawaited(
         _writeStaleSosStopRequiredByNative(
@@ -26170,6 +26232,8 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.bluetoothTurnedOff:
       case ProtectionPlatformEventType.bluetoothTurnedOn:
       case ProtectionPlatformEventType.ownTagSosStopRequired:
+      case ProtectionPlatformEventType.ownTagSosPromptOpened:
+      case ProtectionPlatformEventType.ownTagSosPromptClosed:
         return false;
     }
   }
@@ -29006,6 +29070,7 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
+    unawaited(_ambiguousSosPrompt.dispose());
     _nativePendingSosPumpTimer?.cancel();
     _nativePendingSosPumpTimer = null;
     unawaited(_sosDeliveryHoldSub?.cancel());

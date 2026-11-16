@@ -3868,6 +3868,12 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
 }
 
 class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async => null;
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
+
   int ackPendingNativeSosCancelCalls = 0;
 
   @override

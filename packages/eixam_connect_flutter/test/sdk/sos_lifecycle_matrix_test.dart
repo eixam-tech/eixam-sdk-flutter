@@ -17138,6 +17138,7 @@ void main() {
     });
   });
   _cancelDuringCountdownTests();
+  _ambiguousSosPromptTests();
 }
 
 final class _BlockingNextWriteSecureKeyValueStore
@@ -20880,10 +20881,11 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
 /// TAG is out of range. The 0x04 never reaches the TAG, whose countdown ends
 /// on its own -> ACTIVE. When the TAG comes back with ACTIVE retries of that
 /// same cancelled cycle, they must never become a new SOS. In-process Dart's
-/// physical-closure admission fence drops them (native answers `proceed`: a
-/// countdown cancel arms no guard). Across an app restart that fence admits
-/// the first start frame: an ACCEPTED known duplicate (no firmware episode id;
-/// a missed SOS is worse than a duplicate), which must be a normal SOS.
+/// physical-closure admission fence drops them. F17c prompt: native now
+/// records that unconfirmed stop and asks the user (`_ambiguousSosPromptTests`);
+/// these tests keep the FAIL-OPEN path, native answering `proceed` (classifier
+/// unreachable, M6): across an app restart the first start frame then opens a
+/// duplicate, which must be a normal SOS (a missed SOS is worse).
 void _cancelDuringCountdownTests() {
   group('F17c-cdc app cancel during the TAG countdown, TAG out of range', () {
     var sequence = 9000;
@@ -21346,8 +21348,8 @@ void _cancelDuringCountdownTests() {
     });
 
     /// Cancel during the countdown with the TAG out of range, then an app
-    /// restart before the TAG is back. Native arms nothing for a countdown
-    /// cancel (no firmware episode id: ambiguous), so it answers `proceed`.
+    /// restart before the TAG is back, with native answering `proceed` (fail
+    /// open: classifier unreachable).
     Future<(_MqttSosPhone, SosLifecycleSnapshot)> restartAfterCancelOutOfRange(
       List<int> written,
     ) async {
@@ -21390,8 +21392,8 @@ void _cancelDuringCountdownTests() {
       return (restarted, cancelled);
     }
 
-    /// ACCEPTED known duplicate: after the restart the ACTIVE retries of the
-    /// cancelled cycle open a new SOS. It must be a normal, visible SOS.
+    /// Fail open: after the restart the ACTIVE retries of the cancelled cycle
+    /// open a new SOS. It must be a normal, visible SOS.
     Future<void> acceptedDuplicateOpens(
       _MqttSosPhone phone,
       SosLifecycleSnapshot cancelled,
@@ -21404,7 +21406,7 @@ void _cancelDuringCountdownTests() {
       await expectShownActive(phone, cancelled.generation + 1, written);
     }
 
-    test('app restart before the TAG is back (accepted duplicate): the new '
+    test('fail open, app restart before the TAG is back: the duplicate '
         'SOS is shown active and the app cancel reaches the backend', () async {
       final written = <int>[];
       final (phone, cancelled) = await restartAfterCancelOutOfRange(written);
@@ -21416,7 +21418,7 @@ void _cancelDuringCountdownTests() {
       }
     });
 
-    test('app restart before the TAG is back (accepted duplicate): a portal '
+    test('fail open, app restart before the TAG is back: a portal '
         'resolve over MQTT closes the new SOS', () async {
       final written = <int>[];
       final (phone, cancelled) = await restartAfterCancelOutOfRange(written);
@@ -21539,4 +21541,766 @@ final class _MqttSosPhone {
     await harness.dispose(disposeSosRepository: false);
     await repository.dispose();
   }
+}
+
+/// F17c ambiguous TAG SOS prompt: native (Swift/Kotlin, shared fixture) holds
+/// the "unconfirmed stop" record, decides "ambiguous", owns the 30 s timer and
+/// the notification. This fake plays native exactly as the fixture asserts;
+/// the tests check what the SDK does: the prompt reaches the host, no SOS and
+/// no stop without an answer, "No" writes the matching stop through Dart's
+/// link, and "Send SOS" / the timeout open a normal SOS through the native
+/// create (production MQTT path: shown sent, cancellable, portal-resolvable).
+final class _PromptNativeAdapter extends _F17cNativeAdapter {
+  _PromptNativeAdapter()
+    : super(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+          runtimeActive: false,
+        ),
+      ) {
+    verdictFor = (_) {
+      if (scriptedVerdicts.isNotEmpty) {
+        return scriptedVerdicts.removeAt(0);
+      }
+      return recordArmed
+          ? OwnTagSosFrameVerdict.suppress
+          : OwnTagSosFrameVerdict.proceed;
+    };
+  }
+
+  /// The native "unconfirmed stop" record (persisted natively).
+  bool recordArmed = false;
+  ProtectionOwnTagSosPrompt? prompt;
+  final List<String> answers = <String>[];
+  final List<OwnTagSosFrameVerdict> scriptedVerdicts =
+      <OwnTagSosFrameVerdict>[];
+  int promptReads = 0;
+  var _creates = 0;
+
+  void _event(ProtectionPlatformEventType type, String reason) => emit(
+    ProtectionPlatformEvent(
+      type: type,
+      timestamp: DateTime.now().toUtc(),
+      reason: reason,
+    ),
+  );
+
+  /// Native decided "ambiguous" (decide timer after a non-burst frame).
+  void openPrompt(String terminal) {
+    prompt = ProtectionOwnTagSosPrompt(
+      terminal: terminal,
+      deadlineAt: DateTime.now().toUtc().add(const Duration(seconds: 30)),
+    );
+    _event(ProtectionPlatformEventType.ownTagSosPromptOpened, terminal);
+  }
+
+  void closePrompt(String reason) {
+    prompt = null;
+    _event(ProtectionPlatformEventType.ownTagSosPromptClosed, reason);
+  }
+
+  /// Send SOS / the native 30 s timeout: the record ends, the SOS goes
+  /// through the native create (as a TAG SOS whose countdown elapsed).
+  void openSosThroughNativeCreate(String reason) {
+    recordArmed = false;
+    closePrompt(reason);
+    final now = DateTime.now().toUtc();
+    final n = ++_creates;
+    pendingNativeSosCreate = ProtectionPendingNativeSosCreate(
+      signature: 'native-sos-ambiguous-$n',
+      incidentId: 'native-sos-ambiguous-$n',
+      cycleKey: 'native-sos-cycle@${now.millisecondsSinceEpoch}',
+      correlationId: 'native-sos-${now.millisecondsSinceEpoch}',
+      createdAt: now,
+      updatedAt: now,
+      retryCount: 0,
+      state: 'pending_mqtt',
+      nodeId: 0x1234,
+      deviceId: '4660',
+      hardwareId: '4660',
+    );
+    _event(
+      ProtectionPlatformEventType.nativeBackendSyncQueued,
+      'create:ambiguous_$reason',
+    );
+  }
+
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async {
+    promptReads++;
+    return prompt;
+  }
+
+  /// The native create record, as the iOS/Android stores keep it.
+  int pendingCreateMarks = 0;
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(
+    String signature,
+  ) async => pendingCreateMarks++;
+
+  @override
+  Future<void> markPendingNativeSosCreateMqttPublished(
+    String signature,
+  ) async => pendingCreateMarks++;
+
+  @override
+  Future<void> retainPendingNativeSosCreate(
+    String signature, {
+    required String reason,
+  }) async {}
+
+  @override
+  Future<bool> ackPendingNativeSosCreate(
+    String signature, {
+    String? backendIncidentId,
+  }) async {
+    if (pendingNativeSosCreate?.signature != signature) {
+      return false;
+    }
+    pendingNativeSosCreate = null;
+    return true;
+  }
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async {
+    answers.add(choice);
+    final open = prompt;
+    if (open == null) {
+      return 'none';
+    }
+    if (choice == 'sendSos') {
+      openSosThroughNativeCreate('prompt_send_sos');
+      return 'sosOpened';
+    }
+    // "No": native keeps the record and, holding no writable link (Dart owns
+    // it), asks Dart to write the matching stop.
+    closePrompt('prompt_stop_tag');
+    _event(ProtectionPlatformEventType.ownTagSosStopRequired, open.terminal);
+    return 'stop';
+  }
+}
+
+void _ambiguousSosPromptTests() {
+  group('F17c ambiguous TAG SOS: ask the user', () {
+    var sequence = 30000;
+    late List<String> messages;
+    StreamSubscription<BleDebugState>? debug;
+
+    setUp(() {
+      messages = <String>[];
+      debug = BleDebugRegistry.instance.watch().listen((state) {
+        if (state.events.isNotEmpty) {
+          messages.add(state.events.last.message);
+        }
+      });
+    });
+
+    tearDown(() async {
+      await debug?.cancel();
+    });
+
+    Future<void> settle([int ms = 0]) async {
+      if (ms > 0) {
+        await Future<void>.delayed(Duration(milliseconds: ms));
+      }
+      await pumpEventQueue(times: 20);
+    }
+
+    /// One own-TAG SOS push through Dart's BLE link (native classifies first).
+    Future<void> frame(
+      _SdkSosHarness harness, {
+      required bool active,
+      required int packetId,
+      String characteristic = 'sos',
+    }) async {
+      final seq = ++sequence;
+      final bytes = <int>[
+        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, //
+        0x00, 0x00, 0x00, 0x00,
+        packetId & 0x0F,
+        active ? 0x80 : 0x50,
+      ];
+      final packet = EixamSosPacket.tryParse(bytes)!;
+      harness.deviceSosController.ownTagSosFrameGate.submitStartFrame(
+        OwnTagSosFrameReport(
+          bytes: bytes,
+          characteristic: characteristic,
+          receivedAt: DateTime.now().toUtc(),
+        ),
+        () => harness.deviceSosController.handleIncomingSosPacket(
+          packet,
+          source: DeviceSosTransitionSource.device,
+          resolutionContext:
+              DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                PhysicalSosReceiveEvidence(
+                  classification: BleIncomingPayloadKind.ownDeviceSos,
+                  receiveSequence: seq,
+                  receiveSequenceDomain: 'flutter_gatt:prompt',
+                  processSessionId: 'matrix-test-process',
+                  producer: 'flutter_gatt',
+                  characteristic: characteristic == 'tel'
+                      ? EixamBleProtocol.telNotifyCharacteristicUuid
+                      : EixamBleProtocol.sosNotifyCharacteristicUuid,
+                  correlationId: 'prompt-$seq',
+                  exactPhysicalIdentityMatch: true,
+                  packetType: 'sos',
+                  hasStartSemantics: true,
+                  hasTerminalSemantics: false,
+                  packetFingerprint: 'prompt-$seq',
+                  cycleIdentity: 'sos:4660:$packetId',
+                  receivedAt: DateTime.now().toUtc(),
+                ),
+                incomingPacketType: 'sos',
+                incomingClassification: 'ownDeviceSos',
+                incomingReceiveSequence: seq,
+              ),
+        ),
+      );
+      await harness.deviceSosController.ownTagSosFrameGate.idle;
+      await pumpEventQueue(times: 5);
+    }
+
+    /// TAG countdown scaled down (TAG: ~20 s).
+    const countdown = Duration(milliseconds: 1500);
+
+    Future<void> connect(_SdkSosHarness harness, List<int> written) async {
+      await harness.deviceSosController.attach(
+        commandWriter: (command) async => written.add(command.opcode),
+        transportId: 'ble-1',
+      );
+      await settle(50);
+    }
+
+    Future<_MqttSosPhone> mqttPhone(
+      _PromptNativeAdapter adapter,
+      List<int> written, {
+      required MemorySharedPrefsSdkStore localStore,
+      required SdkSessionStore sessionStore,
+      required InMemorySecureKeyValueStore secureStore,
+      bool restore = false,
+    }) async {
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final remote = _NoActiveSosRemoteDataSource();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtime,
+        remoteDataSource: remote,
+        cancelRemoteDataSource: remote,
+        localStore: localStore,
+      );
+      if (restore) {
+        await repository.restoreState();
+      }
+      final harness = _SdkSosHarness(
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: countdown,
+        protectionPlatformAdapter: adapter,
+        localStore: localStore,
+        sessionStore: sessionStore,
+        sosLifecycleSecureStore: secureStore,
+      );
+      await connect(harness, written);
+      await harness.sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await harness.setSession();
+      await harness.deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: '4660',
+        firmwareVersion: '2.7.54',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: DateTime.utc(2026, 9, 24),
+      );
+      await settle(50);
+      return _MqttSosPhone(harness, realtime, repository);
+    }
+
+    const backendIncidentId = '9b2e1c4a-7425-40de-944b-e07fc1f90ab3';
+
+    Future<void> backendProcessed(_MqttSosPhone phone) async {
+      phone.realtime.emitEvent(
+        _processedEvent(
+          canonicalIncidentId: backendIncidentId,
+          publishedAt: phone.realtime.publishedSos.last.timestamp.toUtc(),
+        ),
+      );
+      await settle(100);
+    }
+
+    Future<void> portalResolved(_MqttSosPhone phone) async {
+      phone.realtime.emitEvent(
+        RealtimeEvent(
+          type: 'resolved',
+          timestamp: DateTime.now().toUtc(),
+          payload: <String, dynamic>{
+            'type': 'resolved',
+            'status': 'resolved',
+            'incidentId': backendIncidentId,
+            'userId': 'external-123',
+            '_mqttAuthenticatedUserScoped': true,
+            '_mqttTopicCategory': 'internal',
+          },
+        ),
+      );
+      await settle(200);
+    }
+
+    AmbiguousTagSosPromptControl control(_MqttSosPhone phone) =>
+        phone.harness.sdk as AmbiguousTagSosPromptControl;
+
+    /// Case 1 setup: the TAG countdown reaches the phone, the link drops, the
+    /// user cancels in the app (the 0x04 never reaches the TAG). Native
+    /// records the unconfirmed stop (fixture: armed=true).
+    Future<(_MqttSosPhone, SosLifecycleSnapshot)> cancelOutOfRange(
+      _PromptNativeAdapter adapter,
+      List<int> written, {
+      MemorySharedPrefsSdkStore? localStore,
+      SdkSessionStore? sessionStore,
+      InMemorySecureKeyValueStore? secureStore,
+    }) async {
+      final store = localStore ?? MemorySharedPrefsSdkStore();
+      final phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: store,
+        sessionStore: sessionStore ?? SdkSessionStore(localStore: store),
+        secureStore: secureStore ?? InMemorySecureKeyValueStore(),
+      );
+      for (var push = 1; push <= 4; push++) {
+        await frame(phone.harness, active: false, packetId: push);
+      }
+      await settle(50);
+      expect((await phone.harness.sdk.getSosLifecycle()).isOpen, isTrue);
+      await phone.harness.deviceSosController.detach();
+      await phone.harness.sdk.cancelSosAuthoritatively();
+      await settle(50);
+      final cancelled = await phone.harness.sdk.getSosLifecycle();
+      expect(cancelled.stage, SosLifecycleStage.cancelled);
+      expect(
+        adapter.closeNativeSosCycleArgs.map((c) => c.terminal),
+        contains('cancel'),
+        reason: 'native gets the SDK terminal (records the unconfirmed stop)',
+      );
+      adapter.recordArmed = true;
+      return (phone, cancelled);
+    }
+
+    /// The TAG is back with ACTIVE retries only (no burst): native holds them
+    /// and, at its decision timer, opens the prompt.
+    Future<void> reconnectWithActiveRetries(
+      _MqttSosPhone phone,
+      _PromptNativeAdapter adapter,
+      List<int> written, {
+      required String terminal,
+    }) async {
+      await settle(countdown.inMilliseconds + 300);
+      await connect(phone.harness, written);
+      final before = adapter.frames.length;
+      for (var retry = 0; retry < 2; retry++) {
+        await frame(phone.harness, active: true, packetId: 6 + retry);
+        await frame(
+          phone.harness,
+          active: true,
+          packetId: 6 + retry,
+          characteristic: 'tel',
+        );
+        await settle(100);
+      }
+      expect(adapter.frames.length - before, 4, reason: 'all go to native');
+      adapter.openPrompt(terminal);
+      await settle(50);
+    }
+
+    void expectPromptOpenAndNothingElse(
+      _MqttSosPhone phone,
+      _PromptNativeAdapter adapter,
+      SosLifecycleSnapshot closed,
+      SosLifecycleSnapshot now,
+      List<int> written, {
+      required AmbiguousTagSosTerminal terminal,
+      int publishedBefore = 0,
+    }) {
+      final prompt = control(phone).currentAmbiguousTagSosPrompt;
+      expect(prompt, isNotNull, reason: 'the host gets the prompt');
+      expect(prompt!.terminal, terminal);
+      expect(prompt.secondsLeft(DateTime.now()), inInclusiveRange(28, 30));
+      expect(now.generation, closed.generation, reason: 'no SOS yet');
+      expect(now.isOpen, isFalse);
+      expect(
+        phone.realtime.publishedSos,
+        hasLength(publishedBefore),
+        reason: 'no incident before the answer',
+      );
+      expect(written, isNot(contains(0x04)), reason: 'never stopped silently');
+      expect(written, isNot(contains(0x07)), reason: 'never stopped silently');
+      expect(
+        phone.harness.deviceSosController.currentStatus.state,
+        isNot(anyOf(DeviceSosState.preConfirm, DeviceSosState.active)),
+        reason: 'no Dart countdown from a held frame',
+      );
+    }
+
+    Future<void> expectSosSentAndShownActive(
+      _MqttSosPhone phone,
+      SosLifecycleSnapshot closed, {
+      int published = 1,
+    }) async {
+      await settle(300);
+      expect(
+        phone.realtime.publishedSos,
+        hasLength(published),
+        reason: 'the SOS is published over MQTT',
+      );
+      await backendProcessed(phone);
+      final lifecycle = await phone.harness.sdk.getSosLifecycle();
+      expect(lifecycle.generation, greaterThan(closed.generation));
+      expect(lifecycle.stage, SosLifecycleStage.active);
+      expect(
+        await phone.harness.sdk.getSosState(),
+        SosState.sent,
+        reason: 'shown active after the backend processed it',
+      );
+      expect(control(phone).currentAmbiguousTagSosPrompt, isNull);
+    }
+
+    test('Case 1 (Dart path): an unconfirmed countdown cancel, then only '
+        'ACTIVE retries -> the prompt is shown; nothing is opened or '
+        'stopped; "No" writes 0x04 and opens no incident', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, cancelled) = await cancelOutOfRange(adapter, written);
+      try {
+        final seen = <AmbiguousTagSosPrompt?>[];
+        final sub = control(
+          phone,
+        ).watchAmbiguousTagSosPrompt().listen(seen.add);
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        expectPromptOpenAndNothingElse(
+          phone,
+          adapter,
+          cancelled,
+          await phone.harness.sdk.getSosLifecycle(),
+          written,
+          terminal: AmbiguousTagSosTerminal.cancel,
+        );
+        expect(seen.whereType<AmbiguousTagSosPrompt>(), hasLength(1));
+        expect(
+          messages.where(
+            (m) => m.contains('reason=physical_episode_closure_not_observed'),
+          ),
+          isEmpty,
+          reason: 'not dropped silently by Dart: native held and asked',
+        );
+        final outcome = await control(
+          phone,
+        ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.stopTag);
+        await settle(100);
+        expect(outcome, AmbiguousTagSosAnswerOutcome.tagStopped);
+        expect(adapter.answers, <String>['stopTag']);
+        expect(written, contains(0x04), reason: 'the matching stop (cancel)');
+        expect(written, isNot(contains(0x07)));
+        expect(phone.realtime.publishedSos, isEmpty, reason: 'no incident');
+        final after = await phone.harness.sdk.getSosLifecycle();
+        expect(after.generation, cancelled.generation);
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNull);
+        expect(seen.last, isNull, reason: 'the host closes the prompt');
+        await sub.cancel();
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('portal resolve never confirmed by the TAG -> prompt (resolve); '
+        '"No" writes 0x07 and opens no second incident', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final store = MemorySharedPrefsSdkStore();
+      final phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: store,
+        sessionStore: SdkSessionStore(localStore: store),
+        secureStore: InMemorySecureKeyValueStore(),
+      );
+      try {
+        for (var push = 0; push < 4; push++) {
+          await frame(phone.harness, active: false, packetId: 1);
+        }
+        await settle(countdown.inMilliseconds + 500);
+        await backendProcessed(phone);
+        expect(phone.realtime.publishedSos, hasLength(1));
+        await phone.harness.deviceSosController.detach();
+        await portalResolved(phone);
+        final resolved = await phone.harness.sdk.getSosLifecycle();
+        expect(resolved.stage, SosLifecycleStage.resolved);
+        expect(
+          adapter.closeNativeSosCycleArgs.map((c) => c.terminal),
+          contains('resolve'),
+        );
+        adapter.recordArmed = true;
+        written.clear();
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'resolve',
+        );
+        expectPromptOpenAndNothingElse(
+          phone,
+          adapter,
+          resolved,
+          await phone.harness.sdk.getSosLifecycle(),
+          written,
+          terminal: AmbiguousTagSosTerminal.resolve,
+          publishedBefore: 1,
+        );
+        final outcome = await control(
+          phone,
+        ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.stopTag);
+        await settle(100);
+        expect(outcome, AmbiguousTagSosAnswerOutcome.tagStopped);
+        expect(written, contains(0x07), reason: 'the matching stop (resolve)');
+        expect(written, isNot(contains(0x04)));
+        expect(phone.realtime.publishedSos, hasLength(1), reason: 'no new one');
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    for (final terminal in <String>['cancel', 'resolve']) {
+      test(
+        'no answer: the native timeout sends the SOS, shown active, and the '
+        '${terminal == 'cancel' ? 'app cancel reaches the backend over MQTT' : 'portal resolve over MQTT closes it'}',
+        () async {
+          final adapter = _PromptNativeAdapter();
+          final written = <int>[];
+          final (phone, cancelled) = await cancelOutOfRange(adapter, written);
+          try {
+            await reconnectWithActiveRetries(
+              phone,
+              adapter,
+              written,
+              terminal: 'cancel',
+            );
+            expect(control(phone).currentAmbiguousTagSosPrompt, isNotNull);
+            // 30 s later, nobody answered: native sends the SOS.
+            adapter.openSosThroughNativeCreate('prompt_timeout');
+            await expectSosSentAndShownActive(phone, cancelled);
+            expect(written, isNot(contains(0x04)), reason: 'never stopped');
+            if (terminal == 'cancel') {
+              final result = await phone.harness.sdk.cancelSosAuthoritatively();
+              await settle(100);
+              expect(phone.realtime.publishedSosCancels, hasLength(1));
+              expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+            } else {
+              await portalResolved(phone);
+              expect(
+                (await phone.harness.sdk.getSosLifecycle()).stage,
+                SosLifecycleStage.resolved,
+              );
+              expect(await phone.harness.sdk.getSosState(), SosState.resolved);
+            }
+          } finally {
+            await phone.dispose();
+          }
+        },
+      );
+    }
+
+    test('"Send SOS" from the app opens the SOS (shown active, cancellable '
+        'over MQTT); the TAG is never stopped', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, cancelled) = await cancelOutOfRange(adapter, written);
+      try {
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        final outcome = await control(
+          phone,
+        ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.sendSos);
+        expect(outcome, AmbiguousTagSosAnswerOutcome.sosSent);
+        expect(adapter.answers, <String>['sendSos']);
+        await expectSosSentAndShownActive(phone, cancelled);
+        expect(written, isNot(contains(0x04)));
+        await phone.harness.sdk.cancelSosAuthoritatively();
+        await settle(100);
+        expect(phone.realtime.publishedSosCancels, hasLength(1));
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('after an app restart (replaces the accepted duplicate): the '
+        'persisted native record holds the retries, the prompt is shown '
+        'again, and its timeout sends the SOS', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final localStore = MemorySharedPrefsSdkStore();
+      final sessionStore = SdkSessionStore(localStore: localStore);
+      final secureStore = InMemorySecureKeyValueStore();
+      final (first, cancelled) = await cancelOutOfRange(
+        adapter,
+        written,
+        localStore: localStore,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+      );
+      await first.dispose();
+      // Native (persisted) opened the prompt while the app was restarting.
+      adapter.prompt = ProtectionOwnTagSosPrompt(
+        terminal: 'cancel',
+        deadlineAt: DateTime.now().toUtc().add(const Duration(seconds: 25)),
+      );
+      final phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: localStore,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+        restore: true,
+      );
+      try {
+        await settle(50);
+        expect(
+          control(phone).currentAmbiguousTagSosPrompt?.terminal,
+          AmbiguousTagSosTerminal.cancel,
+          reason: 'shown again after the restart',
+        );
+        written.clear();
+        await frame(phone.harness, active: true, packetId: 9);
+        await frame(
+          phone.harness,
+          active: true,
+          packetId: 9,
+          characteristic: 'tel',
+        );
+        await settle(countdown.inMilliseconds + 500);
+        final held = await phone.harness.sdk.getSosLifecycle();
+        expect(held.generation, cancelled.generation, reason: 'no duplicate');
+        expect(phone.realtime.publishedSos, isEmpty);
+        expect(written, isNot(contains(0x04)));
+        adapter.openSosThroughNativeCreate('prompt_timeout');
+        await expectSosSentAndShownActive(phone, cancelled);
+        await portalResolved(phone);
+        expect(
+          (await phone.harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.resolved,
+        );
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('a countdown burst while the prompt is open: native closes the '
+        'prompt and the normal new SOS opens (in process)', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, cancelled) = await cancelOutOfRange(adapter, written);
+      try {
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNotNull);
+        adapter.scriptedVerdicts.addAll(<OwnTagSosFrameVerdict>[
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.newSos,
+        ]);
+        await frame(phone.harness, active: false, packetId: 12);
+        await frame(phone.harness, active: false, packetId: 12);
+        // The third push completes the burst: native ends the record and
+        // closes the prompt (fixture: newSos prompt=closed armed=false).
+        adapter.recordArmed = false;
+        adapter.closePrompt('countdown_burst');
+        await frame(phone.harness, active: false, packetId: 12);
+        await settle(50);
+        final opened = await phone.harness.sdk.getSosLifecycle();
+        expect(opened.generation, cancelled.generation + 1, reason: 'new SOS');
+        expect(opened.isOpen, isTrue);
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNull);
+        expect(written, isNot(contains(0x04)));
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('the TAG close frame while the prompt is open closes it and opens '
+        'nothing', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, cancelled) = await cancelOutOfRange(adapter, written);
+      try {
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        adapter.recordArmed = false;
+        adapter.closePrompt('tag_close');
+        await settle(50);
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNull);
+        await settle(countdown.inMilliseconds + 300);
+        final after = await phone.harness.sdk.getSosLifecycle();
+        expect(after.generation, cancelled.generation);
+        expect(phone.realtime.publishedSos, isEmpty);
+        expect(
+          await control(
+            phone,
+          ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.sendSos),
+          AmbiguousTagSosAnswerOutcome.noPrompt,
+          reason: 'a closed prompt cannot be answered',
+        );
+        expect(phone.realtime.publishedSos, isEmpty);
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('sign-out clears the prompt at once and native drops the record '
+        'first', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, _) = await cancelOutOfRange(adapter, written);
+      try {
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNotNull);
+        final forceBefore = adapter.closeNativeSosCycleArgs
+            .where((c) => c.force)
+            .length;
+        // Native clears the record and the prompt on the forced close.
+        adapter.prompt = null;
+        adapter.recordArmed = false;
+        await phone.harness.sdk.clearSession();
+        await settle(50);
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNull);
+        expect(
+          adapter.closeNativeSosCycleArgs.where((c) => c.force).length,
+          greaterThan(forceBefore),
+        );
+      } finally {
+        await phone.dispose();
+      }
+    });
+  });
 }

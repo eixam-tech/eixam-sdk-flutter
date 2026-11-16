@@ -86,6 +86,14 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
                 texts.protectionSosStaleStoppedTitle,
             'protectionSosStaleStoppedBody':
                 texts.protectionSosStaleStoppedBody,
+            'protectionSosAmbiguousTitle': texts.protectionSosAmbiguousTitle,
+            'protectionSosAmbiguousBody': texts.protectionSosAmbiguousBody,
+            'protectionSosAmbiguousSendAction':
+                texts.protectionSosAmbiguousSendAction,
+            'protectionSosAmbiguousStopAction':
+                texts.protectionSosAmbiguousStopAction,
+            'protectionSosAmbiguousStoppedBody':
+                texts.protectionSosAmbiguousStoppedBody,
             'nearbyMessageChannelName': texts.nearbyMessageChannelName,
             'nearbyMessageChannelDescription':
                 texts.nearbyMessageChannelDescription,
@@ -249,6 +257,23 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
       'noteOwnTagSosLink',
       <String, dynamic>{'up': up},
     );
+  }
+
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async {
+    return ProtectionOwnTagSosPrompt.fromMap(
+      await _methodChannel.invokeMethod<Object?>('getOwnTagSosPrompt'),
+    );
+  }
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async {
+    final raw = await _methodChannel.invokeMapMethod<Object?, Object?>(
+      'answerOwnTagSosPrompt',
+      <String, dynamic>{'choice': choice},
+    );
+    final action = raw?['action'];
+    return action is String ? action : 'none';
   }
 
   @override

@@ -377,6 +377,10 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.bluetoothTurnedOn;
     case 'ownTagSosStopRequired':
       return ProtectionPlatformEventType.ownTagSosStopRequired;
+    case 'ownTagSosPromptOpened':
+      return ProtectionPlatformEventType.ownTagSosPromptOpened;
+    case 'ownTagSosPromptClosed':
+      return ProtectionPlatformEventType.ownTagSosPromptClosed;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
     // Native SOS hand-off (pending create / TAG cancel stored natively).
@@ -470,6 +474,10 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.bluetoothTurnedOn;
     case 'ownTagSosStopRequired':
       return ProtectionPlatformEventType.ownTagSosStopRequired;
+    case 'ownTagSosPromptOpened':
+      return ProtectionPlatformEventType.ownTagSosPromptOpened;
+    case 'ownTagSosPromptClosed':
+      return ProtectionPlatformEventType.ownTagSosPromptClosed;
     case 'woke':
     default:
       return ProtectionPlatformEventType.woke;

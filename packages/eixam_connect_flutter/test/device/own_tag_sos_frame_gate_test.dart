@@ -10,6 +10,8 @@ import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/device/own_tag_sos_frame_gate.dart';
 import 'package:eixam_connect_flutter/src/diagnostics/sdk_release_log.dart';
+import 'package:eixam_connect_flutter/src/sdk/ambiguous_tag_sos_prompt_tracker.dart';
+import 'package:eixam_connect_flutter/src/sdk/protection_platform_adapter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/builders/device_status_builder.dart';
@@ -84,6 +86,13 @@ void main() {
       BleDeviceRuntimeProvider? provider;
       final forwarded = <OwnTagSosFrameReport>[];
       final expectedVerdicts = <OwnTagSosFrameVerdict>[];
+      // F17c prompt: native's prompt as the Swift/Kotlin replays assert it,
+      // and the SDK's tracker that mirrors it for the host.
+      ProtectionOwnTagSosPrompt? nativePrompt;
+      var nativeAnswer = 'none';
+      var promptSteps = 0;
+      final base = DateTime.utc(2026, 11, 16);
+      AmbiguousTagSosPromptTracker? tracker;
 
       Future<void> closeScenario() async {
         await provider?.dispose();
@@ -111,6 +120,13 @@ void main() {
           }
           if (line.startsWith('scenario ')) {
             await closeScenario();
+            await tracker?.dispose();
+            nativePrompt = null;
+            tracker = AmbiguousTagSosPromptTracker(
+              read: () async => nativePrompt,
+              answer: (_) async => nativeAnswer,
+              clock: () => base,
+            );
             name = line.substring('scenario '.length);
             scenarios++;
             forwarded.clear();
@@ -153,6 +169,51 @@ void main() {
                 token.split('=').first: token.split('=').last,
           };
           final label = '$name @${event[0]} ${event[1]}';
+          final want = <String, String>{
+            for (final token in parts[1].split(' ').skip(1))
+              if (token.contains('='))
+                token.split('=').first: token.split('=').last,
+          };
+          // Every ambiguous step asserts the prompt identically to the Swift
+          // and Kotlin replays: native's prompt reaches the host (or closes).
+          final shownBefore = nativePrompt;
+          if (want['opened'] == 'true') {
+            nativePrompt = ProtectionOwnTagSosPrompt(
+              terminal: want['kind'] ?? 'cancel',
+              deadlineAt: base.add(
+                Duration(milliseconds: int.parse(event[0]) + 30000),
+              ),
+            );
+          } else if (want['prompt'] == 'closed' || want['armed'] == 'false') {
+            nativePrompt = null;
+          }
+          if (event[1] == 'answer' && args['choice'] != 'timeout') {
+            nativeAnswer = expected;
+            final outcome = await tracker!.answer(
+              args['choice'] == 'stopTag'
+                  ? AmbiguousTagSosChoice.stopTag
+                  : AmbiguousTagSosChoice.sendSos,
+            );
+            expect(outcome, switch (expected) {
+              'sosOpened' => AmbiguousTagSosAnswerOutcome.sosSent,
+              'stop' => AmbiguousTagSosAnswerOutcome.tagStopped,
+              _ => AmbiguousTagSosAnswerOutcome.noPrompt,
+            }, reason: '$label: answer outcome');
+          } else if (shownBefore != nativePrompt) {
+            await tracker!.refresh(nativePrompt == null ? 'closed' : 'opened');
+          }
+          if (want.containsKey('prompt') || want.containsKey('opened')) {
+            promptSteps++;
+            final shown = tracker!.current;
+            expect(
+              shown == null ? 'closed' : 'open',
+              want['prompt'] ?? (want['opened'] == 'true' ? 'open' : 'closed'),
+              reason: '$label: prompt shown to the host',
+            );
+            if (want['kind'] != null && shown != null) {
+              expect(shown.terminal.name, want['kind'], reason: label);
+            }
+          }
           if (args['source'] != 'dart') {
             continue; // native-path frames never reach Dart's BLE link
           }
@@ -226,7 +287,13 @@ void main() {
         }
       } finally {
         await closeScenario();
+        await tracker?.dispose();
       }
+      expect(
+        promptSteps,
+        greaterThanOrEqualTo(60),
+        reason: 'prompt steps replayed',
+      );
       expect(scenarios, greaterThan(25));
       expect(dartFrames, greaterThan(30));
     });

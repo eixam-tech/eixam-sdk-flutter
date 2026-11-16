@@ -85,6 +85,13 @@ class EixamNotificationTexts {
     this.protectionSosStaleStoppedTitle = 'SOS stopped on your TAG',
     this.protectionSosStaleStoppedBody =
         'We stopped on your TAG an SOS that had already ended.',
+    this.protectionSosAmbiguousTitle = 'Your TAG is still in SOS',
+    this.protectionSosAmbiguousBody =
+        "You stopped an SOS, but your TAG didn't get it. Is this a new "
+        "emergency? If you don't answer, we'll send the SOS in 30 s.",
+    this.protectionSosAmbiguousSendAction = 'Send SOS',
+    this.protectionSosAmbiguousStopAction = 'No, stop the TAG',
+    this.protectionSosAmbiguousStoppedBody = 'TAG stopped. No SOS was sent.',
   });
 
   final String protectionActiveTitle;
@@ -109,4 +116,17 @@ class EixamNotificationTexts {
   /// cancelled / resolved but the TAG kept running (F17b). Optional.
   final String protectionSosStaleStoppedTitle;
   final String protectionSosStaleStoppedBody;
+
+  /// F17c ambiguous TAG SOS prompt: the local notification the SDK posts
+  /// natively, with the "Send SOS" and "No, stop the TAG" actions. Optional;
+  /// hosts pass the localized approved copy.
+  final String protectionSosAmbiguousTitle;
+
+  /// Must say that the SOS is sent automatically after 30 s.
+  final String protectionSosAmbiguousBody;
+  final String protectionSosAmbiguousSendAction;
+  final String protectionSosAmbiguousStopAction;
+
+  /// Shown after "No, stop the TAG": "TAG stopped. No SOS was sent."
+  final String protectionSosAmbiguousStoppedBody;
 }

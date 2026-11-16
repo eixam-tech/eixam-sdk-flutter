@@ -1101,7 +1101,9 @@ class ProtectionModeController {
         _emitDiagnostics();
         break;
       case ProtectionPlatformEventType.ownTagSosStopRequired:
-        // F17c: handled by the SDK (Dart writes the TAG stop).
+      case ProtectionPlatformEventType.ownTagSosPromptOpened:
+      case ProtectionPlatformEventType.ownTagSosPromptClosed:
+        // F17c: handled by the SDK (stale stop, ambiguous-SOS prompt).
         break;
     }
 

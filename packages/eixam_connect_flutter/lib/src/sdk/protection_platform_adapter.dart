@@ -47,6 +47,44 @@ enum ProtectionPlatformEventType {
   /// closed, and native holds no writable link: Dart writes the SDK's terminal
   /// command (`reason`: `cancel` -> 0x04, `resolve` -> 0x07).
   ownTagSosStopRequired,
+
+  /// F17c: native opened the ambiguous-SOS prompt (`reason`: the terminal,
+  /// `cancel` or `resolve`). Read the prompt with `getOwnTagSosPrompt`.
+  ownTagSosPromptOpened,
+
+  /// F17c: the prompt closed (`reason`: answered, timeout, burst, TAG close,
+  /// session change, new SDK SOS).
+  ownTagSosPromptClosed,
+}
+
+/// F17c: the open ambiguous-SOS prompt as native holds it.
+class ProtectionOwnTagSosPrompt {
+  const ProtectionOwnTagSosPrompt({
+    required this.terminal,
+    required this.deadlineAt,
+  });
+
+  /// `cancel` or `resolve`.
+  final String terminal;
+  final DateTime deadlineAt;
+
+  static ProtectionOwnTagSosPrompt? fromMap(Object? raw) {
+    if (raw is! Map) {
+      return null;
+    }
+    final terminal = raw['terminal'];
+    final deadline = raw['deadlineAtMs'];
+    if (terminal is! String || deadline is! num) {
+      return null;
+    }
+    return ProtectionOwnTagSosPrompt(
+      terminal: terminal,
+      deadlineAt: DateTime.fromMillisecondsSinceEpoch(
+        deadline.toInt(),
+        isUtc: true,
+      ),
+    );
+  }
 }
 
 class ProtectionPlatformStartRequest {
@@ -475,6 +513,13 @@ abstract class ProtectionPlatformAdapter {
   /// F17c: Dart's own TAG link changed (native sees no link events while Dart
   /// owns the link); the guard's gap clock follows it.
   Future<void> noteOwnTagSosLink({required bool up});
+
+  /// F17c: the open ambiguous-SOS prompt, or null.
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt();
+
+  /// F17c: the user's answer (`sendSos` / `stopTag`). Native returns its
+  /// decision: `sosOpened`, `stop` or `none` (no prompt open).
+  Future<String> answerOwnTagSosPrompt(String choice);
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -592,6 +637,12 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<void> noteOwnTagSosLink({required bool up}) async {}
+
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async => null;
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

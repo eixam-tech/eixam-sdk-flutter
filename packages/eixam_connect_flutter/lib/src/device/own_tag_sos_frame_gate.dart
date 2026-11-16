@@ -55,6 +55,13 @@ typedef OwnTagSosFrameClassifier =
 final class OwnTagSosFrameGate {
   OwnTagSosFrameClassifier? _classifier;
   Future<void> _tail = Future<void>.value();
+  OwnTagSosFrameVerdict? _admitting;
+
+  /// F17c: the native verdict of the start frame being handled right now
+  /// (set only while its handler runs). `newSos` is native's proof of a new
+  /// TAG countdown (>= 3 pushes in 1.7 s): the device SOS admission accepts
+  /// it even after an SDK terminal the TAG never confirmed.
+  OwnTagSosFrameVerdict? get admittingVerdict => _admitting;
 
   bool get hasClassifier => _classifier != null;
 
@@ -84,7 +91,12 @@ final class OwnTagSosFrameGate {
         );
         return;
       }
-      _runHandler('start', process);
+      _admitting = verdict;
+      try {
+        _runHandler('start', process);
+      } finally {
+        _admitting = null;
+      }
     });
   }
 
