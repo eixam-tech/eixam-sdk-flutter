@@ -49,12 +49,6 @@ struct IosNativeSosTransition: Equatable {
 
 final class IosNativeSosDeliveryStore {
   static let countdownMs = 20_000
-  /// After a close, frames are the TAG's close burst / stale repeats for
-  /// this long; a new SOS needs a frame after it (no zombie SOS).
-  static let closeQuietMs = 30_000
-  /// Frames this long after a close can belong to a new SOS: its countdown
-  /// is backdated to the first of them once the quiet window has passed.
-  static let closeBurstMs = 5_000
   static let eventQueueCapacity = 64
   /// F17b stale guard. Firmware (verified): every BLE SOS push is sent twice
   /// (SOS then TEL characteristic, ms apart); a TAG countdown pushes in its
@@ -84,11 +78,15 @@ final class IosNativeSosDeliveryStore {
     static let cycleNodeId = "native_sos_cycle_node_id"
     static let cycleDeadlineAt = "native_sos_cycle_deadline_at"
     static let cycleStartedAt = "native_sos_cycle_started_at"
-    static let lastClosedAt = "native_sos_last_closed_at"
-    static let firstFrameAfterCloseAt = "native_sos_first_frame_after_close_at"
-    static let postCloseCandidateAt = "native_sos_post_close_candidate_at"
-    static let postCloseCandidatePushes = "native_sos_post_close_candidate_pushes"
-    static let postCloseLastPushAt = "native_sos_post_close_last_push_at"
+    /// F17c M-a: no longer used (the post-close hold is gone); still removed
+    /// so values persisted by an older build never linger.
+    static let retiredPostCloseKeys = [
+      "native_sos_last_closed_at",
+      "native_sos_first_frame_after_close_at",
+      "native_sos_post_close_candidate_at",
+      "native_sos_post_close_candidate_pushes",
+      "native_sos_post_close_last_push_at",
+    ]
     static let cycleKeptAfterStop = "native_sos_cycle_kept_after_stop"
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
@@ -151,40 +149,18 @@ final class IosNativeSosDeliveryStore {
       // backend is told only once the countdown elapsed without a cancel.
       switch cycleState {
       case .idle:
-        let timestamp = now()
-        var start = timestamp
-        if let closedAt = defaults.object(forKey: Keys.lastClosedAt) as? Int,
-           timestamp - closedAt < Self.closeQuietMs {
-          // F17c H1: inside the post-close window a countdown burst (the
-          // F17b rule: 3 distinct pushes within 1.7 s, copies < 300 ms
-          // collapse) is a new SOS, admitted at once and counted from its
-          // first push. Only lone retries of the SOS that just closed are held.
-          if let burstStart = countPostClosePush(at: timestamp) {
-            start = burstStart
-          } else {
-            // Remember when frames kept coming, in case this is a new SOS.
-            if timestamp - closedAt >= Self.closeBurstMs,
-               defaults.object(forKey: Keys.firstFrameAfterCloseAt) == nil {
-              defaults.set(timestamp, forKey: Keys.firstFrameAfterCloseAt)
-            }
-            break
-          }
-        } else if let first = defaults.object(forKey: Keys.firstFrameAfterCloseAt) as? Int,
-           timestamp - first < Self.closeQuietMs + Self.countdownMs {
-          // Frames kept coming through the quiet window: a new SOS that
-          // started then (its TAG countdown is already running).
-          start = first
-        }
-        defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
-        clearPostCloseBurst()
+        // F17c M-a: ONE rule with Android and Dart. Not guarded (no
+        // unconfirmed stop record): the first frame starts the countdown at
+        // once, also right after a TAG-confirmed close. A missed SOS is worse
+        // than a duplicate (owner): a lone ACTIVE retry of the SOS the TAG just
+        // closed is an accepted duplicate; a genuine SOS whose 2 s burst the
+        // phone missed is never held back. The TEL copy of a push lands on
+        // the running countdown (preConfirmSeen) and changes nothing.
+        let start = now()
         let deadline = start + Self.countdownMs
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
         defaults.set(start, forKey: Keys.cycleStartedAt)
-        if timestamp >= deadline {
-          transition = promoteExpiredCountdown(deviceId: deviceId)
-        } else {
-          transition.countdownDeadlineAt = deadline
-        }
+        transition.countdownDeadlineAt = deadline
       case .preConfirmSeen:
         // A later frame after the deadline: the phone was suspended when the
         // countdown elapsed.
@@ -216,34 +192,11 @@ final class IosNativeSosDeliveryStore {
   private func closeCycle() {
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
-    defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
-    clearPostCloseBurst()
-    defaults.set(now(), forKey: Keys.lastClosedAt)
+    clearRetiredPostCloseKeys()
   }
 
-  /// F17c H1: one push inside the post-close window, counted with the stale
-  /// guard's burst rule. Returns the burst's first push once it has
-  /// [staleBurstPushes] distinct pushes within [staleBurstWindowMs]; nil
-  /// while it is a copy or a lone retry (held).
-  private func countPostClosePush(at timestamp: Int) -> Int? {
-    if let lastPush = defaults.object(forKey: Keys.postCloseLastPushAt) as? Int,
-       timestamp - lastPush >= 0, timestamp - lastPush < Self.staleDuplicateMs {
-      return nil  // the TEL copy of the same push
-    }
-    defaults.set(timestamp, forKey: Keys.postCloseLastPushAt)
-    if let first = defaults.object(forKey: Keys.postCloseCandidateAt) as? Int,
-       timestamp - first >= 0, timestamp - first <= Self.staleBurstWindowMs {
-      let pushes = (defaults.object(forKey: Keys.postCloseCandidatePushes) as? Int ?? 1) + 1
-      defaults.set(pushes, forKey: Keys.postCloseCandidatePushes)
-      return pushes >= Self.staleBurstPushes ? first : nil
-    }
-    defaults.set(timestamp, forKey: Keys.postCloseCandidateAt)
-    defaults.set(1, forKey: Keys.postCloseCandidatePushes)
-    return nil
-  }
-
-  private func clearPostCloseBurst() {
-    for key in [Keys.postCloseCandidateAt, Keys.postCloseCandidatePushes, Keys.postCloseLastPushAt] {
+  private func clearRetiredPostCloseKeys() {
+    for key in Keys.retiredPostCloseKeys {
       defaults.removeObject(forKey: key)
     }
   }
@@ -512,7 +465,6 @@ final class IosNativeSosDeliveryStore {
       if cycleState == .idle {
         setCycle(.preConfirmSeen, key: nil, nodeId: node, deadlineAt: timestamp)
         defaults.set(timestamp, forKey: Keys.cycleStartedAt)
-        defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
         transition = promoteExpiredCountdown(deviceId: nil)
       }
       return transition
@@ -601,7 +553,6 @@ final class IosNativeSosDeliveryStore {
       let deadline = candidateAt + Self.countdownMs
       setCycle(.preConfirmSeen, key: nil, nodeId: nodeId, deadlineAt: deadline)
       defaults.set(candidateAt, forKey: Keys.cycleStartedAt)
-      defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
       var transition = IosNativeSosTransition()
       if timestamp >= deadline {
         transition = promoteExpiredCountdown(deviceId: nil)
@@ -685,8 +636,7 @@ final class IosNativeSosDeliveryStore {
     let wasCounting = cycleState == .preConfirmSeen
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
-    defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
-    clearPostCloseBurst()
+    clearRetiredPostCloseKeys()
     defaults.removeObject(forKey: Keys.pendingEvents)
     return wasCounting
   }

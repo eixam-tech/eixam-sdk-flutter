@@ -138,6 +138,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       recordWake(reason: "plugin_registered")
       attemptProtectionReconnect(trigger: "plugin_registered")
     }
+    // F17c L5: keep the prompt's actions even if the host re-registered its
+    // notification categories (registration, resume and before posting only;
+    // never on every snapshot refresh, to keep the get-then-set window rare).
+    ensurePromptCategory()
     // Relaunched (state restoration) during or after a TAG countdown.
     resumeNativeSosCycle(trigger: "plugin_registered")
     Self.live = self
@@ -217,6 +221,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       if isArmed {
         attemptProtectionReconnect(trigger: reason)
       }
+      ensurePromptCategory()
       resumeNativeSosCycle(trigger: reason)
       result(nil)
     case "peekPendingNativeSosCreate":
@@ -1454,12 +1459,14 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
     // F17c: an expired prompt is the timeout before this frame is classified.
     expirePromptIfDue()
-    // F17c H1: set when a suppressed frame completed a countdown burst: the
-    // native cycle already started (counted from the burst's first push).
+    // F17c: set when a frame under the terminal fence is a new SOS: the
+    // native cycle already observed it (not observed again below).
     var burstTransition: IosNativeSosTransition?
     if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
-      // The native cycle sees the frame first: its stale guard / post-close
-      // window decides. Lone retries of the closed SOS stay hidden from Dart.
+      // The native cycle sees the frame first: its stale guard decides.
+      // F17c M-a/M-b: one rule (IosSosSuppressedFrameRoute, covered by the
+      // Swift tests): every new SOS reaches Dart; copies, later pushes of an
+      // SOS already forwarded and guarded ambiguous frames stay hidden.
       let wasIdle = sosDelivery.cycleState == .idle
       let transition = sosDelivery.observe(
         kind: parsed.kind,
@@ -1467,15 +1474,19 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         cycleKey: parsed.cycleKey,
         deviceId: defaults.string(forKey: Keys.protectedDeviceId)
       )
-      guard wasIdle, sosDelivery.cycleState != .idle else {
+      guard IosSosSuppressedFrameRoute.forwardsToDart(
+        cycleWasIdle: wasIdle,
+        cycleIsIdle: sosDelivery.cycleState == .idle,
+        staleAction: sosDelivery.lastStaleAction
+      ) else {
 #if DEBUG
         print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil)")
 #endif
         applyNativeSosTransition(transition, reason: "device_cycle_after_close", notifyActive: true)
         return
       }
-      // A countdown burst is a new SOS: never hidden from Dart. It follows
-      // the normal flow below (snapshot, event, countdown notification).
+      // A new SOS is never hidden from Dart. It follows the normal flow
+      // below (snapshot, event, countdown notification).
 #if DEBUG
       print("IOS_BLE_SOS_BURST_AFTER_CLOSE_ADMITTED kind=\(parsed.kind.rawValue)")
 #endif
@@ -1557,9 +1568,6 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   /// the app was suspended becomes the pending create now; a running one gets
   /// its timer (and background time) back.
   private func resumeNativeSosCycle(trigger: String) {
-    // F17c L5: keep the prompt's actions even if the host re-registered its
-    // notification categories since.
-    ensurePromptCategory()
     // F17c: a prompt whose deadline passed while suspended sends the SOS now.
     expirePromptIfDue()
     // A countdown kept across a runtime stop is still promoted (no reconnect).
@@ -1758,8 +1766,8 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   }
 
   /// F17c L5: the prompt's category (both actions) survives a host that later
-  /// sets its own categories: merged back on registration, resume and snapshot
-  /// refresh (`resumeNativeSosCycle`) and before posting, only when missing.
+  /// sets its own categories: merged back on plugin registration, app resume
+  /// (`resumeProtectionRuntime`) and before posting, only when missing.
   private func ensurePromptCategory(then completion: (() -> Void)? = nil) {
     let texts = promptTexts
     let center = UNUserNotificationCenter.current()

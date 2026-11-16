@@ -591,6 +591,14 @@ class ProtectionSosStaleGuardTest {
                     else -> outcome?.action?.name ?: "-"
                 }
                 assertEquals("$label: action", expect[0], got)
+                if (event[1] == "frame" && args["source"] != "dart" && expect[0] == "pass") {
+                    // F17c M-a: a native frame that passes reaches the native
+                    // cycle, which runs after it (same check as Swift).
+                    assertTrue(
+                        "$label: passed but the native lifecycle is idle",
+                        lifecycle != ProtectionSosLifecycleState.idle,
+                    )
+                }
             }
             val stop = if (outcome?.sendStop == true) state?.terminal?.wire ?: "?" else "none"
             assertEquals("$label: stop", want["stop"] ?: "none", stop)

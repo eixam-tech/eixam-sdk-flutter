@@ -308,7 +308,8 @@ void main() {
       );
       expect(scenarios, greaterThan(25));
       expect(dartFrames, greaterThan(30));
-    });
+      // Every fixture scenario replays a real BLE provider: > 30 s in all.
+    }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('without a native classifier frames are handled synchronously, as '
         'before F17c', () {

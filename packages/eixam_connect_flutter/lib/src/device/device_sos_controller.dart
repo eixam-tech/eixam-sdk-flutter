@@ -1510,6 +1510,14 @@ class DeviceSosController {
         BleDebugRegistry.instance.recordEvent(
           'SOS_TRACE device_terminal_command_ack_ignored event=0xE2 subcode=0x${packet.subcode.toRadixString(16).padLeft(2, '0')}',
         );
+        // F17c M-b: no state change, but a late 0xE2 of this TAG still proves
+        // its SOS episode closed physically: a later start frame is a fresh
+        // receive after it (native-delivered frames carry no gate verdict).
+        if (physicalEvidence != null &&
+            physicalEvidence.hasTerminalSemantics &&
+            physicalEvidence.exactPhysicalIdentityMatch) {
+          _terminalPhysicalReceiveEvidence = physicalEvidence;
+        }
         return;
       }
     }

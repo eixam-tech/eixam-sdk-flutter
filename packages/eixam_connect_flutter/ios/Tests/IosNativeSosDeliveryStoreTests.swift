@@ -36,9 +36,10 @@ struct IosNativeSosDeliveryStoreTests {
     missedCloseFrameNeverBlocksTheNextSos()
     sdkCloseKeepsAnSosNotHandedOver()
     sdkCancelOfARunningCountdownEndsIt()
-    framesRightAfterACloseNeverOpenAnSos()
-    realSosInsideTheQuietWindowIsBackdated()
-    burstInsideThePostCloseWindowStartsAtOnce()
+    framesRightAfterACloseStartOneCountdownAtOnce()
+    realSosAfterACloseStartsAtItsFirstFrame()
+    loneRetryAfterATagCloseStartsACountdownAtOnce()
+    suppressedFrameRouteForwardsEveryNewSos()
     olderCancelNeverDropsANewerSos()
     countdownIsReportedAsCountdown()
     claimedCreateIsKeptOnCancel()
@@ -160,7 +161,7 @@ struct IosNativeSosDeliveryStoreTests {
     _ = store.promoteExpiredCountdown(deviceId: nil)
     let first = store.peekPendingCreate()
     _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
-    clock += 60_000  // after the post-close quiet window
+    clock += 60_000
     let next = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:12", deviceId: nil)
     check(next.countdownDeadlineAt != nil, "new SOS after a close starts its countdown")
     clock += 20_000
@@ -456,22 +457,26 @@ struct IosNativeSosDeliveryStoreTests {
     check(store.pendingCreateCount == 0, "no native create before the answer")
   }
 
-  static func framesRightAfterACloseNeverOpenAnSos() {
+  /// F17c M-a: ONE rule with Android and Dart. Without an unconfirmed-stop
+  /// record the first frame after a close starts the countdown at once (no
+  /// post-close hold); later frames and TEL copies land on that countdown.
+  static func framesRightAfterACloseStartOneCountdownAtOnce() {
     let (store, _) = makeStore()
     deliver(store, key: "sos:7:53")
     _ = store.closeDeliveredCycle()
-    // The TAG keeps repeating until it gets the close, then stops.
-    for _ in 0..<5 {
+    clock += 4_000
+    let first = clock
+    let started = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:54", deviceId: nil)
+    check(started.countdownDeadlineAt == first + 20_000, "first frame after the close starts the countdown")
+    for _ in 0..<3 {
       clock += 4_000
-      let stale = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:54", deviceId: nil)
-      check(stale == IosNativeSosTransition(), "stale frame in the quiet window ignored")
+      let later = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:54", deviceId: nil)
+      check(later == IosNativeSosTransition(), "later frames: the same countdown")
     }
-    clock += 600_000
-    let fresh = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:55", deviceId: nil)
-    check(fresh.countdownDeadlineAt == clock + 20_000, "a much later SOS gets a full countdown")
+    check(store.countdownDeadlineAt == first + 20_000, "never restarted")
   }
 
-  static func realSosInsideTheQuietWindowIsBackdated() {
+  static func realSosAfterACloseStartsAtItsFirstFrame() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:56", deviceId: nil)
     clock += 5_000
@@ -479,50 +484,108 @@ struct IosNativeSosDeliveryStoreTests {
     // Accidental cancel, then a real SOS 8 s later; frames keep coming.
     clock += 8_000
     let firstFrame = clock
-    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:57", deviceId: nil)
+    let started = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:57", deviceId: nil)
+    check(started.countdownDeadlineAt == firstFrame + 20_000, "countdown at the first frame")
     clock += 10_000
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:58", deviceId: nil)
     clock += 14_000
     let after = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:59", deviceId: nil)
-    check(after.queuedCreate, "countdown backdated to the first frame: already elapsed")
+    check(after.queuedCreate, "elapsed from the first frame")
     check((store.peekPendingCreate()?["cycleKey"] as? String)?.hasSuffix("@\(firstFrame)") == true, "starts at the first frame")
   }
 
-  /// F17c H1: inside the 30 s after a TAG close, lone retries of the closed
-  /// SOS are held, but a countdown burst (3 distinct pushes within 1.7 s, the
-  /// TEL copies collapsed) is a new SOS at once, counted from its first push.
-  static func burstInsideThePostCloseWindowStartsAtOnce() {
+  /// F17c M-a (owner: a missed SOS is worse than a duplicate): after a TAG
+  /// close, a lone ACTIVE retry starts a countdown at once, at +0.5 s, +2 s
+  /// or +10 s (never held, never forgotten); its TEL copy changes nothing.
+  /// A countdown burst starts at its first push.
+  static func loneRetryAfterATagCloseStartsACountdownAtOnce() {
+    for offset in [500, 2_000, 10_000] {
+      let (store, _) = makeStore()
+      deliver(store, key: "sos:7:70")
+      clock += 1_000
+      _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+      clock += offset
+      let first = clock
+      let retry = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
+      check(retry.countdownDeadlineAt == first + 20_000, "+\(offset) ms: lone retry starts the countdown")
+      clock += 5
+      let copy = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
+      check(copy == IosNativeSosTransition(), "+\(offset) ms: TEL copy changes nothing")
+      check(store.cycleState == .preConfirmSeen, "+\(offset) ms: countdown running")
+      check(store.notification(for: .active)?.kind == .preSos, "+\(offset) ms: countdown notification")
+    }
     let (store, _) = makeStore()
-    deliver(store, key: "sos:7:70")
+    deliver(store, key: "sos:7:72")
     clock += 1_000
     _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
-    // ACTIVE retries spaced like the firmware's (each with its TEL copy): held.
-    for gap in [2_000, 6_000] {
-      clock += gap
-      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
-      clock += 5
-      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
-      check(store.cycleState == .idle, "lone retry in the post-close window held")
-    }
-    // A new press (> 1.7 s after the last retry): countdown pushes every
-    // 500 ms, each with its TEL copy.
-    clock += 3_000
+    clock += 500
     let first = clock
-    var started: IosNativeSosTransition?
     for push in 0..<3 {
       if push > 0 { clock += 495 }
-      let frame = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
+      let frame = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:73", deviceId: nil)
       clock += 5
-      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
-      if push < 2 {
-        check(frame.countdownDeadlineAt == nil, "push \(push + 1) of 3: not yet a burst")
-      } else {
-        started = frame
-      }
+      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:73", deviceId: nil)
+      check(push > 0 || frame.countdownDeadlineAt == first + 20_000, "burst: countdown at its first push")
+      check(store.countdownDeadlineAt == first + 20_000, "burst push \(push + 1): counted from the first")
     }
-    check(started?.countdownDeadlineAt == first + 20_000, "burst admitted at its 3rd push, counted from the 1st")
-    check(store.cycleState == .preConfirmSeen, "countdown running")
-    check(store.notification(for: .active)?.kind == .preSos, "countdown notification")
+  }
+
+  /// F17c M-b: the bridge's hide/forward decision for frames under the
+  /// terminal fence, driven by the real store (bridge order: cycle state
+  /// before, observe, cycle state and stale action after).
+  static func suppressedFrameRouteForwardsEveryNewSos() {
+    func route(_ store: IosNativeSosDeliveryStore) -> Bool {
+      let wasIdle = store.cycleState == .idle
+      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:90", deviceId: nil)
+      return IosSosSuppressedFrameRoute.forwardsToDart(
+        cycleWasIdle: wasIdle, cycleIsIdle: store.cycleState == .idle,
+        staleAction: store.lastStaleAction)
+    }
+    // After a TAG-confirmed close: a lone retry (and a burst's first push) is
+    // forwarded at once; its TEL copy and later pushes stay hidden (Dart
+    // already has the SOS).
+    for offset in [500, 2_000, 10_000] {
+      let (store, _) = makeStore()
+      deliver(store, key: "sos:7:80")
+      clock += 1_000
+      _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+      clock += offset
+      check(route(store), "+\(offset) ms after a TAG close: forwarded to Dart")
+      clock += 5
+      check(!route(store), "+\(offset) ms: TEL copy hidden")
+      clock += 495
+      check(!route(store), "+\(offset) ms: next push hidden (same SOS)")
+    }
+    // Unconfirmed stop record armed: a lone push is hidden (native asks),
+    // the push completing a countdown burst is forwarded.
+    do {
+      let (store, _) = makeStore()
+      deliver(store, key: "sos:7:81")
+      _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+      check(store.staleGuardKind == .cancel, "record armed")
+      clock += 10_000
+      check(!route(store), "guarded lone push hidden")
+      clock += 500
+      check(!route(store), "guarded 2nd push hidden")
+      clock += 500
+      check(route(store), "guarded burst: forwarded at its 3rd push")
+    }
+    // Side edge: a countdown kept running under a portal resolve (the record
+    // arms, the cycle is not idle). A new burst is a new SOS for Dart too.
+    do {
+      let (store, _) = makeStore()
+      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:82", deviceId: nil)
+      clock += 3_000
+      _ = store.closeDeliveredCycle(nodeId: 7, terminal: .resolve)
+      check(store.staleGuardKind == .resolve, "record armed on the running countdown")
+      check(store.cycleState == .preConfirmSeen, "countdown kept under the resolve")
+      clock += 5_000
+      check(!route(store), "kept countdown: lone push hidden")
+      clock += 500
+      check(!route(store), "kept countdown: 2nd push hidden")
+      clock += 500
+      check(route(store), "kept countdown: a new burst is forwarded to Dart")
+    }
   }
 
   static func olderCancelNeverDropsANewerSos() {
@@ -1049,6 +1112,11 @@ struct IosNativeSosDeliveryStoreTests {
       if expect[0] != "-" {
         let got = ["notArmed", "ignored", "disarmed"].contains(action) ? "pass" : action
         check(got == expect[0], "\(label): action \(got) != \(expect[0])")
+        if event[1] == "frame", args["source"] != "dart", expect[0] == "pass" {
+          // F17c M-a: "pass" is explicit on the native path: the frame reached
+          // the native cycle, which runs after it (never a silent hold).
+          check(store.cycleState != .idle, "\(label): passed but the native cycle is idle (held)")
+        }
       }
       let stop = transition.stopTag?.rawValue ?? "none"
       check(stop == (want["stop"] ?? "none"), "\(label): stop \(stop) != \(want["stop"] ?? "none")")
