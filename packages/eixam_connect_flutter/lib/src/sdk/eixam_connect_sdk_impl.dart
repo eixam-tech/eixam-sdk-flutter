@@ -1293,8 +1293,7 @@ class EixamConnectSdkImpl
     await _restorePersistedPreSosSession(trigger: 'initialize');
     // A native SOS (or TAG cancel) stored before process death is delivered
     // now.
-    _startNativePendingSosPump('initialize');
-    unawaited(_recoverNativePendingCancel('initialize'));
+    _deliverNativePendingCancelThenCreate('initialize');
     _bindSosDeliveryHold();
     if (!config.deferRuntimeStartup) {
       await _rehydrateSosRuntimeState();
@@ -7169,6 +7168,7 @@ class EixamConnectSdkImpl
   }
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
+    final lifecycleAtStatus = _sosLifecycle.current;
     _pushTagLinkSnapshot();
     final sosStatusEventSequence = ++_deviceSosStatusEventSequence;
     _recordTerminalFenceDeviceInactiveBoundary(
@@ -7183,6 +7183,9 @@ class EixamConnectSdkImpl
         _acceptedPhysicalStartPacketSignatures.contains(
           status.lastPacketSignature,
         );
+    if (acceptedPhysicalStart && _pendingTagCloseSupersede != null) {
+      await _closeTagSupersededGeneration();
+    }
     final statusHasPhysicalStartSemantics =
         status.derivedFromBlePacket &&
         status.transitionSource == DeviceSosTransitionSource.device &&
@@ -7442,6 +7445,19 @@ class EixamConnectSdkImpl
         status,
         forceDeviceOwned: deviceOwnedPreSosActivation,
       );
+    }
+    if (_isDeviceSosCycleClosed(status.state) &&
+        _sosLifecycle.current.isOpen &&
+        !_sameSosGeneration(_sosLifecycle.current, lifecycleAtStatus)) {
+      // F17c: the TAG's close of the previous SOS waited for the backend
+      // (above) while a new TAG SOS started: what follows is that old
+      // close's local settlement and must never reach the new SOS.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_TERMINAL_STATUS_SUPERSEDED '
+        'generation=${lifecycleAtStatus.generation} '
+        'current=${_sosLifecycle.current.generation}',
+      );
+      return;
     }
     await _rehydrateDeviceSosPublicState(
       trigger: 'device_sos_status:${status.state.name}',
@@ -10574,6 +10590,32 @@ class EixamConnectSdkImpl
         backendError = error;
         BleDebugRegistry.instance.recordEvent(
           'Public SOS backend cancel failed -> error=$error',
+        );
+      }
+      if (!_sameSosGeneration(_sosLifecycle.current, cancellationLifecycle)) {
+        // F17c: the TAG acked this cancel (0xE2) and a new TAG SOS started
+        // before the backend confirmed it: this SOS was closed locally (its
+        // cancel stays in the outbox). Nothing here may touch the new SOS.
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_APP_CANCEL_SUPERSEDED reason=newer_lifecycle '
+          'generation=${cancellationLifecycle.generation} '
+          'current=${_sosLifecycle.current.generation}',
+        );
+        final closed =
+            cancellableIncident ??
+            SosIncident(
+              id:
+                  cancellationLifecycle.backendIncidentId ??
+                  cancellationLifecycle.localIncidentId ??
+                  cancellationLifecycle.lifecycleId,
+              state: SosState.cancelled,
+              createdAt:
+                  cancellationLifecycle.activationTimestamp ??
+                  DateTime.now().toUtc(),
+            );
+        return closed.copyWith(
+          state: SosState.cancelled,
+          terminalReason: SosTerminalReason.cancelledByUser,
         );
       }
 
@@ -14430,8 +14472,19 @@ class EixamConnectSdkImpl
     if (repository is MqttOperationalSosRepository) {
       repository.kickDelivery(reason);
     }
-    _startNativePendingSosPump(reason);
-    unawaited(_recoverNativePendingCancel(reason));
+    _deliverNativePendingCancelThenCreate(reason);
+  }
+
+  /// A native TAG cancel still pending is older than any native SOS create
+  /// still pending (the TAG's close idles its cycle): handed to the FIFO
+  /// outbox first, so the user-scoped MQTT cancel reaches the broker before
+  /// the newer SOS and can never close it.
+  void _deliverNativePendingCancelThenCreate(String reason) {
+    unawaited(
+      _recoverNativePendingCancel(
+        reason,
+      ).whenComplete(() => _startNativePendingSosPump(reason)),
+    );
   }
 
   /// A native TAG cancel stored before process death (its event was lost
@@ -17537,6 +17590,154 @@ class EixamConnectSdkImpl
     );
   }
 
+  /// F17c: the open SOS generation the TAG itself closed (0xE1 stop / 0xE2
+  /// app-cancel ack), waiting for a new TAG SOS to supersede it.
+  _TagCloseSupersede? _pendingTagCloseSupersede;
+
+  /// The open own-TAG SOS was closed by this TAG's close frame (0xE1 / 0xE2)
+  /// after it started, and [evidence] is a start frame received after that
+  /// close on the same path: local proof the old SOS is over and this frame
+  /// starts a new one. Null otherwise (the frame stays part of the open SOS).
+  _TagCloseSupersede? _tagCloseSupersedeFor({
+    required SosLifecycleSnapshot lifecycle,
+    required PhysicalSosReceiveEvidence evidence,
+    required DeviceSosStatus status,
+  }) {
+    const supersedable = <SosLifecycleStage>{
+      SosLifecycleStage.active,
+      SosLifecycleStage.cancelling,
+      SosLifecycleStage.cancellationFailed,
+    };
+    final close = deviceSosController.terminalPhysicalReceiveEvidence;
+    final opcode = status.lastOpcode;
+    final started = lifecycle.activationTimestamp;
+    final lifecycleNodeId = _normalizeNodeIdOrNull(lifecycle.nodeId);
+    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    if (!supersedable.contains(lifecycle.stage) ||
+        lifecycle.externalOnly ||
+        !status.derivedFromBlePacket ||
+        status.transitionSource != DeviceSosTransitionSource.device ||
+        !_isDeviceSosCycleClosed(status.state) ||
+        (opcode != EixamBleProtocol.sosEventUserDeactivatedOpcode &&
+            opcode != EixamBleProtocol.sosEventAppCancelAckOpcode) ||
+        (started != null && status.updatedAt.isBefore(started)) ||
+        (lifecycleNodeId != null &&
+            statusNodeId != null &&
+            lifecycleNodeId != statusNodeId) ||
+        close == null ||
+        !close.hasTerminalSemantics ||
+        !close.exactPhysicalIdentityMatch ||
+        close.receiveSequenceDomain != evidence.receiveSequenceDomain ||
+        evidence.receiveSequence <= close.receiveSequence) {
+      return null;
+    }
+    return _TagCloseSupersede(
+      lifecycleId: lifecycle.lifecycleId,
+      generation: lifecycle.generation,
+      closeOpcode: opcode!,
+      closedAt: status.updatedAt.toUtc(),
+    );
+  }
+
+  /// The TAG's own close frame (0xE1 stop / 0xE2 app-cancel ack) of this
+  /// generation's SOS, past its countdown, is the last own-TAG SOS state
+  /// Dart saw: the TAG confirmed the close after the SOS started. A countdown
+  /// close is excluded: native may keep a countdown across a runtime stop
+  /// without seeing the TAG's frames, and only the SDK terminal ends it (F11).
+  /// Only while native owns the TAG link: it then saw that close frame itself
+  /// and closed its own cycle (with Dart owning the link a native cycle kept
+  /// across a stop still needs the SDK terminal).
+  bool _tagConfirmedCloseOf(SosLifecycleSnapshot lifecycle) {
+    if (_lastProtectionBleOwner == ProtectionBleOwner.flutter) {
+      return false;
+    }
+    final status = deviceSosController.currentStatus;
+    final opcode = status.lastOpcode;
+    final started = lifecycle.activationTimestamp;
+    final lifecycleNodeId = _normalizeNodeIdOrNull(lifecycle.nodeId);
+    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
+    return lifecycle.stage == SosLifecycleStage.cancelled &&
+        !lifecycle.externalOnly &&
+        started != null &&
+        status.derivedFromBlePacket &&
+        status.transitionSource == DeviceSosTransitionSource.device &&
+        _isDeviceSosCycleClosed(status.state) &&
+        status.previousState != DeviceSosState.preConfirm &&
+        (opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
+            opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) &&
+        !status.updatedAt.isBefore(started) &&
+        lifecycleNodeId != null &&
+        statusNodeId != null &&
+        lifecycleNodeId == statusNodeId;
+  }
+
+  /// Settles the generation superseded at admission before the new SOS's
+  /// first status is handled: the old SOS is closed locally (the TAG proved
+  /// it), its MQTT cancel stays queued strictly before the new SOS's trigger,
+  /// and nothing of it can reach the new generation.
+  Future<void> _closeTagSupersededGeneration() async {
+    final supersede = _pendingTagCloseSupersede;
+    _pendingTagCloseSupersede = null;
+    final lifecycle = _sosLifecycle.current;
+    if (supersede == null ||
+        !lifecycle.isOpen ||
+        lifecycle.lifecycleId != supersede.lifecycleId ||
+        lifecycle.generation != supersede.generation) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TAG_CLOSE_SUPERSEDED generation=${lifecycle.generation} '
+      'stage=${lifecycle.stage.name} '
+      'opcode=0x${supersede.closeOpcode.toRadixString(16)} '
+      'reason=new_tag_sos_after_tag_close',
+    );
+    final incident =
+        lifecycle.incident ??
+        _lastKnownActiveSosIncident ??
+        _publicSosFallbackIncident;
+    // The TAG already closed this SOS (and ended native's record of it with
+    // its close frame): a native terminal now would land on the new SOS's
+    // countdown on the same TAG.
+    _nativeSosCycleClosedGeneration = lifecycle.generation;
+    // The old TAG cycle's own settlement may still wait for the backend: its
+    // device cycle must not lend its identity (and its already published
+    // trigger signature) to the new SOS.
+    _clearDeviceRuntimeSosOwnership(reason: 'tag_close_superseded');
+    _clearRememberedDeviceOriginatedClosureIntent(
+      cycleKey: _activeDeviceSosCycleKey,
+    );
+    _activeDeviceSosCycleKey = null;
+    _notifiedDeviceSosCycleKey = null;
+    _notifiedDeviceSosState = null;
+    // An app cancel of the old SOS still waiting for the backend (0xE2 acked
+    // it) is that SOS's business only: the new SOS is not being cancelled.
+    // Its call returns on the generation check after the backend wait.
+    _publicSosClosureInFlight = null;
+    _publicSosActionInFlight = false;
+    final repository = sosRepository;
+    if (repository is MqttOperationalSosRepository) {
+      await repository.closeSosSupersededByTagClose(
+        observedAt: supersede.closedAt,
+      );
+    }
+    final current = _sosLifecycle.current;
+    if (!current.isOpen ||
+        current.lifecycleId != supersede.lifecycleId ||
+        current.generation != supersede.generation) {
+      return;
+    }
+    await _sosLifecycle.confirmTerminal(
+      stage: SosLifecycleStage.cancelled,
+      incident: incident?.copyWith(
+        state: SosState.cancelled,
+        terminalReason: SosTerminalReason.cancelledByUser,
+      ),
+      // The TAG closed it then: the new SOS's first frame, received after
+      // that close, is newer than this terminal.
+      observedAt: supersede.closedAt,
+    );
+  }
+
   PhysicalSosStartAdmission _evaluatePhysicalSosStartAdmission(
     EixamSosPacket packet,
     PhysicalSosReceiveEvidence evidence,
@@ -17569,10 +17770,37 @@ class EixamConnectSdkImpl
             : 'physical_identity_not_proven',
       );
     } else if (lifecycle.isOpen) {
-      admission = const PhysicalSosStartAdmission(
-        decision: PhysicalSosStartAdmissionDecision.sameCycle,
-        reason: 'current_generation_open',
+      final supersede = _tagCloseSupersedeFor(
+        lifecycle: lifecycle,
+        evidence: evidence,
+        status: currentDeviceStatus,
       );
+      if (supersede != null) {
+        // F17c (Roger 16/11/2026): the TAG's own close frame (0xE1 / 0xE2)
+        // proved the open SOS closed; its cancel is (or will be) queued. A
+        // start frame received after that close is a new SOS: it starts now,
+        // never merged into the closing one (the backend has not confirmed
+        // the close yet, which only the outbox waits for).
+        _pendingTagCloseSupersede = supersede;
+        admission = const PhysicalSosStartAdmission(
+          decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
+          reason: 'tag_closed_open_generation',
+          allowFreshStartAfterTerminal: true,
+        );
+        _pendingFreshPhysicalStartProof = _FreshPhysicalStartProof(
+          terminalGeneration: lifecycle.generation,
+          receiveSequence: evidence.receiveSequence,
+          receiveSequenceDomain: evidence.receiveSequenceDomain,
+          terminalBoundaryFromPreviousProcess: false,
+          packetSignature:
+              '${packet.nodeId}:${packet.packetId}:${packet.rawHex}',
+        );
+      } else {
+        admission = const PhysicalSosStartAdmission(
+          decision: PhysicalSosStartAdmissionDecision.sameCycle,
+          reason: 'current_generation_open',
+        );
+      }
     } else if (lifecycle.generation == 0) {
       admission = PhysicalSosStartAdmission(
         decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
@@ -19168,6 +19396,17 @@ class EixamConnectSdkImpl
       return;
     }
     _nativeSosCycleClosedGeneration = lifecycle.generation;
+    if (_tagConfirmedCloseOf(lifecycle)) {
+      // F17c: the TAG itself closed this SOS (0xE1 / 0xE2) and native saw
+      // that close (its own link, or Dart forwarded it): nothing is left to
+      // close or stop natively. A terminal now could only land on a newer
+      // countdown of the same TAG that Dart has not seen yet (late backend
+      // `cancelled` of the old SOS), and would cancel it.
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_SKIPPED reason=tag_confirmed_close',
+      );
+      return;
+    }
     Future<void> closeNative() => protectionPlatformAdapter
         .closeNativeSosCycle(
           nodeId: lifecycle.nodeId,
@@ -29804,6 +30043,20 @@ class _TerminalDeviceCycleFence {
   final int? inactiveBoundaryEventSequence;
   final DateTime? inactiveBoundaryObservedAt;
   final Set<String> consumedPacketSignatures;
+}
+
+final class _TagCloseSupersede {
+  const _TagCloseSupersede({
+    required this.lifecycleId,
+    required this.generation,
+    required this.closeOpcode,
+    required this.closedAt,
+  });
+
+  final String lifecycleId;
+  final int generation;
+  final int closeOpcode;
+  final DateTime closedAt;
 }
 
 final class _FreshPhysicalStartProof {

@@ -581,8 +581,17 @@ final class IosNativeSosDeliveryStore {
 
   /// A pending TAG cancel only cancels a pending SOS created before it; a
   /// newer SOS (created while an older cancel was not yet handed over) wins.
+  /// F17c: so does a newer TAG cycle still counting down. The TAG's close
+  /// idles the cycle, so a cycle running now started after that cancel: it
+  /// is reported as itself, never as the old SOS's cancel (the SDK would
+  /// clear the new countdown).
   var pendingCancelSupersedesCreate: Bool {
     guard let cancelAt = pendingCancelCreatedAt else { return false }
+    if cycleState != .idle,
+       let startedAt = defaults.object(forKey: Keys.cycleStartedAt) as? Int,
+       startedAt >= cancelAt {
+      return false
+    }
     guard let createAt = pendingCreateRecord?["createdAt"] as? Int else { return true }
     return cancelAt >= createAt
   }

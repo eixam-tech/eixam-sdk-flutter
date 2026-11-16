@@ -376,6 +376,102 @@ class MqttOperationalSosRepository
     }
   }
 
+  /// F17c single stale-SOS decision (Roger 16/11/2026): the TAG's close
+  /// frame (0xE1 / 0xE2) proved the open SOS closed and a new TAG SOS has
+  /// started. The closed SOS is settled here without waiting for the
+  /// backend: its MQTT cancel stays queued (deduplicated with the one already
+  /// queued for it) strictly before any newer trigger, so the user-scoped
+  /// cancel can never close the new SOS. Its late backend events are
+  /// attributed to it and never applied to the new SOS. Silent: the SDK
+  /// lifecycle already closed this generation; a state event of it now could
+  /// only reach the new one.
+  Future<void> closeSosSupersededByTagClose({
+    required DateTime observedAt,
+  }) async {
+    final current = _activeIncident;
+    final state = _stateMachine.current;
+    const open = <SosState>{
+      SosState.triggeredLocal,
+      SosState.sending,
+      SosState.sent,
+      SosState.acknowledged,
+      SosState.cancelRequested,
+    };
+    if (current == null || !open.contains(state)) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_TAG_CLOSE_SUPERSEDED repository=already_settled '
+        'state=${state.name}',
+      );
+      return;
+    }
+    await _outbox.enqueueCancel(
+      cycleKey: current.cycleKey,
+      observedAt: observedAt.toUtc(),
+      scope: _authenticatedSessionScope,
+    );
+    final incidentId = _normalizeIdentity(current.id);
+    if (current.isBackendConfirmed &&
+        incidentId != null &&
+        !_isProvisionalLocalSosIncidentId(current.id)) {
+      _supersededIncidentIds
+        ..remove(incidentId)
+        ..add(incidentId);
+      if (_supersededIncidentIds.length > 8) {
+        _supersededIncidentIds.removeAt(0);
+      }
+    }
+    _supersedeAttributionOpen = true;
+    _clearPendingMqttLifecycle(reason: 'tag_close_superseded');
+    _stopMqttConfirmationWait(reason: 'tag_close_superseded');
+    _activeIncident = null;
+    _locallyClosedIncidentId = current.id;
+    _stateMachine = SosStateMachine();
+    sdkReleaseLog(
+      'SOS_OUTBOX_TAG_CLOSE_SUPERSEDED repository=settled_locally '
+      'previous=${state.name} backendIdentity=${incidentId != null && _supersededIncidentIds.contains(incidentId)}',
+    );
+    await _persistState();
+  }
+
+  /// Backend incidents of SOS closed by a TAG close frame and superseded by
+  /// a newer TAG SOS before the backend confirmed the close (bounded, newest
+  /// last). Their events close only them.
+  final List<String> _supersededIncidentIds = <String>[];
+
+  /// A TAG-closed SOS was superseded and its closing event has not been
+  /// attributed yet (nor the new SOS confirmed by the backend): a terminal
+  /// event of another or unknown incident may be that late close. It is
+  /// never proof against the new SOS (a duplicate is acceptable, a missed
+  /// SOS is not).
+  bool _supersedeAttributionOpen = false;
+
+  /// An event of a superseded incident: it confirms only that incident's
+  /// cancel (the head the broker already has), never a newer trigger, and is
+  /// never applied to the current SOS.
+  bool _consumeSupersededIncidentEvent(MqttSosLifecycleUpdate update) {
+    final incidentId = _normalizeIdentity(update.incidentId);
+    if (incidentId == null || !_supersededIncidentIds.contains(incidentId)) {
+      return false;
+    }
+    final state = update.state;
+    final terminal = state == SosState.cancelled || state == SosState.resolved;
+    if (terminal && update.authenticatedUserScoped) {
+      _outbox.confirm(
+        SosOutboxActionKind.cancel,
+        source: 'mqtt_${state!.name}_superseded_incident',
+        matches: (head) => head.published,
+      );
+      _supersededIncidentIds.remove(incidentId);
+      _rememberClosedBackendIncident(incidentId);
+      _supersedeAttributionOpen = false;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_MQTT_EVENT_AUTHORITY_REJECTED reason=superseded_incident '
+      'eventType=${update.eventType} terminal=$terminal',
+    );
+    return true;
+  }
+
   @override
   Future<void> bindSosRuntimeSessionScope(String scope) async {
     // A repeated scope binding can replace credentials for the same account.
@@ -1491,7 +1587,8 @@ class MqttOperationalSosRepository
         );
       }
       if (active == null) {
-        if (!terminalAbsenceExpected && _shouldPreserveLocalFallback()) {
+        if ((!terminalAbsenceExpected || _supersedeAttributionOpen) &&
+            _shouldPreserveLocalFallback()) {
           await _persistState();
           return SosRuntimeRehydrationResult(
             outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
@@ -1863,7 +1960,12 @@ class MqttOperationalSosRepository
         matches: (head) => head.published,
       );
     }
-    if (terminal) {
+    if (terminal && _supersedeAttributionOpen) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_CONFIRMATION_REJECTED reason=unattributed_after_tag_close '
+        'eventType=${update.eventType}',
+      );
+    } else if (terminal) {
       // The backend closed the incident this trigger was delivered into
       // (one open SOS per user); republishing would open a zombie SOS.
       _outbox.confirm(
@@ -1984,6 +2086,8 @@ class MqttOperationalSosRepository
     _outboxBackendConfirmations.clear();
     _neverPublishedTriggerCycles.clear();
     _closedBackendIncidentIds.clear();
+    _supersededIncidentIds.clear();
+    _supersedeAttributionOpen = false;
     await _outbox.clear(reason: 'session_cleared');
     _setState(SosState.idle);
     await _persistState();
@@ -2034,6 +2138,9 @@ class MqttOperationalSosRepository
         'reason=${_mqttParseRejectionReason(event)} '
         'eventType=${event.type.trim().isEmpty ? "unknown" : event.type}',
       );
+      return;
+    }
+    if (_consumeSupersededIncidentEvent(update)) {
       return;
     }
     if (_confirmOutboxFromRealtime(update) &&
@@ -2142,6 +2249,9 @@ class MqttOperationalSosRepository
     );
     _activeIncident = currentIncident;
     if (!previousIncident.isBackendConfirmed) {
+      // The new SOS has its own backend incident: later events are
+      // attributed by its id again.
+      _supersedeAttributionOpen = false;
       BleDebugRegistry.instance.recordEvent(
         'SOS_BACKEND_CONFIRMATION_MQTT_RECEIVED eventType=${update.eventType} '
         'actuatorItems=${actuators?.items.length ?? 0}',

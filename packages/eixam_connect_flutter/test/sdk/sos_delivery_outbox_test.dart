@@ -339,6 +339,104 @@ void main() {
       );
     });
 
+    // F17c (Roger 16/11/2026): the MQTT cancel is user-scoped. A newer SOS's
+    // trigger reaches the broker only after the older cancel's PUBACK, and
+    // then at once (only the publish waits, never the backend confirmation).
+    test(
+      'a newer trigger queued while the cancel awaits its confirmation goes '
+      'out right after the cancel, without waiting for the confirmation',
+      () async {
+        final harness = _Harness();
+        final outbox = harness.build(
+          confirmationWindow: const Duration(seconds: 5),
+        );
+        addTearDown(outbox.dispose);
+        await outbox.enqueueCancel(cycleKey: 'sos:7:30');
+        for (var i = 0; i < 50 && harness.published.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        expect(harness.published.map((a) => a.kind), [
+          SosOutboxActionKind.cancel,
+        ]);
+
+        await outbox.enqueueTrigger(
+          cycleKey: 'sos:7:31',
+          payload: const <String, dynamic>{},
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(harness.published.map((a) => a.kind), [
+          SosOutboxActionKind.cancel,
+          SosOutboxActionKind.trigger,
+        ]);
+      },
+    );
+
+    test('a newer trigger queued before the cancel reached the broker waits '
+        'for its PUBACK only, then goes out', () async {
+      final harness = _Harness();
+      final release = Completer<void>();
+      harness.beforePublish = (action) async {
+        if (action.kind == SosOutboxActionKind.cancel) {
+          await release.future;
+        }
+      };
+      final outbox = harness.build(
+        confirmationWindow: const Duration(seconds: 5),
+      );
+      addTearDown(outbox.dispose);
+      await outbox.enqueueCancel(cycleKey: 'sos:7:32');
+      await outbox.enqueueTrigger(
+        cycleKey: 'sos:7:33',
+        payload: const <String, dynamic>{},
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(harness.published, isEmpty, reason: 'the trigger waits');
+
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(harness.published.map((a) => a.kind), [
+        SosOutboxActionKind.cancel,
+        SosOutboxActionKind.trigger,
+      ]);
+    });
+
+    test('a stale cancel arriving while a newer trigger is being published is '
+        'dropped: it can never follow that trigger on the wire', () async {
+      var now = DateTime.utc(2026, 11, 10, 13, 0, 0);
+      final harness = _Harness();
+      final release = Completer<void>();
+      final publishing = Completer<void>();
+      harness.beforePublish = (action) async {
+        if (action.kind == SosOutboxActionKind.trigger) {
+          publishing.complete();
+          await release.future;
+        }
+      };
+      final outbox = harness.build(clock: () => now);
+      addTearDown(outbox.dispose);
+      final cancelObservedAt = now;
+      now = now.add(const Duration(seconds: 30));
+      await outbox.enqueueTrigger(
+        cycleKey: 'sos:7:35',
+        payload: const <String, dynamic>{},
+      );
+      await publishing.future;
+
+      final cancel = await outbox.enqueueCancel(
+        cycleKey: 'sos:7:34',
+        observedAt: cancelObservedAt,
+      );
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(cancel, isNull);
+      expect(harness.published.map((a) => a.kind), [
+        SosOutboxActionKind.trigger,
+      ]);
+    });
+
     test('an expired trigger is reported, not left pending', () async {
       var now = DateTime.utc(2026, 11, 10, 13);
       final expired = <SosOutboxAction>[];
@@ -400,6 +498,7 @@ class _Harness {
       SosOutboxBackendCheck.notConfirmed;
   SosOutboxBackendCheck backendOnFailure = SosOutboxBackendCheck.unknown;
   void Function(SosOutboxAction action)? onPublish;
+  Future<void> Function(SosOutboxAction action)? beforePublish;
   SosOutboxDropAction? dropWith;
   bool _lastPublishFailed = false;
 
@@ -421,6 +520,10 @@ class _Harness {
       backoff: const <Duration>[Duration(milliseconds: 5)],
       publish: (action) async {
         publishAttempts++;
+        final hook = beforePublish;
+        if (hook != null) {
+          await hook(action);
+        }
         final drop = dropWith;
         if (drop != null) {
           throw drop;

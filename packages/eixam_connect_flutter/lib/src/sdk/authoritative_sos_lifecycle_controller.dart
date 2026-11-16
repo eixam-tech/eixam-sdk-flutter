@@ -637,6 +637,10 @@ final class AuthoritativeSosLifecycleController {
     SosIncident? incident,
     String? deviceCycleKey,
     bool emitToStream = true,
+
+    /// When the terminal was observed, when not now (a TAG close frame
+    /// settled later): evidence observed after it stays newer than it.
+    DateTime? observedAt,
   }) async {
     assert(
       stage == SosLifecycleStage.cancelled ||
@@ -666,7 +670,7 @@ final class AuthoritativeSosLifecycleController {
       activationTimestamp:
           _current.activationTimestamp ?? incident?.createdAt.toUtc(),
       incident: incident,
-      lastAuthoritativeObservation: _now(),
+      lastAuthoritativeObservation: observedAt ?? _now(),
       dispatchState: _current.dispatchState == SosDispatchState.notClaimed
           ? SosDispatchState.notClaimed
           : SosDispatchState.terminal,

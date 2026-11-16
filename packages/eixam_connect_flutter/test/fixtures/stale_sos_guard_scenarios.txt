@@ -724,6 +724,33 @@ scenario tag_close_then_burst_with_tel_copies_starts_at_its_first_push
 3505 frame node=7 source=native => pass countdown=3000
 4000 frame node=7 source=native => pass countdown=3000
 
+# F17c single stale-SOS decision (Roger 16/11/2026): the real 0xE1 order. The
+# TAG closes a sent SOS BEFORE the SDK knows (no SDK terminal yet: the backend
+# has not confirmed the cancel, which is still in the outbox) and a new burst
+# follows at +0.5 s. The TAG's close is local proof the old SOS is closed: the
+# new countdown starts at once from its first push, nothing arms, nothing is
+# held. The SDK sends no terminal of the closed SOS to native afterwards (the
+# TAG confirmed the close; it would land on the new countdown).
+scenario tag_close_e1_before_any_sdk_terminal_native_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+1000 close source=native code=E1 => - armed=false prompt=closed
+1500 frame node=7 source=native => pass armed=false countdown=1500
+1505 frame node=7 source=native => pass armed=false countdown=1500
+2000 frame node=7 source=native => pass armed=false countdown=1500
+2500 frame node=7 source=native => pass armed=false countdown=1500
+
+scenario tag_close_e1_before_any_sdk_terminal_dart_then_new_burst_at_plus_0_5s
+0 seen source=dart node=7 age=30000 => -
+1000 close source=dart code=E1 => - armed=false prompt=closed
+1500 frame node=7 source=dart => pass armed=false
+2000 frame node=7 source=dart => pass armed=false
+2500 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_before_any_sdk_terminal_then_lone_native_retry_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+1000 close source=native code=E1 => - armed=false
+3000 frame node=7 source=native => pass armed=false countdown=3000
+
 # L1 (Roger 16/11/2026): the iOS same-TAG rule on every platform. The SDK
 # terminal of another TAG never arms the record on this TAG's countdown, and
 # this TAG's countdown keeps running.

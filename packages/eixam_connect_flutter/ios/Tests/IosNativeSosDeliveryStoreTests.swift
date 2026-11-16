@@ -41,6 +41,7 @@ struct IosNativeSosDeliveryStoreTests {
     loneRetryAfterATagCloseStartsACountdownAtOnce()
     suppressedFrameRouteForwardsEveryNewSos()
     olderCancelNeverDropsANewerSos()
+    tagCloseThenNewBurstBeforeTheCancelHandOffIsACountdown()
     countdownIsReportedAsCountdown()
     claimedCreateIsKeptOnCancel()
     resetCycleNeverPromotesAfterStop()
@@ -596,10 +597,35 @@ struct IosNativeSosDeliveryStoreTests {
     check(store.pendingCancelSupersedesCreate, "cancel without a create: cancelPending")
     clock += 60_000
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:61", deviceId: nil)
+    check(!store.pendingCancelSupersedesCreate, "the newer countdown is not reported as cancelled")
     clock += 20_000
     _ = store.promoteExpiredCountdown(deviceId: nil)
     check(store.pendingCancelCount == 1 && store.pendingCreateCount == 1, "older cancel not handed over yet")
     check(!store.pendingCancelSupersedesCreate, "the newer SOS is not reported as cancelled")
+  }
+
+  /// F17c (Roger 16/11/2026): the TAG closes a sent SOS (0xE1) and a new
+  /// burst follows at +0.5 s while the old SOS's cancel is not handed to the
+  /// SDK yet (Dart detached): the new countdown runs at once and is reported
+  /// as a countdown, never as the old SOS's pending cancel (which made the SDK
+  /// clear the new countdown on rehydration).
+  static func tagCloseThenNewBurstBeforeTheCancelHandOffIsACountdown() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:70")
+    clock += 1_000
+    let close = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    check(close.queuedCancel, "the old SOS's cancel is queued")
+    check(store.pendingCancelSupersedesCreate, "until a new SOS starts: cancelPending")
+    clock += 500
+    let burst = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:9", deviceId: nil)
+    check(burst.countdownDeadlineAt == clock + 20_000, "the new countdown starts at its first push")
+    check(store.cycleState == .preConfirmSeen, "new countdown running")
+    check(!store.pendingCancelSupersedesCreate, "the new countdown is not the old SOS's cancel")
+    check(store.pendingCancelCount == 1, "the old cancel is still owed to the backend")
+    clock += 20_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    check(store.pendingCreateCount == 1, "the new SOS is created")
+    check(!store.pendingCancelSupersedesCreate, "and never dropped by the older cancel")
   }
 
   static func countdownIsReportedAsCountdown() {
