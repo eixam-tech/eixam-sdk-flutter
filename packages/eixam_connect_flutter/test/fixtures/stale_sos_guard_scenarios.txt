@@ -10,14 +10,16 @@
 # Line format (plain text: the Android unit-test classpath has no JSON parser):
 #   <t_ms> <event> [key=value ...] => <action> [stop=cancel|resolve] [notice=true|false] [armed=true|false]
 # events:
-#   seen source=native|native_unclaimed|dart|none node=N age=MS
+#   seen source=native|native_unclaimed|countdown|dart|none node=N age=MS
 #                         what native saw of the SOS before the SDK closed it:
 #                         native = its own cycle, handed over (countdown elapsed,
 #                         create claimed by the SDK); native_unclaimed = its own
 #                         cycle reached its create but the SDK never claimed
-#                         it (runtime armed, cycle not handed over); dart = own-TAG frames that
-#                         Dart forwarded (observeOwnTagSosFrame), the first one
-#                         age ms before the terminal; none = nothing
+#                         it (runtime armed, cycle not handed over); countdown =
+#                         its own cycle, countdown still running, started age ms
+#                         before the terminal; dart = own-TAG frames that Dart
+#                         forwarded (observeOwnTagSosFrame), the first one age ms
+#                         before the terminal; none = nothing
 #   terminal kind=cancel|resolve node=N connected=true|false
 #                         the SDK's cancel/resolve (closeNativeSosCycle); arms
 #                         the guard only when the SOS was seen on any path
@@ -104,10 +106,37 @@ scenario sos_never_seen_arms_nothing
 0 terminal kind=cancel node=7 connected=true => - armed=false
 10000 frame node=7 source=dart => pass armed=false
 
+scenario countdown_cancel_inside_its_burst_arms_nothing
+0 seen source=dart node=7 age=1000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=false
+10000 frame node=7 source=dart => pass armed=false
+
+scenario native_countdown_cancel_inside_its_burst_arms_nothing
+0 seen source=countdown node=7 age=1000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=false
+
 scenario countdown_cancel_seen_by_dart_arms_nothing
 0 seen source=dart node=7 age=5000 => -
 0 terminal kind=cancel node=7 connected=true => - armed=false
 10000 frame node=7 source=dart => pass armed=false
+
+# F17c-cdc: the app cancels DURING the TAG countdown (8 s in) while the TAG is
+# out of range: the stop never reaches it, it goes ACTIVE and retries once back
+# (~30 s, ~90 s). No guard is armed (no firmware episode id: ambiguous; a missed
+# SOS is worse than a duplicate): every frame passes to the normal path.
+scenario countdown_cancel_out_of_range_seen_by_dart_arms_nothing
+0 seen source=dart node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=false
+22000 link_up => - armed=false
+22000 frame node=7 source=dart => pass armed=false
+82000 frame node=7 source=dart => pass armed=false
+
+scenario native_countdown_cancel_out_of_range_arms_nothing
+0 seen source=countdown node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=false
+22000 link_up => - armed=false
+22000 frame node=7 source=native => pass armed=false
+84000 frame node=7 source=native => pass armed=false
 
 scenario countdown_burst_after_reconnect_is_a_new_sos
 0 seen source=native node=7 age=30000 => -

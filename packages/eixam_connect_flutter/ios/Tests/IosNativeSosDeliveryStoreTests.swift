@@ -33,6 +33,7 @@ struct IosNativeSosDeliveryStoreTests {
     recycledFrameKeyGivesNewIdentity()
     missedCloseFrameNeverBlocksTheNextSos()
     sdkCloseKeepsAnSosNotHandedOver()
+    sdkCancelOfARunningCountdownEndsIt()
     framesRightAfterACloseNeverOpenAnSos()
     realSosInsideTheQuietWindowIsBackdated()
     olderCancelNeverDropsANewerSos()
@@ -421,6 +422,27 @@ struct IosNativeSosDeliveryStoreTests {
     check(store.pendingCreateCount == 1, "nothing lost")
   }
 
+  /// F17c-cdc: the app cancels the TAG countdown (8 s in) while the TAG is out
+  /// of range: the countdown never becomes a native create. No guard is armed
+  /// (a reconnect with ACTIVE retries is ambiguous: accepted duplicate).
+  static func sdkCancelOfARunningCountdownEndsIt() {
+    let (store, _) = makeStore()
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
+    clock += 8_000
+    store.noteLinkDropped()
+    check(store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "the SDK cancel ends the countdown")
+    check(store.cycleState == .idle, "countdown closed")
+    check(store.staleGuardKind == nil, "no guard armed")
+    clock += 12_000
+    _ = store.promoteExpiredCountdown(deviceId: nil)
+    check(store.pendingCreateCount == 0, "a cancelled countdown is never promoted")
+    clock += 10_000
+    store.noteLinkUp()
+    let retry = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
+    check(store.lastStaleAction == "notArmed" && retry.stopTag == nil, "no stop written")
+    check(store.pendingCreateCount == 0, "no native create from the cancelled countdown")
+  }
+
   static func framesRightAfterACloseNeverOpenAnSos() {
     let (store, _) = makeStore()
     deliver(store, key: "sos:7:53")
@@ -797,6 +819,10 @@ struct IosNativeSosDeliveryStoreTests {
           _ = store.observe(kind: .active, nodeId: node, cycleKey: "sos:\(node):1", deviceId: nil)
           clock += 20_000
           _ = store.promoteExpiredCountdown(deviceId: nil)
+        case "countdown":
+          clock = base + t - age
+          _ = store.observe(kind: .active, nodeId: node, cycleKey: "sos:\(node):1", deviceId: nil)
+          check(store.cycleState == .preConfirmSeen, "\(name): countdown running")
         case "dart":
           clock = base + t - age
           _ = store.observeForwardedSosFrame(kind: .active, nodeId: node)

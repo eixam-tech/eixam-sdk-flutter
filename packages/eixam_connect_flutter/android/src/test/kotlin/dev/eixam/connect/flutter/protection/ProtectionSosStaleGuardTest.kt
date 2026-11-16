@@ -282,6 +282,35 @@ class ProtectionSosStaleGuardTest {
         )
     }
 
+    /** F17c-cdc: app cancel 8 s into the native countdown, TAG out of range. */
+    @Test
+    fun `an sdk cancel ends the running countdown and arms nothing`() {
+        val countdown = ProtectionSosLifecycleState.preConfirmSeen
+        val cancel = ProtectionSosStaleTerminal.cancel
+        assertTrue(guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 8_000L))
+        assertTrue(guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 1_000L))
+        assertFalse(
+            "a cancelled countdown never arms the guard",
+            guard.shouldArm(cancel, countdown, false, null, t0 + 8_000L),
+        )
+        assertFalse(
+            "only an SDK cancel ends a countdown",
+            guard.cancelsRunningCountdown(ProtectionSosStaleTerminal.resolve, countdown, false, t0, t0 + 8_000L),
+        )
+        assertFalse(
+            "never with an unclaimed native create",
+            guard.cancelsRunningCountdown(cancel, countdown, true, t0, t0 + 8_000L),
+        )
+        assertFalse(
+            "start unknown (or another TAG's countdown)",
+            guard.cancelsRunningCountdown(cancel, countdown, false, null, t0 + 8_000L),
+        )
+        assertFalse(
+            "a countdown started after the cancel is a newer SOS",
+            guard.cancelsRunningCountdown(cancel, countdown, false, t0 + 9_000L, t0 + 8_000L),
+        )
+    }
+
     @Test
     fun `an SDK close always closes a handed-over cycle so rehydrate never re-creates it`() {
         val afterClose = ProtectionSosLifecycleLogic.onSdkClose(
@@ -339,6 +368,7 @@ class ProtectionSosStaleGuardTest {
         var observed: ProtectionSosObservedCycle? = null
         var lifecycle = ProtectionSosLifecycleState.idle
         var unclaimed = false
+        var countdownStartedAt: Long? = null
         var name = ""
         var steps = 0
         var dartFrames = 0
@@ -353,6 +383,7 @@ class ProtectionSosStaleGuardTest {
                 observed = null
                 lifecycle = ProtectionSosLifecycleState.idle
                 unclaimed = false
+                countdownStartedAt = null
                 continue
             }
             val (eventPart, expectPart) = line.split(" => ")
@@ -375,6 +406,10 @@ class ProtectionSosStaleGuardTest {
                     "native_unclaimed" -> {
                         lifecycle = ProtectionSosLifecycleState.createPending
                         unclaimed = true
+                    }
+                    "countdown" -> {
+                        lifecycle = ProtectionSosLifecycleState.preConfirmSeen
+                        countdownStartedAt = t - args["age"]!!.toLong()
                     }
                     "dart" -> {
                         val age = args["age"]!!.toLong()

@@ -13340,9 +13340,11 @@ void main() {
               );
               cancellation = repository.cancelSos();
               // Cancel is MQTT-only: wait for the `cancel: true` publish.
-              for (var i = 0;
-                  i < 200 && realtime.publishedSosCancels.isEmpty;
-                  i++) {
+              for (
+                var i = 0;
+                i < 200 && realtime.publishedSosCancels.isEmpty;
+                i++
+              ) {
                 await Future<void>.delayed(const Duration(milliseconds: 5));
               }
               expect(realtime.publishedSosCancels, isNotEmpty);
@@ -17135,6 +17137,7 @@ void main() {
       }
     });
   });
+  _cancelDuringCountdownTests();
 }
 
 final class _BlockingNextWriteSecureKeyValueStore
@@ -17404,7 +17407,9 @@ final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
   Future<void> Function(DateTime timestamp)? publishSosCancelHook;
 
   @override
-  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+  Future<void> publishOperationalSosCancel({
+    required DateTime timestamp,
+  }) async {
     publishedSosCancels.add(timestamp);
     await publishSosCancelHook?.call(timestamp);
   }
@@ -18569,38 +18574,40 @@ void _backgroundTagSosDeliveryTests() {
       }
     });
 
-    test('a native SOS created before a later cancel is still dropped',
-        () async {
-      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
-        const ProtectionPlatformSnapshot(
-          platform: ProtectionPlatform.android,
-          backgroundCapabilityReady: true,
-        ),
-      );
-      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
-      try {
-        await harness.sdk.initialize(
-          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+    test(
+      'a native SOS created before a later cancel is still dropped',
+      () async {
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+          ),
         );
-        await harness.setSession();
-        final createdAt = DateTime.now().toUtc();
-        await Future<void>.delayed(const Duration(milliseconds: 5));
-        adapter.emit(queued('cancel:device_cycle_closed'));
-        await pumpEventQueue(times: 20);
+        final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          final createdAt = DateTime.now().toUtc();
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+          adapter.emit(queued('cancel:device_cycle_closed'));
+          await pumpEventQueue(times: 20);
 
-        adapter.pendingNativeSosCreate = nativeCreate(
-          cycleKey: 'sos:1435727214:4',
-          createdAt: createdAt,
-        );
-        adapter.emit(queued('create:scheduled_retry'));
-        await Future<void>.delayed(const Duration(milliseconds: 300));
+          adapter.pendingNativeSosCreate = nativeCreate(
+            cycleKey: 'sos:1435727214:4',
+            createdAt: createdAt,
+          );
+          adapter.emit(queued('create:scheduled_retry'));
+          await Future<void>.delayed(const Duration(milliseconds: 300));
 
-        expect(harness.sosRepository.triggerCallCount, 0);
-      } finally {
-        await harness.dispose();
-        await adapter.dispose();
-      }
-    });
+          expect(harness.sosRepository.triggerCallCount, 0);
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
 
     test('a background TAG cancel is published over MQTT and the native '
         'pending cancel is retired; no REST', () async {
@@ -18611,9 +18618,7 @@ void _backgroundTagSosDeliveryTests() {
         ),
       );
       final realtime = _OnDemandOperationalRealtimeClient();
-      final repository = MqttOperationalSosRepository(
-        realtimeClient: realtime,
-      );
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
       final harness = _SdkSosHarness(
         protectionPlatformAdapter: adapter,
         sdkSosRepository: repository,
@@ -18630,8 +18635,11 @@ void _backgroundTagSosDeliveryTests() {
 
         expect(realtime.publishedSosCancels, isNotEmpty);
         expect(adapter.ackPendingNativeSosCancelCalls, 1);
-        expect(repository.deliveryStatus.pendingCancel, isTrue,
-            reason: 'kept until the backend confirms');
+        expect(
+          repository.deliveryStatus.pendingCancel,
+          isTrue,
+          reason: 'kept until the backend confirms',
+        );
       } finally {
         await harness.dispose();
         await repository.dispose();
@@ -18866,10 +18874,7 @@ void _backgroundTagSosDeliveryTests() {
         // Admitted by the cycle-cancel guard; kept until delivered (the
         // short pre-SOS cancel context of the same TAG may delay it).
         expect(_hasDebugMessage('SOS_OUTBOX_NATIVE_PENDING_ADMITTED'), isTrue);
-        expect(
-          _hasDebugMessage('SOS_OUTBOX_NATIVE_PENDING_REJECTED'),
-          isFalse,
-        );
+        expect(_hasDebugMessage('SOS_OUTBOX_NATIVE_PENDING_REJECTED'), isFalse);
         expect(adapter.droppedNativeSosCreateSignatures, isEmpty);
         expect(adapter.pendingNativeSosCreate, isNotNull);
       } finally {
@@ -18974,50 +18979,58 @@ void _backgroundTagSosDeliveryTests() {
       }
     });
 
-    test('an active SOS found on resume with a pending native create is '
-        'delivered through the outbox, never as a device-only incident',
-        () async {
-      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
-        ProtectionPlatformSnapshot(
-          platform: ProtectionPlatform.ios,
-          backgroundCapabilityReady: true,
-          runtimeActive: true,
-          bleOwner: ProtectionBleOwner.iosPlugin,
-          iosBleSosSnapshotKind: 'active',
-          iosBleSosReceivedAt: DateTime.now().toUtc(),
-          iosBleSosNodeId: 4660,
-          iosBleSosCycleKey: 'sos:4660:6',
-          preSosLifecycleState: 'createPending',
-          preSosCycleKey: 'sos:4660:6',
-          pendingNativeSosCreateCount: 1,
-        ),
-      );
-      adapter.pendingNativeSosCreate = nativeCreate('sos:4660:6');
-      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
-      // MQTT down: nothing may look delivered before the backend confirms.
-      harness.sosRepository.triggerError = const NetworkException(
-        'E_MQTT_NOT_CONNECTED',
-        'down',
-      );
-      try {
-        await harness.sdk.initialize(
-          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+    test(
+      'an active SOS found on resume with a pending native create is '
+      'delivered through the outbox, never as a device-only incident',
+      () async {
+        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+          ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+            runtimeActive: true,
+            bleOwner: ProtectionBleOwner.iosPlugin,
+            iosBleSosSnapshotKind: 'active',
+            iosBleSosReceivedAt: DateTime.now().toUtc(),
+            iosBleSosNodeId: 4660,
+            iosBleSosCycleKey: 'sos:4660:6',
+            preSosLifecycleState: 'createPending',
+            preSosCycleKey: 'sos:4660:6',
+            pendingNativeSosCreateCount: 1,
+          ),
         );
-        await harness.setSession();
-        await waitFor(() => _hasDebugMessage('NATIVE_SOS_MQTT_FLUSH_START'));
-        await pumpEventQueue(times: 10);
+        adapter.pendingNativeSosCreate = nativeCreate('sos:4660:6');
+        final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+        // MQTT down: nothing may look delivered before the backend confirms.
+        harness.sosRepository.triggerError = const NetworkException(
+          'E_MQTT_NOT_CONNECTED',
+          'down',
+        );
+        try {
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+          );
+          await harness.setSession();
+          await waitFor(() => _hasDebugMessage('NATIVE_SOS_MQTT_FLUSH_START'));
+          await pumpEventQueue(times: 10);
 
-        expect(_hasDebugMessage('NATIVE_SOS_MQTT_FLUSH_START'), isTrue);
-        expect(await harness.sdk.getSosState(), isNot(SosState.sent));
-        final incident = await harness.sdk.getCurrentSosIncident();
-        expect(incident?.deliveryChannel, isNot(SosDeliveryChannel.deviceOnly));
-        expect(adapter.pendingNativeSosCreate, isNotNull,
-            reason: 'kept natively until the outbox owns it');
-      } finally {
-        await harness.dispose();
-        await adapter.dispose();
-      }
-    });
+          expect(_hasDebugMessage('NATIVE_SOS_MQTT_FLUSH_START'), isTrue);
+          expect(await harness.sdk.getSosState(), isNot(SosState.sent));
+          final incident = await harness.sdk.getCurrentSosIncident();
+          expect(
+            incident?.deliveryChannel,
+            isNot(SosDeliveryChannel.deviceOnly),
+          );
+          expect(
+            adapter.pendingNativeSosCreate,
+            isNotNull,
+            reason: 'kept natively until the outbox owns it',
+          );
+        } finally {
+          await harness.dispose();
+          await adapter.dispose();
+        }
+      },
+    );
 
     test('a background TAG cancel goes through the MQTT cancel outbox and '
         'retires the native pending cancel; no REST', () async {
@@ -19028,9 +19041,7 @@ void _backgroundTagSosDeliveryTests() {
         ),
       );
       final realtime = _OnDemandOperationalRealtimeClient();
-      final repository = MqttOperationalSosRepository(
-        realtimeClient: realtime,
-      );
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
       final harness = _SdkSosHarness(
         protectionPlatformAdapter: adapter,
         sdkSosRepository: repository,
@@ -19047,8 +19058,11 @@ void _backgroundTagSosDeliveryTests() {
 
         expect(realtime.publishedSosCancels, isNotEmpty);
         expect(adapter.ackPendingNativeSosCancelCalls, 1);
-        expect(adapter.deliveryHoldReports, contains(true),
-            reason: 'iOS keeps background time until the backend confirms');
+        expect(
+          adapter.deliveryHoldReports,
+          contains(true),
+          reason: 'iOS keeps background time until the backend confirms',
+        );
       } finally {
         await harness.dispose();
         await repository.dispose();
@@ -19069,9 +19083,7 @@ void _backgroundTagSosDeliveryTests() {
         ),
       );
       final realtime = _OnDemandOperationalRealtimeClient();
-      final repository = MqttOperationalSosRepository(
-        realtimeClient: realtime,
-      );
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
       final harness = _SdkSosHarness(
         protectionPlatformAdapter: adapter,
         sdkSosRepository: repository,
@@ -19101,9 +19113,7 @@ void _backgroundTagSosDeliveryTests() {
         ),
       );
       final realtime = _OnDemandOperationalRealtimeClient();
-      final repository = MqttOperationalSosRepository(
-        realtimeClient: realtime,
-      );
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
       final harness = _SdkSosHarness(
         protectionPlatformAdapter: adapter,
         sdkSosRepository: repository,
@@ -19903,57 +19913,60 @@ void _backgroundTagSosDeliveryTests() {
         },
       );
 
-      test('F15 Q1: a user cancel stops the app countdown at once; the '
-          'deadline passing while the TAG cancel waits publishes nothing',
-          () async {
-        final hang = Completer<ProtectionPlatformCommandResult>();
-        final adapter = _HangingMirrorProtectionPlatformAdapter(
-          nativeReady(),
-          hang,
-        );
-        final harness = await start(
-          adapter,
-          deviceCountdown: const Duration(seconds: 3),
-        );
-        try {
-          final triggersBefore = harness.sosRepository.triggerCallCount;
-          // Returns after the 2.5 s mirror timeout, ~0.5 s before the
-          // deadline; the 0x06 write is still pending natively.
-          await harness.sdk.startPreSos(countdown: const Duration(seconds: 3));
-          final cancel = harness.sdk.cancelPreSos();
-          // The deadline passes while the cancel waits for the write.
-          await Future<void>.delayed(const Duration(milliseconds: 1500));
-          await pumpEventQueue(times: 20);
-          expect(
-            harness.sosRepository.triggerCallCount,
-            triggersBefore,
-            reason: 'a cancelled countdown never dispatches during the wait',
+      test(
+        'F15 Q1: a user cancel stops the app countdown at once; the '
+        'deadline passing while the TAG cancel waits publishes nothing',
+        () async {
+          final hang = Completer<ProtectionPlatformCommandResult>();
+          final adapter = _HangingMirrorProtectionPlatformAdapter(
+            nativeReady(),
+            hang,
           );
-          expect(opcodes(adapter), isNot(contains(0x04)));
+          final harness = await start(
+            adapter,
+            deviceCountdown: const Duration(seconds: 3),
+          );
+          try {
+            final triggersBefore = harness.sosRepository.triggerCallCount;
+            // Returns after the 2.5 s mirror timeout, ~0.5 s before the
+            // deadline; the 0x06 write is still pending natively.
+            await harness.sdk.startPreSos(
+              countdown: const Duration(seconds: 3),
+            );
+            final cancel = harness.sdk.cancelPreSos();
+            // The deadline passes while the cancel waits for the write.
+            await Future<void>.delayed(const Duration(milliseconds: 1500));
+            await pumpEventQueue(times: 20);
+            expect(
+              harness.sosRepository.triggerCallCount,
+              triggersBefore,
+              reason: 'a cancelled countdown never dispatches during the wait',
+            );
+            expect(opcodes(adapter), isNot(contains(0x04)));
 
-          hang.complete(
-            const ProtectionPlatformCommandResult(
-              success: true,
-              route: 'testNativeOwner',
-            ),
-          );
-          await cancel;
-          expect(opcodes(adapter), <int>[0x06, 0x04]);
-          expect(await harness.sdk.getPreSosStatus(), isNull);
-          await Future<void>.delayed(const Duration(milliseconds: 300));
-          await pumpEventQueue(times: 20);
-          expect(harness.sosRepository.triggerCallCount, triggersBefore);
-          expect(
-            await harness.sdk.getSosState(),
-            isNot(SosState.sent),
-          );
-        } finally {
-          if (!hang.isCompleted) {
-            hang.complete(const ProtectionPlatformCommandResult(success: false));
+            hang.complete(
+              const ProtectionPlatformCommandResult(
+                success: true,
+                route: 'testNativeOwner',
+              ),
+            );
+            await cancel;
+            expect(opcodes(adapter), <int>[0x06, 0x04]);
+            expect(await harness.sdk.getPreSosStatus(), isNull);
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+            await pumpEventQueue(times: 20);
+            expect(harness.sosRepository.triggerCallCount, triggersBefore);
+            expect(await harness.sdk.getSosState(), isNot(SosState.sent));
+          } finally {
+            if (!hang.isCompleted) {
+              hang.complete(
+                const ProtectionPlatformCommandResult(success: false),
+              );
+            }
+            await harness.dispose();
           }
-          await harness.dispose();
-        }
-      });
+        },
+      );
 
       test('an app cancel during the countdown reaches the TAG via the native '
           'channel', () async {
@@ -20112,52 +20125,55 @@ void _sosStabilizationTests() {
       );
     }
 
-    test(
-      '422: the TAG registration removed while the app runs is restored and '
-      'the SOS is republished on a fresh connection until the backend '
-      'creates the incident',
-      () async {
-        final env = await start(connectedTag: true);
-        try {
-          await pumpEventQueue(times: 20);
-          // Registered at connect, then removed by the backend while this
-          // process keeps its local pairing.
-          env.harness.deviceRegistryRepository.devices.clear();
-          final upsertsBefore =
-              env.harness.deviceRegistryRepository.upsertCallCount;
+    test('422: the TAG registration removed while the app runs is restored and '
+        'the SOS is republished on a fresh connection until the backend '
+        'creates the incident', () async {
+      final env = await start(connectedTag: true);
+      try {
+        await pumpEventQueue(times: 20);
+        // Registered at connect, then removed by the backend while this
+        // process keeps its local pairing.
+        env.harness.deviceRegistryRepository.devices.clear();
+        final upsertsBefore =
+            env.harness.deviceRegistryRepository.upsertCallCount;
 
-          await env.harness.sdk.triggerSosAuthoritatively(
-            const SosTriggerPayload(triggerSource: 'commercial_app'),
-          );
-          await waitFor(() => !env.repository.deliveryStatus.pendingTrigger);
+        await env.harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await waitFor(() => !env.repository.deliveryStatus.pendingTrigger);
 
-          expect(
-            env.realtime.publishedSos.first.deviceId,
-            '${0x1234}',
-            reason: 'the SOS of a connected TAG carries its deviceId',
-          );
-          expect(
-            env.harness.deviceRegistryRepository.upsertCallCount,
-            greaterThan(upsertsBefore),
-            reason: 'the existing registration call restores the TAG',
-          );
-          expect(env.realtime.freshFlags.skip(1), contains(true),
-              reason: 'republish of an acknowledged SOS uses a new connection');
-          expect(env.repository.deliveryStatus.pendingTrigger, isFalse,
-              reason: 'the backend created the incident');
-          expect(env.realtime.incidentsCreated, 1);
-          expect(
-            env.realtime.sentDeviceIds.last,
-            '${0x1234}',
-            reason: 'registration restored: the SOS keeps its deviceId',
-          );
-        } finally {
-          await env.harness.dispose();
-          await env.repository.dispose();
-          await env.adapter.dispose();
-        }
-      },
-    );
+        expect(
+          env.realtime.publishedSos.first.deviceId,
+          '${0x1234}',
+          reason: 'the SOS of a connected TAG carries its deviceId',
+        );
+        expect(
+          env.harness.deviceRegistryRepository.upsertCallCount,
+          greaterThan(upsertsBefore),
+          reason: 'the existing registration call restores the TAG',
+        );
+        expect(
+          env.realtime.freshFlags.skip(1),
+          contains(true),
+          reason: 'republish of an acknowledged SOS uses a new connection',
+        );
+        expect(
+          env.repository.deliveryStatus.pendingTrigger,
+          isFalse,
+          reason: 'the backend created the incident',
+        );
+        expect(env.realtime.incidentsCreated, 1);
+        expect(
+          env.realtime.sentDeviceIds.last,
+          '${0x1234}',
+          reason: 'registration restored: the SOS keeps its deviceId',
+        );
+      } finally {
+        await env.harness.dispose();
+        await env.repository.dispose();
+        await env.adapter.dispose();
+      }
+    });
 
     Future<void> expectNotLinkedAndRetrying(
       ({
@@ -20185,48 +20201,53 @@ void _sosStabilizationTests() {
       final publishes = env.realtime.publishedSos.length;
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
-      expect(notLinkedSeen(), isTrue,
-          reason: progress
-              .map((p) => p?.steps.firstOrNull?.detailCode)
-              .join(','));
-      expect(env.realtime.incidentsCreated, 0,
-          reason: 'not accepted by design while no TAG is registered');
+      expect(
+        notLinkedSeen(),
+        isTrue,
+        reason: progress.map((p) => p?.steps.firstOrNull?.detailCode).join(','),
+      );
+      expect(
+        env.realtime.incidentsCreated,
+        0,
+        reason: 'not accepted by design while no TAG is registered',
+      );
       expect(env.repository.deliveryStatus.pendingTrigger, isTrue);
-      expect(env.realtime.publishedSos.length, greaterThan(publishes),
-          reason: 'the outbox keeps retrying');
-      expect(env.realtime.sentDeviceIds.toSet(), <String?>{expectedDeviceId},
-          reason: 'the SOS payload is never altered');
+      expect(
+        env.realtime.publishedSos.length,
+        greaterThan(publishes),
+        reason: 'the outbox keeps retrying',
+      );
+      expect(env.realtime.sentDeviceIds.toSet(), <String?>{
+        expectedDeviceId,
+      }, reason: 'the SOS payload is never altered');
     }
 
-    test(
-      '422 and the TAG is not paired on this phone: the SOS says the TAG is '
-      'not linked and keeps retrying (not accepted by design)',
-      () async {
-        final env = await start(connectedTag: true);
-        try {
-          await pumpEventQueue(times: 20);
-          env.harness.deviceRegistryRepository.devices.clear();
-          await env.harness.sdk.triggerSosAuthoritatively(
-            const SosTriggerPayload(triggerSource: 'commercial_app'),
-          );
-          await waitFor(() => env.realtime.publishedSos.isNotEmpty);
-          // The TAG disappears from this phone (unpaired elsewhere).
-          env.harness.deviceRepository.emitStatus(
-            buildDeviceStatus(
-              deviceId: 'none',
-              connected: false,
-              paired: false,
-              activated: false,
-            ),
-          );
-          await expectNotLinkedAndRetrying(env, expectedDeviceId: '${0x1234}');
-        } finally {
-          await env.harness.dispose();
-          await env.repository.dispose();
-          await env.adapter.dispose();
-        }
-      },
-    );
+    test('422 and the TAG is not paired on this phone: the SOS says the TAG is '
+        'not linked and keeps retrying (not accepted by design)', () async {
+      final env = await start(connectedTag: true);
+      try {
+        await pumpEventQueue(times: 20);
+        env.harness.deviceRegistryRepository.devices.clear();
+        await env.harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await waitFor(() => env.realtime.publishedSos.isNotEmpty);
+        // The TAG disappears from this phone (unpaired elsewhere).
+        env.harness.deviceRepository.emitStatus(
+          buildDeviceStatus(
+            deviceId: 'none',
+            connected: false,
+            paired: false,
+            activated: false,
+          ),
+        );
+        await expectNotLinkedAndRetrying(env, expectedDeviceId: '${0x1234}');
+      } finally {
+        await env.harness.dispose();
+        await env.repository.dispose();
+        await env.adapter.dispose();
+      }
+    });
 
     test(
       '422 and the re-registration fails: the user is told, the outbox keeps '
@@ -20286,58 +20307,57 @@ void _sosStabilizationTests() {
       },
     );
 
-    test(
-      'another TAG registered to the account: the backend accepts the SOS, '
-      'no "not linked" message and no re-registration',
-      () async {
-        final env = await start(connectedTag: true);
-        try {
-          await pumpEventQueue(times: 20);
-          env.harness.deviceRegistryRepository.devices
-            ..clear()
-            ..add(registered('99'));
-          final upsertsBefore =
-              env.harness.deviceRegistryRepository.upsertCallCount;
-          await env.harness.sdk.triggerSosAuthoritatively(
-            const SosTriggerPayload(triggerSource: 'commercial_app'),
-          );
-          await waitFor(() => !env.repository.deliveryStatus.pendingTrigger);
+    test('another TAG registered to the account: the backend accepts the SOS, '
+        'no "not linked" message and no re-registration', () async {
+      final env = await start(connectedTag: true);
+      try {
+        await pumpEventQueue(times: 20);
+        env.harness.deviceRegistryRepository.devices
+          ..clear()
+          ..add(registered('99'));
+        final upsertsBefore =
+            env.harness.deviceRegistryRepository.upsertCallCount;
+        await env.harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await waitFor(() => !env.repository.deliveryStatus.pendingTrigger);
 
-          expect(env.repository.deliveryStatus.pendingTrigger, isFalse);
-          expect(env.harness.deviceRegistryRepository.upsertCallCount,
-              upsertsBefore);
-          expect(
-            (await env.repository.getCurrentIncident())?.deliveryIssue,
-            isNull,
-          );
-        } finally {
-          await env.harness.dispose();
-          await env.repository.dispose();
-          await env.adapter.dispose();
-        }
-      },
-    );
+        expect(env.repository.deliveryStatus.pendingTrigger, isFalse);
+        expect(
+          env.harness.deviceRegistryRepository.upsertCallCount,
+          upsertsBefore,
+        );
+        expect(
+          (await env.repository.getCurrentIncident())?.deliveryIssue,
+          isNull,
+        );
+      } finally {
+        await env.harness.dispose();
+        await env.repository.dispose();
+        await env.adapter.dispose();
+      }
+    });
 
-    test(
-      'app SOS without a TAG on an account with no registered TAG: the SOS '
-      'carries no deviceId, is not accepted by design (Dani), the user is '
-      'told the TAG is not linked and the outbox keeps retrying',
-      () async {
-        final env = await start(connectedTag: false);
-        try {
-          await env.harness.sdk.triggerSosAuthoritatively(
-            const SosTriggerPayload(triggerSource: 'commercial_app'),
-          );
-          await expectNotLinkedAndRetrying(env, expectedDeviceId: null);
-          expect(env.harness.deviceRegistryRepository.upsertCallCount, 0,
-              reason: 'no TAG paired here: nothing to register');
-        } finally {
-          await env.harness.dispose();
-          await env.repository.dispose();
-          await env.adapter.dispose();
-        }
-      },
-    );
+    test('app SOS without a TAG on an account with no registered TAG: the SOS '
+        'carries no deviceId, is not accepted by design (Dani), the user is '
+        'told the TAG is not linked and the outbox keeps retrying', () async {
+      final env = await start(connectedTag: false);
+      try {
+        await env.harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await expectNotLinkedAndRetrying(env, expectedDeviceId: null);
+        expect(
+          env.harness.deviceRegistryRepository.upsertCallCount,
+          0,
+          reason: 'no TAG paired here: nothing to register',
+        );
+      } finally {
+        await env.harness.dispose();
+        await env.repository.dispose();
+        await env.adapter.dispose();
+      }
+    });
   });
 
   group('SOS stabilization (F6/F8)', () {
@@ -20498,9 +20518,7 @@ void _sosStabilizationTests() {
         }
 
         try {
-          await harness.deviceSosController.attach(
-            commandWriter: (_) async {},
-          );
+          await harness.deviceSosController.attach(commandWriter: (_) async {});
           await harness.sdk.initialize(
             const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
           );
@@ -20538,8 +20556,11 @@ void _sosStabilizationTests() {
           );
           await waitFor(() => realtime.publishedSosCancels.isNotEmpty);
 
-          expect(realtime.publishedSosCancels, isNotEmpty,
-              reason: 'the backend must follow the TAG cancel');
+          expect(
+            realtime.publishedSosCancels,
+            isNotEmpty,
+            reason: 'the backend must follow the TAG cancel',
+          );
         } finally {
           await harness.dispose();
           await repository.dispose();
@@ -20590,80 +20611,80 @@ void _sosStabilizationTests() {
       },
     );
 
-    test(
-      'F10 / PUBACK without backend incident: the host sees "not sent yet, '
-      'retrying" and the outbox keeps republishing until confirmed',
-      () async {
-        final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
-          const ProtectionPlatformSnapshot(
-            platform: ProtectionPlatform.android,
-            backgroundCapabilityReady: true,
-          ),
+    test('F10 / PUBACK without backend incident: the host sees "not sent yet, '
+        'retrying" and the outbox keeps republishing until confirmed', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtime,
+        mqttConfirmationWarningDelay: const Duration(milliseconds: 10),
+        deliveryBackoff: const <Duration>[Duration(milliseconds: 20)],
+        deliveryRetryingAfter: const Duration(milliseconds: 100),
+      );
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+      );
+      final progress = <SosIncidentProgress?>[];
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
         );
-        final realtime = _OnDemandOperationalRealtimeClient();
-        final repository = MqttOperationalSosRepository(
-          realtimeClient: realtime,
-          mqttConfirmationWarningDelay: const Duration(milliseconds: 10),
-          deliveryBackoff: const <Duration>[Duration(milliseconds: 20)],
-          deliveryRetryingAfter: const Duration(milliseconds: 100),
+        await harness.setSession();
+        // The account has a registered TAG: the cause is not registration.
+        await harness.deviceRegistryRepository.upsertRegisteredDevice(
+          hardwareId: '4660',
+          firmwareVersion: '2.7.68',
+          hardwareModel: 'EIXAM R1',
+          pairedAt: DateTime.utc(2026, 11, 11),
         );
-        final harness = _SdkSosHarness(
-          protectionPlatformAdapter: adapter,
-          sdkSosRepository: repository,
-          realtimeClient: realtime,
+        final sub = harness.sdk.currentSosIncidentProgressStream.listen(
+          progress.add,
         );
-        final progress = <SosIncidentProgress?>[];
-        try {
-          await harness.sdk.initialize(
-            const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
-          );
-          await harness.setSession();
-          // The account has a registered TAG: the cause is not registration.
-          await harness.deviceRegistryRepository.upsertRegisteredDevice(
-            hardwareId: '4660',
-            firmwareVersion: '2.7.68',
-            hardwareModel: 'EIXAM R1',
-            pairedAt: DateTime.utc(2026, 11, 11),
-          );
-          final sub = harness.sdk.currentSosIncidentProgressStream.listen(
-            progress.add,
-          );
-          addTearDown(sub.cancel);
+        addTearDown(sub.cancel);
 
-          // Every publish is acknowledged by the broker; the backend never
-          // creates the incident (no `processed`, read finds nothing).
-          await harness.sdk.triggerSosAuthoritatively(
-            const SosTriggerPayload(triggerSource: 'commercial_app'),
-          );
-          final deadline = DateTime.now().add(const Duration(seconds: 4));
-          bool retryingSeen() => progress.any(
-            (p) =>
-                p != null &&
-                p.steps.isNotEmpty &&
-                p.steps.first.detailCode == 'delivery_not_confirmed_retrying',
-          );
-          while ((!retryingSeen() || realtime.publishedSos.length < 3) &&
-              DateTime.now().isBefore(deadline)) {
-            await Future<void>.delayed(const Duration(milliseconds: 20));
-          }
-
-          expect(
-            retryingSeen(),
-            isTrue,
-            reason:
-                'progress seen: ${progress.map((p) => p?.steps.map((s) => '${s.type.name}:${s.state.name}:${s.detailCode}').join('/')).join(' | ')}',
-          );
-          expect(realtime.publishedSos.length, greaterThanOrEqualTo(3),
-              reason: 'the outbox keeps republishing');
-          // Public `SosState.sent` may still precede confirmation (documented,
-          // SOS_BACKGROUND_FIX.md); hosts read the progress above.
-        } finally {
-          await harness.dispose();
-          await repository.dispose();
-          await adapter.dispose();
+        // Every publish is acknowledged by the broker; the backend never
+        // creates the incident (no `processed`, read finds nothing).
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        final deadline = DateTime.now().add(const Duration(seconds: 4));
+        bool retryingSeen() => progress.any(
+          (p) =>
+              p != null &&
+              p.steps.isNotEmpty &&
+              p.steps.first.detailCode == 'delivery_not_confirmed_retrying',
+        );
+        while ((!retryingSeen() || realtime.publishedSos.length < 3) &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
         }
-      },
-    );
+
+        expect(
+          retryingSeen(),
+          isTrue,
+          reason:
+              'progress seen: ${progress.map((p) => p?.steps.map((s) => '${s.type.name}:${s.state.name}:${s.detailCode}').join('/')).join(' | ')}',
+        );
+        expect(
+          realtime.publishedSos.length,
+          greaterThanOrEqualTo(3),
+          reason: 'the outbox keeps republishing',
+        );
+        // Public `SosState.sent` may still precede confirmation (documented,
+        // SOS_BACKGROUND_FIX.md); hosts read the progress above.
+      } finally {
+        await harness.dispose();
+        await repository.dispose();
+        await adapter.dispose();
+      }
+    });
 
     test(
       'F6/F8: a connected TAG SOS never publishes idle (nor closes the native '
@@ -20686,9 +20707,7 @@ void _sosStabilizationTests() {
         );
         final states = <SosState>[];
         try {
-          await harness.deviceSosController.attach(
-            commandWriter: (_) async {},
-          );
+          await harness.deviceSosController.attach(commandWriter: (_) async {});
           await harness.sdk.initialize(
             const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
           );
@@ -20854,5 +20873,670 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
   @override
   Future<void> noteOwnTagSosLink({required bool up}) async {
     linkNotes.add(up);
+  }
+}
+
+/// F17c-cdc: the user cancels in the app DURING the TAG countdown while the
+/// TAG is out of range. The 0x04 never reaches the TAG, whose countdown ends
+/// on its own -> ACTIVE. When the TAG comes back with ACTIVE retries of that
+/// same cancelled cycle, they must never become a new SOS. In-process Dart's
+/// physical-closure admission fence drops them (native answers `proceed`: a
+/// countdown cancel arms no guard). Across an app restart that fence admits
+/// the first start frame: an ACCEPTED known duplicate (no firmware episode id;
+/// a missed SOS is worse than a duplicate), which must be a normal SOS.
+void _cancelDuringCountdownTests() {
+  group('F17c-cdc app cancel during the TAG countdown, TAG out of range', () {
+    var sequence = 9000;
+    late List<String> messages;
+    StreamSubscription<BleDebugState>? debug;
+
+    setUp(() {
+      messages = <String>[];
+      debug = BleDebugRegistry.instance.watch().listen((state) {
+        if (state.events.isNotEmpty) {
+          messages.add(state.events.last.message);
+        }
+      });
+    });
+
+    tearDown(() async {
+      await debug?.cancel();
+    });
+
+    Future<void> settle([int ms = 0]) async {
+      if (ms > 0) {
+        await Future<void>.delayed(Duration(milliseconds: ms));
+      }
+      await pumpEventQueue(times: 20);
+    }
+
+    Future<void> frame(
+      _SdkSosHarness harness, {
+      required bool active,
+      required int packetId,
+      String characteristic = 'sos',
+      DateTime? at,
+    }) async {
+      final seq = ++sequence;
+      final receivedAt = at ?? DateTime.now().toUtc();
+      final bytes = <int>[
+        0x34, 0x12, 0x00, 0x00, 0x00, 0x00, //
+        0x00, 0x00, 0x00, 0x00,
+        packetId & 0x0F,
+        active ? 0x80 : 0x50,
+      ];
+      final packet = EixamSosPacket.tryParse(bytes)!;
+      harness.deviceSosController.ownTagSosFrameGate.submitStartFrame(
+        OwnTagSosFrameReport(
+          bytes: bytes,
+          characteristic: characteristic,
+          receivedAt: receivedAt,
+        ),
+        () => harness.deviceSosController.handleIncomingSosPacket(
+          packet,
+          source: DeviceSosTransitionSource.device,
+          resolutionContext:
+              DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                PhysicalSosReceiveEvidence(
+                  classification: BleIncomingPayloadKind.ownDeviceSos,
+                  receiveSequence: seq,
+                  receiveSequenceDomain: 'flutter_gatt:cdc',
+                  processSessionId: 'matrix-test-process',
+                  producer: 'flutter_gatt',
+                  characteristic: characteristic == 'tel'
+                      ? EixamBleProtocol.telNotifyCharacteristicUuid
+                      : EixamBleProtocol.sosNotifyCharacteristicUuid,
+                  correlationId: 'cdc-$seq',
+                  exactPhysicalIdentityMatch: true,
+                  packetType: 'sos',
+                  hasStartSemantics: true,
+                  hasTerminalSemantics: false,
+                  packetFingerprint: 'cdc-$seq',
+                  cycleIdentity: 'sos:4660:$packetId',
+                  receivedAt: DateTime.now().toUtc(),
+                ),
+                incomingPacketType: 'sos',
+                incomingClassification: 'ownDeviceSos',
+                incomingReceiveSequence: seq,
+              ),
+        ),
+      );
+      await harness.deviceSosController.ownTagSosFrameGate.idle;
+      await pumpEventQueue(times: 5);
+    }
+
+    _F17cNativeAdapter iosNative() => _F17cNativeAdapter(
+      const ProtectionPlatformSnapshot(
+        platform: ProtectionPlatform.ios,
+        backgroundCapabilityReady: true,
+        runtimeActive: false,
+      ),
+    );
+
+    /// Countdown scaled down (TAG: ~20 s); the cancel lands mid-countdown.
+    const countdown = Duration(milliseconds: 1500);
+
+    Future<void> connect(_SdkSosHarness harness, List<int> written) async {
+      await harness.deviceSosController.attach(
+        commandWriter: (command) async => written.add(command.opcode),
+        transportId: 'ble-1',
+      );
+      await settle(50);
+    }
+
+    /// The TAG pre-SOS burst (500 ms cadence, both characteristics) reaches
+    /// the phone, then the link drops and the user cancels in the app while
+    /// the countdown is still running. Native answers `proceed` throughout:
+    /// a cancel before the countdown ends never arms its stale guard.
+    Future<SosLifecycleSnapshot> preSosThenCancelOutOfRange(
+      _SdkSosHarness harness,
+      List<int> written,
+    ) async {
+      await connect(harness, written);
+      await harness.sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await harness.setSession();
+      for (var push = 1; push <= 4; push++) {
+        await frame(harness, active: false, packetId: push);
+        await frame(
+          harness,
+          active: false,
+          packetId: push,
+          characteristic: 'tel',
+        );
+      }
+      await settle(50);
+      final arming = await harness.sdk.getSosLifecycle();
+      expect(arming.isOpen, isTrue, reason: 'TAG countdown seen by the SDK');
+      expect(harness.sosRepository.triggerCallCount, 0);
+      // TAG out of range: the stop can never reach it.
+      await harness.deviceSosController.detach();
+      await harness.sdk.cancelSosAuthoritatively();
+      await settle(50);
+      final cancelled = await harness.sdk.getSosLifecycle();
+      expect(cancelled.stage, SosLifecycleStage.cancelled);
+      expect(cancelled.generation, arming.generation);
+      expect(harness.sosRepository.triggerCallCount, 0);
+      return cancelled;
+    }
+
+    /// ACTIVE retries of the cancelled cycle once the TAG is back: packet id
+    /// advances on every transmission, SOS and TEL copies, TAG retry cadence
+    /// (2/8/20 s) on the frame clock.
+    Future<void> activeRetries(
+      _SdkSosHarness harness, {
+      required int firstPacketId,
+      int count = 3,
+    }) async {
+      final start = DateTime.now().toUtc();
+      const cadence = <int>[0, 6, 18];
+      for (var n = 0; n < count; n++) {
+        final id = firstPacketId + n;
+        final at = start.add(Duration(seconds: cadence[n % cadence.length]));
+        await frame(harness, active: true, packetId: id, at: at);
+        await frame(
+          harness,
+          active: true,
+          packetId: id,
+          characteristic: 'tel',
+          at: at.add(const Duration(milliseconds: 5)),
+        );
+        await settle(200);
+      }
+    }
+
+    void expectNoNewSos(
+      _SdkSosHarness harness,
+      SosLifecycleSnapshot cancelled,
+      SosLifecycleSnapshot after,
+    ) {
+      expect(after.generation, cancelled.generation, reason: 'no new SOS');
+      expect(after.isOpen, isFalse);
+      expect(harness.sosRepository.triggerCallCount, 0, reason: 'no incident');
+      expect(
+        messages.where((m) => m.startsWith('SOS_OUTBOX_ENQUEUED kind=trigger')),
+        isEmpty,
+      );
+      expect(
+        harness.deviceSosController.currentStatus.state,
+        isNot(anyOf(DeviceSosState.preConfirm, DeviceSosState.active)),
+        reason: 'no Dart countdown from a frame of the cancelled cycle',
+      );
+    }
+
+    test(
+      'reconnect after the TAG countdown ended (field ~30 s, then the '
+      '60 s retry ~90 s), even with native answering proceed: the Dart '
+      'physical-closure fence opens no SOS from the cancelled cycle',
+      () async {
+        final adapter = iosNative();
+        final written = <int>[];
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: countdown,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          final cancelled = await preSosThenCancelOutOfRange(harness, written);
+          // The TAG countdown completes out of range -> ACTIVE.
+          await settle(countdown.inMilliseconds + 300);
+          await connect(harness, written);
+          final forwardedBefore = adapter.frames.length;
+          await activeRetries(harness, firstPacketId: 6);
+          expect(
+            adapter.frames.length - forwardedBefore,
+            6,
+            reason: 'native classifies every frame (and answers proceed)',
+          );
+          // Longer than a full Dart countdown: nothing promotes.
+          await settle(countdown.inMilliseconds + 500);
+          expectNoNewSos(
+            harness,
+            cancelled,
+            await harness.sdk.getSosLifecycle(),
+          );
+          // The 60 s retry, after a second link drop.
+          await harness.deviceSosController.detach();
+          await settle(300);
+          await connect(harness, written);
+          await activeRetries(harness, firstPacketId: 9, count: 1);
+          await settle(countdown.inMilliseconds + 500);
+          expectNoNewSos(
+            harness,
+            cancelled,
+            await harness.sdk.getSosLifecycle(),
+          );
+          expect(
+            messages.where(
+              (m) =>
+                  m.startsWith('SOS_PHYSICAL_START_ADMISSION') &&
+                  m.contains('decision=reject_replay') &&
+                  m.contains('reason=physical_episode_closure_not_observed'),
+            ),
+            isNotEmpty,
+            reason: 'dropped by the physical-closure admission fence',
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    /// A phone as in production: the MQTT operational repository on a
+    /// realtime client (backend `processed` / portal `resolved` arrive as MQTT
+    /// events), and the TAG registered to the user.
+    Future<_MqttSosPhone> mqttPhone(
+      List<int> written, {
+      required MemorySharedPrefsSdkStore localStore,
+      required SdkSessionStore sessionStore,
+      required InMemorySecureKeyValueStore secureStore,
+      bool restore = false,
+    }) async {
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final remote = _NoActiveSosRemoteDataSource();
+      final repository = MqttOperationalSosRepository(
+        realtimeClient: realtime,
+        remoteDataSource: remote,
+        cancelRemoteDataSource: remote,
+        localStore: localStore,
+      );
+      if (restore) {
+        await repository.restoreState();
+      }
+      final harness = _SdkSosHarness(
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: countdown,
+        protectionPlatformAdapter: iosNative(),
+        localStore: localStore,
+        sessionStore: sessionStore,
+        sosLifecycleSecureStore: secureStore,
+      );
+      await connect(harness, written);
+      await harness.sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await harness.setSession();
+      await harness.deviceRegistryRepository.upsertRegisteredDevice(
+        hardwareId: '4660',
+        firmwareVersion: '2.7.54',
+        hardwareModel: 'EIXAM R1',
+        pairedAt: DateTime.utc(2026, 9, 24),
+      );
+      await settle(50);
+      return _MqttSosPhone(harness, realtime, repository);
+    }
+
+    const backendIncidentId = '7c9e6679-7425-40de-944b-e07fc1f90ab3';
+
+    /// The backend accepted the SOS: `processed` over MQTT.
+    Future<void> backendProcessed(_MqttSosPhone phone) async {
+      phone.realtime.emitEvent(
+        _processedEvent(
+          canonicalIncidentId: backendIncidentId,
+          publishedAt: phone.realtime.publishedSos.last.timestamp.toUtc(),
+        ),
+      );
+      await settle(100);
+    }
+
+    /// Resolved in the portal: `resolved` over MQTT.
+    Future<void> portalResolved(_MqttSosPhone phone) async {
+      phone.realtime.emitEvent(
+        RealtimeEvent(
+          type: 'resolved',
+          timestamp: DateTime.now().toUtc(),
+          payload: <String, dynamic>{
+            'type': 'resolved',
+            'status': 'resolved',
+            'incidentId': backendIncidentId,
+            'userId': 'external-123',
+            '_mqttAuthenticatedUserScoped': true,
+            '_mqttTopicCategory': 'internal',
+          },
+        ),
+      );
+      await settle(200);
+    }
+
+    /// (a) app-facing public state and (b) lifecycle/device active, one
+    /// backend trigger, no automatic stop.
+    Future<void> expectShownActive(
+      _MqttSosPhone phone,
+      int generation,
+      List<int> written,
+    ) async {
+      final lifecycle = await phone.harness.sdk.getSosLifecycle();
+      expect(lifecycle.generation, generation);
+      expect(lifecycle.stage, SosLifecycleStage.active);
+      expect(await phone.harness.sdk.getSosState(), SosState.sent);
+      expect(
+        phone.harness.deviceSosController.currentStatus.state,
+        DeviceSosState.active,
+      );
+      expect(phone.realtime.publishedSos, hasLength(1), reason: 'one trigger');
+      expect(written, isNot(contains(0x04)), reason: 'no automatic stop');
+    }
+
+    Future<void> expectPortalResolveCloses(_MqttSosPhone phone) async {
+      await portalResolved(phone);
+      expect(
+        (await phone.harness.sdk.getSosLifecycle()).stage,
+        SosLifecycleStage.resolved,
+      );
+      expect(await phone.harness.sdk.getSosState(), SosState.resolved);
+    }
+
+    Future<void> expectAppCancelReachesBackend(_MqttSosPhone phone) async {
+      final result = await phone.harness.sdk.cancelSosAuthoritatively();
+      await settle(100);
+      expect(
+        phone.realtime.publishedSosCancels,
+        hasLength(1),
+        reason: 'cancel published over MQTT',
+      );
+      expect(result.lifecycle.stage, SosLifecycleStage.cancelled);
+      expect(
+        (await phone.harness.sdk.getSosLifecycle()).stage,
+        SosLifecycleStage.cancelled,
+      );
+    }
+
+    for (final terminal in <String>['cancel', 'resolve']) {
+      test(
+        'control: a genuine first TAG SOS is shown active and the '
+        '${terminal == 'cancel' ? 'app cancel reaches the backend' : 'portal resolve (MQTT) closes it'}',
+        () async {
+          final written = <int>[];
+          final localStore = MemorySharedPrefsSdkStore();
+          final phone = await mqttPhone(
+            written,
+            localStore: localStore,
+            sessionStore: SdkSessionStore(localStore: localStore),
+            secureStore: InMemorySecureKeyValueStore(),
+          );
+          try {
+            for (var push = 0; push < 4; push++) {
+              await frame(phone.harness, active: false, packetId: 1);
+            }
+            await settle(countdown.inMilliseconds + 500);
+            await backendProcessed(phone);
+            await expectShownActive(phone, 1, written);
+            if (terminal == 'cancel') {
+              await expectAppCancelReachesBackend(phone);
+            } else {
+              await expectPortalResolveCloses(phone);
+            }
+          } finally {
+            await phone.dispose();
+          }
+        },
+      );
+    }
+
+    test('a genuine second TAG SOS (after a cancelled one and the TAG close) '
+        'is shown active and a portal resolve (MQTT) closes it', () async {
+      final written = <int>[];
+      final localStore = MemorySharedPrefsSdkStore();
+      final phone = await mqttPhone(
+        written,
+        localStore: localStore,
+        sessionStore: SdkSessionStore(localStore: localStore),
+        secureStore: InMemorySecureKeyValueStore(),
+      );
+      try {
+        for (var push = 0; push < 4; push++) {
+          await frame(phone.harness, active: false, packetId: 1);
+        }
+        await settle(countdown.inMilliseconds + 500);
+        await backendProcessed(phone);
+        await phone.harness.sdk.cancelSosAuthoritatively();
+        await settle(200);
+        expect(
+          (await phone.harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+        // The user stops the TAG on the TAG (E1), then presses again.
+        final close = EixamSosEventPacket.tryParse(const <int>[
+          0xE1, 0x00, 0x34, 0x12, 0x00, 0x00, //
+        ])!;
+        phone.harness.deviceSosController.handleIncomingSosEventPacket(
+          close,
+          source: DeviceSosTransitionSource.device,
+          resolutionContext:
+              DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                PhysicalSosReceiveEvidence(
+                  classification: BleIncomingPayloadKind.ownDeviceSos,
+                  receiveSequence: ++sequence,
+                  receiveSequenceDomain: 'flutter_gatt:cdc',
+                  processSessionId: 'matrix-test-process',
+                  producer: 'flutter_gatt',
+                  characteristic: EixamBleProtocol.sosNotifyCharacteristicUuid,
+                  correlationId: 'cdc-$sequence',
+                  exactPhysicalIdentityMatch: true,
+                  packetType: 'sos_event',
+                  hasStartSemantics: false,
+                  hasTerminalSemantics: true,
+                  packetFingerprint: 'cdc-$sequence',
+                  cycleIdentity: 'sos:4660:close',
+                  receivedAt: DateTime.now().toUtc(),
+                ),
+                incomingPacketType: 'sos_event',
+                incomingClassification: 'ownDeviceSos',
+                incomingReceiveSequence: sequence,
+              ),
+        );
+        await settle(1500);
+        written.clear();
+        phone.realtime.publishedSos.clear();
+        for (var push = 0; push < 4; push++) {
+          await frame(phone.harness, active: false, packetId: 9);
+        }
+        await settle(countdown.inMilliseconds + 500);
+        await backendProcessed(phone);
+        await expectShownActive(phone, 2, written);
+        await expectPortalResolveCloses(phone);
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    /// Cancel during the countdown with the TAG out of range, then an app
+    /// restart before the TAG is back. Native arms nothing for a countdown
+    /// cancel (no firmware episode id: ambiguous), so it answers `proceed`.
+    Future<(_MqttSosPhone, SosLifecycleSnapshot)> restartAfterCancelOutOfRange(
+      List<int> written,
+    ) async {
+      final localStore = MemorySharedPrefsSdkStore();
+      final sessionStore = SdkSessionStore(localStore: localStore);
+      final secureStore = InMemorySecureKeyValueStore();
+      final first = await mqttPhone(
+        written,
+        localStore: localStore,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+      );
+      late final SosLifecycleSnapshot cancelled;
+      try {
+        for (var push = 1; push <= 4; push++) {
+          await frame(first.harness, active: false, packetId: push);
+        }
+        await settle(50);
+        expect((await first.harness.sdk.getSosLifecycle()).isOpen, isTrue);
+        await first.harness.deviceSosController.detach();
+        await first.harness.sdk.cancelSosAuthoritatively();
+        await settle(50);
+        cancelled = await first.harness.sdk.getSosLifecycle();
+        expect(cancelled.stage, SosLifecycleStage.cancelled);
+        expect(first.realtime.publishedSos, isEmpty);
+      } finally {
+        await first.dispose();
+      }
+      await settle(countdown.inMilliseconds + 300);
+      final restarted = await mqttPhone(
+        written,
+        localStore: localStore,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+        restore: true,
+      );
+      final restored = await restarted.harness.sdk.getSosLifecycle();
+      expect(restored.stage, SosLifecycleStage.cancelled);
+      expect(restored.generation, cancelled.generation);
+      return (restarted, cancelled);
+    }
+
+    /// ACCEPTED known duplicate: after the restart the ACTIVE retries of the
+    /// cancelled cycle open a new SOS. It must be a normal, visible SOS.
+    Future<void> acceptedDuplicateOpens(
+      _MqttSosPhone phone,
+      SosLifecycleSnapshot cancelled,
+      List<int> written,
+    ) async {
+      written.clear();
+      await activeRetries(phone.harness, firstPacketId: 6);
+      await settle(countdown.inMilliseconds + 500);
+      await backendProcessed(phone);
+      await expectShownActive(phone, cancelled.generation + 1, written);
+    }
+
+    test('app restart before the TAG is back (accepted duplicate): the new '
+        'SOS is shown active and the app cancel reaches the backend', () async {
+      final written = <int>[];
+      final (phone, cancelled) = await restartAfterCancelOutOfRange(written);
+      try {
+        await acceptedDuplicateOpens(phone, cancelled, written);
+        await expectAppCancelReachesBackend(phone);
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('app restart before the TAG is back (accepted duplicate): a portal '
+        'resolve over MQTT closes the new SOS', () async {
+      final written = <int>[];
+      final (phone, cancelled) = await restartAfterCancelOutOfRange(written);
+      try {
+        await acceptedDuplicateOpens(phone, cancelled, written);
+        await expectPortalResolveCloses(phone);
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('app restart, then a genuine new press (countdown burst) is '
+        'admitted', () async {
+      final written = <int>[];
+      final (phone, cancelled) = await restartAfterCancelOutOfRange(written);
+      try {
+        for (var push = 0; push < 4; push++) {
+          await frame(phone.harness, active: false, packetId: 11 + push);
+          await frame(
+            phone.harness,
+            active: false,
+            packetId: 11 + push,
+            characteristic: 'tel',
+          );
+        }
+        await settle(50);
+        final next = await phone.harness.sdk.getSosLifecycle();
+        expect(next.generation, cancelled.generation + 1, reason: 'admitted');
+        expect(next.isOpen, isTrue);
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('a genuine new press after the TAG close frame is still '
+        'admitted', () async {
+      final adapter = iosNative();
+      final written = <int>[];
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: countdown,
+        protectionPlatformAdapter: adapter,
+      );
+      try {
+        final cancelled = await preSosThenCancelOutOfRange(harness, written);
+        await settle(countdown.inMilliseconds + 300);
+        await connect(harness, written);
+        await activeRetries(harness, firstPacketId: 6, count: 1);
+        // The user stops the TAG on the TAG itself: E1 (device cancel).
+        final close = EixamSosEventPacket.tryParse(const <int>[
+          0xE1, 0x00, 0x34, 0x12, 0x00, 0x00, //
+        ])!;
+        harness.deviceSosController.ownTagSosFrameGate.submitEventFrame(
+          OwnTagSosFrameReport(
+            bytes: close.rawBytes,
+            characteristic: 'sos',
+            receivedAt: DateTime.now().toUtc(),
+            isClose: true,
+          ),
+          () => harness.deviceSosController.handleIncomingSosEventPacket(
+            close,
+            source: DeviceSosTransitionSource.device,
+            resolutionContext:
+                DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                  PhysicalSosReceiveEvidence(
+                    classification: BleIncomingPayloadKind.ownDeviceSos,
+                    receiveSequence: ++sequence,
+                    receiveSequenceDomain: 'flutter_gatt:cdc',
+                    processSessionId: 'matrix-test-process',
+                    producer: 'flutter_gatt',
+                    characteristic:
+                        EixamBleProtocol.sosNotifyCharacteristicUuid,
+                    correlationId: 'cdc-$sequence',
+                    exactPhysicalIdentityMatch: true,
+                    packetType: 'sos_event',
+                    hasStartSemantics: false,
+                    hasTerminalSemantics: true,
+                    packetFingerprint: 'cdc-$sequence',
+                    cycleIdentity: 'sos:4660:close',
+                    receivedAt: DateTime.now().toUtc(),
+                  ),
+                  incomingPacketType: 'sos_event',
+                  incomingClassification: 'ownDeviceSos',
+                  incomingReceiveSequence: sequence,
+                ),
+          ),
+        );
+        await harness.deviceSosController.ownTagSosFrameGate.idle;
+        await settle(1200);
+        // A real new press: the countdown burst, 500 ms cadence.
+        for (var push = 0; push < 4; push++) {
+          await frame(harness, active: false, packetId: 11 + push);
+          await frame(
+            harness,
+            active: false,
+            packetId: 11 + push,
+            characteristic: 'tel',
+          );
+        }
+        await settle(50);
+        final next = await harness.sdk.getSosLifecycle();
+        expect(next.generation, cancelled.generation + 1, reason: 'admitted');
+        expect(next.isOpen, isTrue);
+      } finally {
+        await harness.dispose();
+      }
+    });
+  });
+}
+
+final class _MqttSosPhone {
+  _MqttSosPhone(this.harness, this.realtime, this.repository);
+
+  final _SdkSosHarness harness;
+  final _OnDemandOperationalRealtimeClient realtime;
+  final MqttOperationalSosRepository repository;
+
+  Future<void> dispose() async {
+    await harness.dispose(disposeSosRepository: false);
+    await repository.dispose();
   }
 }

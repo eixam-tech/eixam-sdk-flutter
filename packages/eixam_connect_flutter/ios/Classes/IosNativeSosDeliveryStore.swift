@@ -223,6 +223,11 @@ final class IosNativeSosDeliveryStore {
   /// frames (Dart owned the TAG link, native never saw it): the terminal of an
   /// SOS that ran past its countdown arms the guard too (Android foreground
   /// `NATIVE_SOS_STALE_GUARD_NOT_ARMED lifecycle=idle`).
+  /// F17c-cdc: the SDK cancel of this TAG's running countdown ends it: it is
+  /// never promoted into a native create at its deadline (the SDK already
+  /// drops the create of a cycle cancelled after its start, M5). It arms
+  /// nothing: without a firmware episode id, frames after a reconnect are
+  /// ambiguous and a missed SOS is worse than a duplicate.
   func closeDeliveredCycle(nodeId: Int? = nil, terminal: IosSosTerminalKind? = nil) -> Bool {
     let keptCountdown = cycleState == .preConfirmSeen &&
       defaults.bool(forKey: Keys.cycleKeptAfterStop) &&
@@ -230,12 +235,16 @@ final class IosNativeSosDeliveryStore {
     let handedOver = cycleState == .createPending && pendingCreateRecord == nil
     let dartSeen = terminal != nil && cycleState == .idle && pendingCreateRecord == nil &&
       dartCycleHandedOver
-    guard keptCountdown || handedOver || dartSeen else {
+    let cancelledCountdown = !keptCountdown && terminal == .cancel &&
+      cycleState == .preConfirmSeen && pendingCreateRecord == nil &&
+      (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId) &&
+      (defaults.object(forKey: Keys.cycleStartedAt) as? Int).map { now() >= $0 } == true
+    guard keptCountdown || handedOver || dartSeen || cancelledCountdown else {
       return false
     }
     let guardNode = cycleNodeId ?? dartCycleNodeId ?? nodeId
     let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
-    if keptCountdown || handedOver {
+    if keptCountdown || handedOver || cancelledCountdown {
       closeCycle()
     }
     if handedOver || dartSeen, let terminal {

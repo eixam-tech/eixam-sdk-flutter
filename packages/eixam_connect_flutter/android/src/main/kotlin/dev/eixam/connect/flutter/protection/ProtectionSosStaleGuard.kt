@@ -163,6 +163,26 @@ internal object ProtectionSosStaleGuard {
             now - observed.firstSeenAt >= observedHandedOverMs &&
             now - observed.lastSeenAt in 0..capMs
 
+    /**
+     * F17c-cdc: the SDK cancel of this TAG's running native countdown ends it:
+     * it is never promoted into a native create at its deadline (the SDK
+     * already drops the create of a cycle cancelled after its start, M5). It
+     * arms nothing: without a firmware episode id, frames after a reconnect
+     * are ambiguous and a missed SOS is worse than a duplicate.
+     */
+    fun cancelsRunningCountdown(
+        terminal: ProtectionSosStaleTerminal?,
+        lifecycleState: ProtectionSosLifecycleState,
+        hasUnclaimedNativeCreate: Boolean,
+        countdownStartedAt: Long?,
+        now: Long,
+    ): Boolean =
+        terminal == ProtectionSosStaleTerminal.cancel &&
+            !hasUnclaimedNativeCreate &&
+            lifecycleState == ProtectionSosLifecycleState.preConfirmSeen &&
+            countdownStartedAt != null &&
+            now >= countdownStartedAt
+
     /** F17c: an admitted Dart-forwarded push of the TAG's SOS; a long silence starts a new episode. */
     fun onObservedFrame(
         previous: ProtectionSosObservedCycle?,
