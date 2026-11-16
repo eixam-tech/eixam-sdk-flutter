@@ -3871,6 +3871,20 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   int ackPendingNativeSosCancelCalls = 0;
 
   @override
+  bool get classifiesOwnTagSosFrames => false;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async => OwnTagSosFrameVerdict.proceed;
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) async {}
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) async {}
+
+  @override
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
@@ -4056,7 +4070,9 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   Future<void> Function(DateTime timestamp)? publishSosCancelHook;
 
   @override
-  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+  Future<void> publishOperationalSosCancel({
+    required DateTime timestamp,
+  }) async {
     publishedSosCancels.add(timestamp);
     await publishSosCancelHook?.call(timestamp);
   }

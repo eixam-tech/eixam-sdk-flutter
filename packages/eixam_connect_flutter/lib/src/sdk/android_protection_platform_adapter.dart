@@ -84,7 +84,8 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
             'protectionSosStaleStoppedTitle':
                 texts.protectionSosStaleStoppedTitle,
-            'protectionSosStaleStoppedBody': texts.protectionSosStaleStoppedBody,
+            'protectionSosStaleStoppedBody':
+                texts.protectionSosStaleStoppedBody,
             'nearbyMessageChannelName': texts.nearbyMessageChannelName,
             'nearbyMessageChannelDescription':
                 texts.nearbyMessageChannelDescription,
@@ -214,6 +215,41 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<void> setSosDeliveryPending(bool pending) async {}
+
+  @override
+  bool get classifiesOwnTagSosFrames => true;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async {
+    final raw = await _methodChannel.invokeMapMethod<Object?, Object?>(
+      'observeOwnTagSosFrame',
+      <String, dynamic>{
+        'bytes': frame.bytes,
+        'characteristic': frame.characteristic,
+        'receivedAtMs': frame.receivedAt.millisecondsSinceEpoch,
+        'source': 'dart',
+      },
+    );
+    return OwnTagSosFrameVerdict.fromWire(raw?['verdict']);
+  }
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) {
+    return _methodChannel.invokeMethod<void>(
+      'disarmSosStaleGuard',
+      <String, dynamic>{'reason': reason},
+    );
+  }
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) {
+    return _methodChannel.invokeMethod<void>(
+      'noteOwnTagSosLink',
+      <String, dynamic>{'up': up},
+    );
+  }
 
   @override
   Future<void> closeNativeSosCycle({

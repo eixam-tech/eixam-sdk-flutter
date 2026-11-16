@@ -468,6 +468,9 @@ class EixamConnectSdkImpl
     deviceSosController.setPhysicalSosStartAdmissionPolicy(
       _evaluatePhysicalSosStartAdmission,
     );
+    if (_nativeOwnTagSosClassifierAvailable) {
+      deviceSosController.setOwnTagSosFrameClassifier(_classifyOwnTagSosFrame);
+    }
     if (sosLocationOwnershipEffectMode ==
         SosLocationOwnershipEffectMode.enabled) {
       _sosLocationOwnershipStatusSub = this.backgroundLocationPlatformAdapter
@@ -532,6 +535,7 @@ class EixamConnectSdkImpl
           .listen(_handleRejectedTerminalReconciliationRequest);
     }
     _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
+      _disarmNativeStaleGuardOnNewSdkSos(lifecycle);
       _closeNativeSosCycleOnLifecycleTerminal(lifecycle);
       final silenceTarget = _physicalSosSilenceTarget;
       if (silenceTarget != null &&
@@ -1459,6 +1463,9 @@ class EixamConnectSdkImpl
             _activityRecordings.reconcileHistoryReadiness();
             final previous = _lastDeviceControlCommandPathAvailable;
             _lastDeviceControlCommandPathAvailable = available;
+            if (available != previous) {
+              _noteOwnTagSosLinkToNative(available);
+            }
             BleDebugRegistry.instance.recordEvent(
               'Device control command path availability changed -> available=$available previous=$previous connected=${_lastDeviceStatus?.connected} deviceId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} nodeId=${_lastDeviceStatus?.nodeId?.toString() ?? "-"} hardwareId=${_lastDeviceStatus?.deviceId ?? "-"}',
             );
@@ -3097,6 +3104,16 @@ class EixamConnectSdkImpl
   /// A native SOS / TAG cancel stored for the previous account must never be
   /// delivered under the next one (native records carry no account scope).
   Future<void> _dropNativeSosRecordsForSessionChange() async {
+    // The previous account's TAG cycle and stale guard must not block or stop
+    // the next one's SOS, and its running countdown must never be promoted
+    // under the next one. First, before any other await (F17c M2).
+    try {
+      await protectionPlatformAdapter.closeNativeSosCycle(force: true);
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
+      );
+    }
     try {
       final pending = await protectionPlatformAdapter
           .peekPendingNativeSosCreate();
@@ -3115,9 +3132,6 @@ class EixamConnectSdkImpl
           'SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed',
         );
       }
-      // The previous account's TAG cycle must not block the next one's SOS,
-      // and its running countdown must never be promoted under the next one.
-      await protectionPlatformAdapter.closeNativeSosCycle(force: true);
     } catch (error) {
       sdkReleaseLog(
         'SOS_OUTBOX_NATIVE_RECORDS_DROP_FAILED errorType=${error.runtimeType}',
@@ -19097,6 +19111,124 @@ class EixamConnectSdkImpl
     );
   }
 
+  // MARK: F17c single stale-SOS decision point (native classifies, Dart acts).
+
+  /// Bound on the native classification of one Dart-received TAG frame. Only
+  /// a guarded frame waits for native at all: with no stale guard armed native
+  /// answers `proceed` at once (one channel round trip, a few ms).
+  static const Duration _ownTagSosClassifierTimeout = Duration(
+    milliseconds: 200,
+  );
+
+  int? _staleGuardDisarmedGeneration;
+
+  bool get _nativeOwnTagSosClassifierAvailable {
+    try {
+      return protectionPlatformAdapter.classifiesOwnTagSosFrames;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// One own-TAG frame received by Dart's BLE goes to the native single
+  /// classifier. Fail open (M6): on timeout or channel error the frame is
+  /// handled exactly as before F17c, so a genuine SOS is never lost.
+  Future<OwnTagSosFrameVerdict> _classifyOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async {
+    try {
+      final verdict = await protectionPlatformAdapter
+          .observeOwnTagSosFrame(frame)
+          .timeout(_ownTagSosClassifierTimeout);
+      if (verdict == OwnTagSosFrameVerdict.newSos) {
+        sdkReleaseLog('SOS_OUTBOX_STALE_GUARD_NEW_SOS_ADMITTED source=dart');
+      }
+      return verdict;
+    } on TimeoutException {
+      sdkReleaseLog(
+        'SOS_OUTBOX_STALE_CLASSIFIER_UNAVAILABLE reason=timeout '
+        'close=${frame.isClose}',
+      );
+      return OwnTagSosFrameVerdict.proceed;
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_STALE_CLASSIFIER_UNAVAILABLE reason=error '
+        'errorType=${error.runtimeType} close=${frame.isClose}',
+      );
+      return OwnTagSosFrameVerdict.proceed;
+    }
+  }
+
+  /// M3: a new SDK SOS ends any native stale guard, so no pending decision can
+  /// stop it (Dart keeps no guard state: it only tells native).
+  void _disarmNativeStaleGuardOnNewSdkSos(SosLifecycleSnapshot lifecycle) {
+    if (_disposed ||
+        !lifecycle.isOpen ||
+        _staleGuardDisarmedGeneration == lifecycle.generation ||
+        !_nativeOwnTagSosClassifierAvailable) {
+      return;
+    }
+    _staleGuardDisarmedGeneration = lifecycle.generation;
+    unawaited(
+      protectionPlatformAdapter
+          .disarmSosStaleGuard(reason: 'sdk_sos_opened')
+          .catchError(
+            (Object error) => sdkReleaseLog(
+              'SOS_OUTBOX_STALE_GUARD_DISARM_FAILED '
+              'errorType=${error.runtimeType}',
+            ),
+          ),
+    );
+  }
+
+  void _noteOwnTagSosLinkToNative(bool up) {
+    if (_disposed || !_nativeOwnTagSosClassifierAvailable) {
+      return;
+    }
+    unawaited(
+      protectionPlatformAdapter
+          .noteOwnTagSosLink(up: up)
+          .catchError(
+            (Object error) => BleDebugRegistry.instance.recordEvent(
+              'SOS_STALE_DECISION link_note_failed '
+              'errorType=${error.runtimeType}',
+            ),
+          ),
+    );
+  }
+
+  /// Native classified a TAG frame as the SOS the SDK closed and holds no
+  /// writable TAG link: Dart, the link owner, writes the SDK's own terminal
+  /// command. Never once a new SOS is open (M3).
+  Future<void> _writeStaleSosStopRequiredByNative(String? terminal) async {
+    final resolve = terminal?.trim() == 'resolve';
+    final wire = resolve ? 'resolve' : 'cancel';
+    if (_disposed) {
+      return;
+    }
+    if (_sosLifecycle.current.isOpen) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_STALE_STOP_SKIPPED terminal=$wire reason=sdk_sos_open',
+      );
+      return;
+    }
+    final command = resolve
+        ? EixamDeviceCommand.sosAck()
+        : EixamDeviceCommand.sosCancel(forceCmdCharacteristic: true);
+    try {
+      await _sendDeviceControlCommandThroughActiveOwner(
+        action: 'stale_sos_stop',
+        command: command,
+      );
+      sdkReleaseLog('SOS_OUTBOX_STALE_STOP_WRITTEN terminal=$wire');
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_STALE_STOP_FAILED terminal=$wire '
+        'errorType=${error.runtimeType}',
+      );
+    }
+  }
+
   /// Sign-out / account change clears everything, an open SOS included.
   bool _isSessionClearSosSource(String source) => source == 'clear_session';
 
@@ -25213,6 +25345,10 @@ class EixamConnectSdkImpl
   }
 
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
+    if (event.type == ProtectionPlatformEventType.ownTagSosStopRequired) {
+      unawaited(_writeStaleSosStopRequiredByNative(event.reason));
+      return;
+    }
     final runtimeGeneration = event.sessionGeneration;
     if (runtimeGeneration != null) {
       final previousRuntimeGeneration = _lastDiagnosticRuntimeGeneration;
@@ -26012,6 +26148,7 @@ class EixamConnectSdkImpl
       case ProtectionPlatformEventType.restorationRehydrated:
       case ProtectionPlatformEventType.bluetoothTurnedOff:
       case ProtectionPlatformEventType.bluetoothTurnedOn:
+      case ProtectionPlatformEventType.ownTagSosStopRequired:
         return false;
     }
   }

@@ -1100,6 +1100,9 @@ class ProtectionModeController {
         _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.ownTagSosStopRequired:
+        // F17c: handled by the SDK (Dart writes the TAG stop).
+        break;
     }
 
     final shouldRehydrate =

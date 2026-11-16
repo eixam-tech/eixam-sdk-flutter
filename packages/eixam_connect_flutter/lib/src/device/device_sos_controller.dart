@@ -7,6 +7,7 @@ import 'ble_incoming_event.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_packet.dart';
+import 'own_tag_sos_frame_gate.dart';
 
 typedef DeviceCommandWriter = Future<void> Function(EixamDeviceCommand command);
 typedef DeviceTerminalOperationGuard = bool Function();
@@ -252,6 +253,14 @@ class DeviceSosController {
   Future<DeviceSosStatus> getStatus() async => _status;
 
   Stream<DeviceSosStatus> watchStatus() => _controller.stream;
+
+  /// F17c: own-TAG SOS frames received by Dart's own BLE link go through the
+  /// native single classifier before they may start anything.
+  final OwnTagSosFrameGate ownTagSosFrameGate = OwnTagSosFrameGate();
+
+  void setOwnTagSosFrameClassifier(OwnTagSosFrameClassifier? classifier) {
+    ownTagSosFrameGate.setClassifier(classifier);
+  }
 
   void setPhysicalSosStartAdmissionPolicy(
     PhysicalSosStartAdmissionPolicy? policy,

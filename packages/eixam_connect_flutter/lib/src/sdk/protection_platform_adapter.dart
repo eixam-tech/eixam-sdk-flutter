@@ -2,6 +2,11 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../device/own_tag_sos_frame_gate.dart';
+
+export '../device/own_tag_sos_frame_gate.dart'
+    show OwnTagSosFrameReport, OwnTagSosFrameVerdict;
+
 enum ProtectionPlatformEventType {
   serviceStarted,
   serviceStopped,
@@ -37,6 +42,11 @@ enum ProtectionPlatformEventType {
   nativeBackendSyncFailed,
   bluetoothTurnedOff,
   bluetoothTurnedOn,
+
+  /// F17c: the native classifier found the TAG still running an SOS the SDK
+  /// closed, and native holds no writable link: Dart writes the SDK's terminal
+  /// command (`reason`: `cancel` -> 0x04, `resolve` -> 0x07).
+  ownTagSosStopRequired,
 }
 
 class ProtectionPlatformStartRequest {
@@ -446,6 +456,25 @@ abstract class ProtectionPlatformAdapter {
     bool force = false,
     String? terminal,
   });
+
+  /// F17c: whether this platform's native store classifies own-TAG SOS frames
+  /// (iOS and Android plugins). False: Dart handles frames as before.
+  bool get classifiesOwnTagSosFrames;
+
+  /// F17c: one own-TAG SOS frame that Dart received through its own BLE link.
+  /// The native store is the single "stale vs new" classifier for every BLE
+  /// path and answers with its verdict. Works with or without Protection armed.
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  );
+
+  /// F17c (M3): the SDK opened a new SOS; native drops any stale guard so no
+  /// pending decision can stop it.
+  Future<void> disarmSosStaleGuard({required String reason});
+
+  /// F17c: Dart's own TAG link changed (native sees no link events while Dart
+  /// owns the link); the guard's gap clock follows it.
+  Future<void> noteOwnTagSosLink({required bool up});
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -549,6 +578,20 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     return true;
   }
+
+  @override
+  bool get classifiesOwnTagSosFrames => false;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async => OwnTagSosFrameVerdict.proceed;
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) async {}
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) async {}
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

@@ -375,6 +375,8 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.bluetoothTurnedOff;
     case 'bluetoothTurnedOn':
       return ProtectionPlatformEventType.bluetoothTurnedOn;
+    case 'ownTagSosStopRequired':
+      return ProtectionPlatformEventType.ownTagSosStopRequired;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
     // Native SOS hand-off (pending create / TAG cancel stored natively).
@@ -466,6 +468,8 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.bluetoothTurnedOff;
     case 'bluetoothTurnedOn':
       return ProtectionPlatformEventType.bluetoothTurnedOn;
+    case 'ownTagSosStopRequired':
+      return ProtectionPlatformEventType.ownTagSosStopRequired;
     case 'woke':
     default:
       return ProtectionPlatformEventType.woke;

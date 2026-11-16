@@ -16537,6 +16537,560 @@ void main() {
       }
     });
   });
+
+  group('F17c single stale-SOS decision point (native classifies, Dart acts)', () {
+    var sequence = 5000;
+    late List<String> messages;
+    StreamSubscription<BleDebugState>? debug;
+
+    setUp(() {
+      messages = <String>[];
+      debug = BleDebugRegistry.instance.watch().listen((state) {
+        if (state.events.isNotEmpty) {
+          messages.add(state.events.last.message);
+        }
+      });
+    });
+
+    tearDown(() async {
+      await debug?.cancel();
+    });
+
+    _F17cNativeAdapter nativeAdapter({
+      ProtectionPlatform platform = ProtectionPlatform.ios,
+      bool runtimeActive = false,
+    }) => _F17cNativeAdapter(
+      ProtectionPlatformSnapshot(
+        platform: platform,
+        backgroundCapabilityReady: true,
+        runtimeActive: runtimeActive,
+      ),
+    );
+
+    /// One own-TAG SOS push received by Dart's own BLE link (flutter_blue_plus),
+    /// routed exactly like BleDeviceRuntimeProvider: native classifies first.
+    Future<void> fbpFrame(
+      _SdkSosHarness harness, {
+      bool active = true,
+      int packetId = 0,
+      String characteristic = 'sos',
+    }) async {
+      final seq = ++sequence;
+      final bytes = <int>[
+        0x34,
+        0x12,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        packetId & 0x0F,
+        active ? 0x80 : 0x50,
+      ];
+      final packet = EixamSosPacket.tryParse(bytes)!;
+      harness.deviceSosController.ownTagSosFrameGate.submitStartFrame(
+        OwnTagSosFrameReport(
+          bytes: bytes,
+          characteristic: characteristic,
+          receivedAt: DateTime.now().toUtc(),
+        ),
+        () => harness.deviceSosController.handleIncomingSosPacket(
+          packet,
+          source: DeviceSosTransitionSource.device,
+          resolutionContext:
+              DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                PhysicalSosReceiveEvidence(
+                  classification: BleIncomingPayloadKind.ownDeviceSos,
+                  receiveSequence: seq,
+                  receiveSequenceDomain: 'flutter_gatt:f17c',
+                  processSessionId: 'matrix-test-process',
+                  producer: 'flutter_gatt',
+                  characteristic: characteristic == 'tel'
+                      ? EixamBleProtocol.telNotifyCharacteristicUuid
+                      : EixamBleProtocol.sosNotifyCharacteristicUuid,
+                  correlationId: 'f17c-$seq',
+                  exactPhysicalIdentityMatch: true,
+                  packetType: 'sos',
+                  hasStartSemantics: true,
+                  hasTerminalSemantics: false,
+                  packetFingerprint: 'f17c-$seq',
+                  cycleIdentity: 'sos:4660:$packetId',
+                  receivedAt: DateTime.now().toUtc(),
+                ),
+                incomingPacketType: 'sos',
+                incomingClassification: 'ownDeviceSos',
+                incomingReceiveSequence: seq,
+              ),
+        ),
+      );
+      await harness.deviceSosController.ownTagSosFrameGate.idle;
+      await pumpEventQueue(times: 5);
+    }
+
+    Future<void> settle([int ms = 0]) async {
+      if (ms > 0) {
+        await Future<void>.delayed(Duration(milliseconds: ms));
+      }
+      await pumpEventQueue(times: 20);
+    }
+
+    /// TAG SOS through FBP (countdown, then the SDK trigger), then the phone
+    /// loses the TAG link and the user cancels in the app: the TAG never gets
+    /// the stop and keeps running the SOS.
+    Future<_SdkSosHarness> tagSosThenCancelWhileDisconnected(
+      _F17cNativeAdapter adapter,
+      List<int> written, {
+      bool resolveFromPortal = false,
+    }) async {
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: const Duration(milliseconds: 200),
+        protectionPlatformAdapter: adapter,
+      );
+      await harness.deviceSosController.attach(
+        commandWriter: (command) async => written.add(command.opcode),
+        transportId: 'ble-1',
+      );
+      await harness.sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await harness.setSession();
+      await harness.sdk.triggerSosAuthoritatively(
+        const SosTriggerPayload(triggerSource: 'commercial_app'),
+      );
+      await fbpFrame(harness, active: true, packetId: 1);
+      await settle(50);
+      expect(harness.sosRepository.triggerCallCount, 1, reason: 'SOS sent');
+      await harness.deviceSosController.detach();
+      if (resolveFromPortal) {
+        harness.sosRepository.currentIncident = harness
+            .sosRepository
+            .currentIncident
+            .copyWith(state: SosState.resolved, isBackendConfirmed: true);
+        harness.sosRepository.stateController.add(SosState.resolved);
+      } else {
+        await harness.sdk.cancelSosAuthoritatively();
+      }
+      await settle(50);
+      return harness;
+    }
+
+    Future<void> reconnect(_SdkSosHarness harness, List<int> written) async {
+      await harness.deviceSosController.attach(
+        commandWriter: (command) async => written.add(command.opcode),
+        transportId: 'ble-1',
+      );
+      await settle(50);
+    }
+
+    /// The TAG's retry of the SOS the SDK closed, through FBP: the SOS and
+    /// TEL characteristic copies, ms apart.
+    Future<void> staleRetry(_SdkSosHarness harness) async {
+      await fbpFrame(harness, active: true, packetId: 5);
+      await fbpFrame(harness, active: true, packetId: 5, characteristic: 'tel');
+      await settle(600);
+    }
+
+    test('iOS field 9181a9fe: cancel while the TAG link is down; after the '
+        'reconnect the stale frame through FBP opens no Dart SOS', () async {
+      final adapter = nativeAdapter();
+      // Native (single classifier) armed its guard on the SDK cancel.
+      adapter.verdictFor = (_) => adapter.cancelledByTheSdk
+          ? OwnTagSosFrameVerdict.suppress
+          : OwnTagSosFrameVerdict.proceed;
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        final cancelled = await harness.sdk.getSosLifecycle();
+        expect(cancelled.stage, SosLifecycleStage.cancelled);
+        expect(adapter.closeNativeSosCycleArgs.last.terminal, 'cancel');
+        await reconnect(harness, written);
+        final forwardedBefore = adapter.frames.length;
+        await staleRetry(harness);
+        expect(
+          adapter.frames.length - forwardedBefore,
+          2,
+          reason: 'every own-TAG frame Dart receives goes to native',
+        );
+        expect(
+          adapter.frames.skip(forwardedBefore).map((f) => f.characteristic),
+          <String>['sos', 'tel'],
+        );
+        final after = await harness.sdk.getSosLifecycle();
+        expect(
+          after.generation,
+          cancelled.generation,
+          reason: 'the stale frame never opens a second SOS (duplicate)',
+        );
+        expect(after.stage, SosLifecycleStage.cancelled);
+        expect(harness.sosRepository.triggerCallCount, 1);
+        expect(
+          harness.deviceSosController.currentStatus.state,
+          isNot(anyOf(DeviceSosState.preConfirm, DeviceSosState.active)),
+          reason: 'no Dart countdown from a raw TAG frame',
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    for (final variant in <({String name, bool resolve, int opcode})>[
+      (name: 'app cancel', resolve: false, opcode: 0x04),
+      (name: 'portal resolve', resolve: true, opcode: 0x07),
+    ]) {
+      test('Android foreground (${variant.name}): the stale frame through '
+          'Dart is held, native asks for the stop and Dart writes '
+          '0x${variant.opcode.toRadixString(16).padLeft(2, '0')}', () async {
+        final adapter = nativeAdapter(platform: ProtectionPlatform.android);
+        adapter.verdictFor = (_) =>
+            adapter.cancelledByTheSdk || adapter.resolvedByTheSdk
+            ? OwnTagSosFrameVerdict.suppress
+            : OwnTagSosFrameVerdict.proceed;
+        final written = <int>[];
+        final harness = await tagSosThenCancelWhileDisconnected(
+          adapter,
+          written,
+          resolveFromPortal: variant.resolve,
+        );
+        try {
+          final closed = await harness.sdk.getSosLifecycle();
+          expect(
+            adapter.closeNativeSosCycleArgs.last.terminal,
+            variant.resolve ? 'resolve' : 'cancel',
+          );
+          await reconnect(harness, written);
+          await staleRetry(harness);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            closed.generation,
+            reason: 'no duplicate',
+          );
+          final writesBefore = written.length;
+          // Native decided `stale` after 2.0 s and holds no writable link.
+          adapter.emit(
+            ProtectionPlatformEvent(
+              type: ProtectionPlatformEventType.ownTagSosStopRequired,
+              timestamp: DateTime.now().toUtc(),
+              reason: variant.resolve ? 'resolve' : 'cancel',
+            ),
+          );
+          await settle(50);
+          expect(written.skip(writesBefore), <int>[
+            variant.opcode,
+          ], reason: 'Dart owns the link: it writes the SDK terminal command');
+          expect(
+            messages,
+            contains(
+              'SOS_OUTBOX_STALE_STOP_WRITTEN '
+              'terminal=${variant.resolve ? 'resolve' : 'cancel'}',
+            ),
+          );
+        } finally {
+          await harness.dispose();
+        }
+      });
+    }
+
+    test('M3: a stop required while a new SDK SOS is open is never written, '
+        'and a new SDK SOS disarms the native guard', () async {
+      final adapter = nativeAdapter(platform: ProtectionPlatform.android);
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        await reconnect(harness, written);
+        final disarmsBefore = adapter.disarmReasons.length;
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        await settle(50);
+        expect((await harness.sdk.getSosLifecycle()).isOpen, isTrue);
+        expect(
+          adapter.disarmReasons.skip(disarmsBefore),
+          contains('sdk_sos_opened'),
+          reason: 'native drops its guard: no pending decision stops it',
+        );
+        final writesBefore = written.length;
+        adapter.emit(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.ownTagSosStopRequired,
+            timestamp: DateTime.now().toUtc(),
+            reason: 'cancel',
+          ),
+        );
+        await settle(50);
+        expect(written.skip(writesBefore), isNot(contains(0x04)));
+        expect(
+          messages,
+          contains(
+            'SOS_OUTBOX_STALE_STOP_SKIPPED terminal=cancel reason=sdk_sos_open',
+          ),
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('a genuine press after the TAG close frame is admitted once', () async {
+      final adapter = nativeAdapter(platform: ProtectionPlatform.android);
+      var tagClosed = false;
+      adapter.verdictFor = (frame) {
+        if (frame.isClose) {
+          tagClosed = true;
+        }
+        return adapter.cancelledByTheSdk && !tagClosed
+            ? OwnTagSosFrameVerdict.suppress
+            : OwnTagSosFrameVerdict.proceed;
+      };
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        final cancelled = await harness.sdk.getSosLifecycle();
+        await reconnect(harness, written);
+        await staleRetry(harness);
+        // The TAG got the stop and confirms it (E2), as the provider routes it.
+        harness.deviceSosController.ownTagSosFrameGate.forwardCloseFrame(
+          OwnTagSosFrameReport(
+            bytes: const <int>[0xE2, 0x01, 0x34, 0x12, 0x00, 0x00],
+            characteristic: 'sos',
+            receivedAt: DateTime.now().toUtc(),
+            isClose: true,
+          ),
+        );
+        await harness.deviceSosController.ownTagSosFrameGate.idle;
+        expect(tagClosed, isTrue, reason: 'the close frame reached native');
+        await settle(1200);
+        // A real new press: the TAG countdown pushes 4 times, twice each.
+        for (var push = 0; push < 4; push++) {
+          await fbpFrame(harness, active: false, packetId: 9);
+          await fbpFrame(
+            harness,
+            active: false,
+            packetId: 9,
+            characteristic: 'tel',
+          );
+        }
+        await settle(50);
+        final next = await harness.sdk.getSosLifecycle();
+        expect(next.generation, cancelled.generation + 1, reason: 'admitted');
+        expect(next.isOpen, isTrue);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('a countdown burst through both paths gives exactly one SOS, and a '
+        'native newSos is never hidden from Dart (H1)', () async {
+      final adapter = nativeAdapter();
+      final script = <OwnTagSosFrameVerdict>[
+        // push 1: the native copy counted first, the Dart copy collapsed
+        OwnTagSosFrameVerdict.suppress,
+        // push 2: the Dart copy first: pending
+        OwnTagSosFrameVerdict.suppress,
+        // push 3: the burst completes through the Dart copy
+        OwnTagSosFrameVerdict.newSos,
+      ];
+      adapter.verdictFor = (_) => !adapter.cancelledByTheSdk || script.isEmpty
+          ? OwnTagSosFrameVerdict.proceed
+          : script.removeAt(0);
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        final cancelled = await harness.sdk.getSosLifecycle();
+        await reconnect(harness, written);
+        await fbpFrame(harness, active: false, packetId: 3);
+        await fbpFrame(harness, active: false, packetId: 3);
+        expect(
+          (await harness.sdk.getSosLifecycle()).generation,
+          cancelled.generation,
+          reason: 'pushes still being classified start nothing',
+        );
+        await fbpFrame(harness, active: false, packetId: 3);
+        await settle(20);
+        final opened = await harness.sdk.getSosLifecycle();
+        expect(
+          opened.generation,
+          cancelled.generation + 1,
+          reason: 'native newSos reaches Dart at once',
+        );
+        expect(opened.isOpen, isTrue);
+        await fbpFrame(
+          harness,
+          active: false,
+          packetId: 3,
+          characteristic: 'tel',
+        );
+        await fbpFrame(harness, active: false, packetId: 3);
+        await settle(50);
+        expect(
+          (await harness.sdk.getSosLifecycle()).generation,
+          opened.generation,
+          reason: 'exactly one SOS',
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'C1: Protection off, native guard ended -> a genuine TAG SOS is '
+      'admitted at its first push; no Dart copy of an armed state blocks it',
+      () async {
+        final adapter = nativeAdapter(platform: ProtectionPlatform.android);
+        var nativeGuardArmed = true;
+        adapter.verdictFor = (_) =>
+            adapter.cancelledByTheSdk && nativeGuardArmed
+            ? OwnTagSosFrameVerdict.suppress
+            : OwnTagSosFrameVerdict.proceed;
+        final written = <int>[];
+        final harness = await tagSosThenCancelWhileDisconnected(
+          adapter,
+          written,
+        );
+        try {
+          final cancelled = await harness.sdk.getSosLifecycle();
+          await reconnect(harness, written);
+          await staleRetry(harness);
+          expect(
+            (await harness.sdk.getSosLifecycle()).generation,
+            cancelled.generation,
+          );
+          // Native ended its guard (cap / gap / TAG close); Dart is not told.
+          nativeGuardArmed = false;
+          await settle(1200);
+          final forwardedBefore = adapter.frames.length;
+          await fbpFrame(harness, active: false, packetId: 11);
+          final opened = await harness.sdk.getSosLifecycle();
+          expect(adapter.frames.length - forwardedBefore, 1);
+          expect(
+            opened.generation,
+            cancelled.generation + 1,
+            reason: 'admitted at the first push, without a decision window',
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('H2: native runtime armed but the cycle never handed over -> the '
+        'duplicate path is still closed: Dart frames are classified by '
+        'native too', () async {
+      final adapter = nativeAdapter(runtimeActive: true);
+      adapter.verdictFor = (_) => adapter.cancelledByTheSdk
+          ? OwnTagSosFrameVerdict.suppress
+          : OwnTagSosFrameVerdict.proceed;
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        final cancelled = await harness.sdk.getSosLifecycle();
+        await reconnect(harness, written);
+        final forwardedBefore = adapter.frames.length;
+        await staleRetry(harness);
+        expect(adapter.frames.length - forwardedBefore, 2);
+        expect(
+          (await harness.sdk.getSosLifecycle()).generation,
+          cancelled.generation,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test('M6: a failing classifier channel fails open (frame handled as '
+        'before) and is release-logged', () async {
+      final adapter = nativeAdapter();
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        final cancelled = await harness.sdk.getSosLifecycle();
+        await reconnect(harness, written);
+        await settle(1200);
+        adapter.classifyError = PlatformException(code: 'E_CHANNEL');
+        await fbpFrame(harness, active: false, packetId: 12);
+        expect(
+          (await harness.sdk.getSosLifecycle()).generation,
+          cancelled.generation + 1,
+          reason: 'a missed SOS is worse than a duplicate',
+        );
+        expect(
+          messages.any(
+            (m) => m.startsWith(
+              'SOS_OUTBOX_STALE_CLASSIFIER_UNAVAILABLE reason=error',
+            ),
+          ),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+
+    test(
+      'M6: a hanging classifier is bounded at 200 ms, then fails open',
+      () async {
+        final adapter = nativeAdapter();
+        final written = <int>[];
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async => written.add(command.opcode),
+            transportId: 'ble-1',
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          adapter.classifyHang = Completer<void>();
+          final watch = Stopwatch()..start();
+          await fbpFrame(harness, active: false, packetId: 2);
+          watch.stop();
+          final lifecycle = await harness.sdk.getSosLifecycle();
+          expect(lifecycle.isOpen, isTrue, reason: 'genuine SOS never lost');
+          expect(watch.elapsedMilliseconds, lessThan(1000));
+          expect(
+            messages.any(
+              (m) => m.startsWith(
+                'SOS_OUTBOX_STALE_CLASSIFIER_UNAVAILABLE reason=timeout',
+              ),
+            ),
+            isTrue,
+          );
+        } finally {
+          adapter.classifyHang?.complete();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test('M2: a session change disarms native first, even when an earlier '
+        'native step throws', () async {
+      final adapter = nativeAdapter()..peekError = StateError('peek failed');
+      final harness = _SdkSosHarness(protectionPlatformAdapter: adapter);
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.clearSession();
+        await settle(20);
+        expect(
+          adapter.closeNativeSosCycleArgs.where((call) => call.force),
+          isNotEmpty,
+          reason: 'the guard never crosses accounts',
+        );
+      } finally {
+        await harness.dispose();
+      }
+    });
+  });
 }
 
 final class _BlockingNextWriteSecureKeyValueStore
@@ -20195,5 +20749,66 @@ final class _RegistryGatedRealtime extends _OnDemandOperationalRealtimeClient {
         ),
       );
     });
+  }
+}
+
+/// F17c: the native single classifier, as seen through the channel contract.
+/// Verdicts are scripted per test (the store itself is covered by the Swift and
+/// Kotlin replays of test/fixtures/stale_sos_guard_scenarios.txt).
+final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
+  _F17cNativeAdapter(super.snapshot);
+
+  bool classifies = true;
+  OwnTagSosFrameVerdict Function(OwnTagSosFrameReport frame) verdictFor = (_) =>
+      OwnTagSosFrameVerdict.proceed;
+  Object? classifyError;
+  Completer<void>? classifyHang;
+  final List<OwnTagSosFrameReport> frames = <OwnTagSosFrameReport>[];
+  final List<String> disarmReasons = <String>[];
+  final List<bool> linkNotes = <bool>[];
+  Object? peekError;
+
+  @override
+  Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate() {
+    final error = peekError;
+    if (error != null) {
+      return Future<ProtectionPendingNativeSosCreate?>.error(error);
+    }
+    return super.peekPendingNativeSosCreate();
+  }
+
+  bool get cancelledByTheSdk =>
+      closeNativeSosCycleArgs.any((call) => call.terminal == 'cancel');
+
+  bool get resolvedByTheSdk =>
+      closeNativeSosCycleArgs.any((call) => call.terminal == 'resolve');
+
+  @override
+  bool get classifiesOwnTagSosFrames => classifies;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async {
+    frames.add(frame);
+    final error = classifyError;
+    if (error != null) {
+      throw error;
+    }
+    final hang = classifyHang;
+    if (hang != null) {
+      await hang.future;
+    }
+    return verdictFor(frame);
+  }
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) async {
+    disarmReasons.add(reason);
+  }
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) async {
+    linkNotes.add(up);
   }
 }
