@@ -311,10 +311,13 @@ internal object ProtectionRuntimeBridge {
             "observeOwnTagSosFrame" -> {
                 // F17c: Dart forwards every own-TAG SOS frame it receives itself; the
                 // native store is the only classifier and answers with a verdict.
-                val bytes = ((call.arguments as? Map<*, *>)?.get("bytes") as? List<*>)
+                val arguments = call.arguments as? Map<*, *>
+                val bytes = (arguments?.get("bytes") as? List<*>)
                     ?.mapNotNull { (it as? Number)?.toInt() }
                     .orEmpty()
-                val verdict = ensureRuntimeOwner(context).observeForwardedOwnTagSosFrame(bytes)
+                val receivedAtMs = (arguments?.get("receivedAtMs") as? Number)?.toLong()
+                val verdict = ensureRuntimeOwner(context)
+                    .observeForwardedOwnTagSosFrame(bytes, receivedAtMs)
                 result.success(mapOf("verdict" to verdict.name))
             }
             "disarmSosStaleGuard" -> {

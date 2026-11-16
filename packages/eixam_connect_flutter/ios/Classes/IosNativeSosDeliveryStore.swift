@@ -68,6 +68,9 @@ final class IosNativeSosDeliveryStore {
   /// F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s
   /// minus the decision window): its SDK terminal arms the guard.
   static let observedHandedOverMs = 18_000
+  /// F17c M-C: a Dart receive time older than this (or in the future) is
+  /// not trusted; the native clock is used instead.
+  static let forwardedFrameMaxAgeMs = 5_000
   static let sosEventTypes: Set<String> = [
     "ownDeviceSosLifecycleObserved",
     "nativeBackendSyncQueued",
@@ -253,17 +256,25 @@ final class IosNativeSosDeliveryStore {
   /// here never opens the native cycle (Dart runs that SOS).
   func observeForwardedSosFrame(
     kind: IosBleSosSnapshotKind,
-    nodeId: Int?
+    nodeId: Int?,
+    receivedAtMs: Int? = nil
   ) -> (verdict: String, transition: IosNativeSosTransition) {
     switch kind {
     case .cancelled, .resolved:
+      if let guardNode = defaults.object(forKey: Keys.staleGuardNodeId) as? Int,
+         let nodeId, guardNode != nodeId {
+        // Another TAG's close never ends this guard.
+        lastStaleAction = "ignored"
+        return ("proceed", IosNativeSosTransition())
+      }
       disarmStaleGuard()
       clearDartCycle()
       lastStaleAction = "close"
       return ("proceed", IosNativeSosTransition())
     case .preSos, .active:
       defaults.set(now(), forKey: Keys.lastSosFrameAt)
-      let transition = observeGuardedFrame(nodeId: nodeId, driveCycle: false)
+      let transition = observeGuardedFrame(
+        nodeId: nodeId, driveCycle: false, at: forwardedFrameAt(receivedAtMs))
       let verdict: String
       switch lastStaleAction {
       case "notArmed", "ignored", "disarmed": verdict = "proceed"
@@ -275,6 +286,25 @@ final class IosNativeSosDeliveryStore {
       }
       return (verdict, transition ?? IosNativeSosTransition())
     }
+  }
+
+  /// M-C: when a Dart-forwarded push happened. Dart's receive time when
+  /// plausible (not in the future, at most 5 s old), so pushes delivered late
+  /// together still count as distinct pushes; else the native clock. Never
+  /// before the last counted push: a late copy of a push already counted
+  /// (other path) stays a copy.
+  private func forwardedFrameAt(_ receivedAtMs: Int?) -> Int {
+    let timestamp = now()
+    var at = timestamp
+    if let receivedAtMs, receivedAtMs <= timestamp,
+       timestamp - receivedAtMs <= Self.forwardedFrameMaxAgeMs {
+      at = receivedAtMs
+    }
+    if let lastPush = defaults.object(forKey: Keys.staleGuardLastPushAt) as? Int,
+       at < lastPush, lastPush <= timestamp {
+      at = lastPush
+    }
+    return at
   }
 
   /// The SDK opened a new SOS lifecycle: no pending decision may stop it (M3).
@@ -401,12 +431,17 @@ final class IosNativeSosDeliveryStore {
 
   /// nil: not guarded, handle the frame normally. Otherwise the guard's
   /// decision for this countdown/active frame.
-  private func observeGuardedFrame(nodeId: Int?, driveCycle: Bool = true) -> IosNativeSosTransition? {
+  /// `at`: when the push happened, if not now (a late Dart-forwarded push, M-C).
+  private func observeGuardedFrame(
+    nodeId: Int?,
+    driveCycle: Bool = true,
+    at: Int? = nil
+  ) -> IosNativeSosTransition? {
     guard staleGuardKind != nil else {
       lastStaleAction = "notArmed"
       return nil
     }
-    let timestamp = now()
+    let timestamp = at ?? now()
     let armedAt = defaults.object(forKey: Keys.staleGuardArmedAt) as? Int ?? timestamp
     let lastFrameAt = defaults.object(forKey: Keys.staleGuardLastFrameAt) as? Int ?? armedAt
     let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
@@ -464,7 +499,9 @@ final class IosNativeSosDeliveryStore {
     var transition = evaluateStaleCandidate()
     defaults.set(timestamp, forKey: Keys.staleGuardCandidateAt)
     defaults.set(1, forKey: Keys.staleGuardCandidatePushes)
-    transition.evaluateStaleAt = timestamp + Self.staleDecisionMs
+    // Scheduled from delivery: later pushes of a late-delivered burst still
+    // arrive before the decision (M-C).
+    transition.evaluateStaleAt = max(timestamp, now()) + Self.staleDecisionMs
     lastStaleAction = "pending"
     return transition
   }

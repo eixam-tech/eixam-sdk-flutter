@@ -2,27 +2,39 @@
 # test (ios/Tests/IosNativeSosDeliveryStoreTests.swift), the Android guard test
 # (android/src/test/.../ProtectionSosStaleGuardTest.kt) and the Dart contract test
 # (test/device/own_tag_sos_frame_gate_test.dart). Native is the only classifier:
-# the Dart test replays the expected native verdicts through the method-channel
-# contract fake and checks what Dart does with them (it never classifies).
+# the Dart test cannot run either store; it feeds the Dart-path frames as raw
+# BLE notifications through BleDeviceRuntimeProvider, answers with the native
+# verdicts asserted here and checks what Dart does with them (it never
+# classifies).
 #
 # Line format (plain text: the Android unit-test classpath has no JSON parser):
 #   <t_ms> <event> [key=value ...] => <action> [stop=cancel|resolve] [notice=true|false] [armed=true|false]
 # events:
-#   seen source=native|dart|none node=N age=MS
+#   seen source=native|native_unclaimed|dart|none node=N age=MS
 #                         what native saw of the SOS before the SDK closed it:
 #                         native = its own cycle, handed over (countdown elapsed,
-#                         create claimed by the SDK); dart = own-TAG frames that
+#                         create claimed by the SDK); native_unclaimed = its own
+#                         cycle reached its create but the SDK never claimed
+#                         it (runtime armed, cycle not handed over); dart = own-TAG frames that
 #                         Dart forwarded (observeOwnTagSosFrame), the first one
 #                         age ms before the terminal; none = nothing
 #   terminal kind=cancel|resolve node=N connected=true|false
 #                         the SDK's cancel/resolve (closeNativeSosCycle); arms
 #                         the guard only when the SOS was seen on any path
-#   frame node=N source=native|dart
-#                         one BLE SOS push as delivered by that path
+#   frame node=N source=native|dart [delivered=MS]
+#                         one BLE SOS push as delivered by that path; for a
+#                         dart frame t is Dart's receivedAtMs and delivered
+#                         the native clock when it reached native (default t).
+#                         Native counts a Dart frame at its receivedAtMs when
+#                         plausible (not in the future, at most 5 s old; never
+#                         before the last counted push), else at delivery
 #   decide                the 2.0 s decision timer of the open candidate
-#   close source=native|dart
-#                         the TAG's own close frame 0xE1/0xE2/0xE3, any path
-#   link_drop | link_up | session
+#   close source=native|dart [node=N]
+#                         the TAG's own close frame 0xE1/0xE2/0xE3, any path;
+#                         another TAG's close never ends the guard
+#   link_drop | link_up [source=native|dart] | session
+#                         source=dart: Dart's own link note (noteOwnTagSosLink),
+#                         which never resets a burst being counted
 #   sdk_open              the SDK opened a new SOS lifecycle (Dart disarms native)
 # actions: pass (normal path: not armed / ignored / disarmed), pending, duplicate,
 #          newSos, stale, none, - (no frame decision for this event).
@@ -182,3 +194,79 @@ scenario session_change_ends_the_guard
 0 seen source=dart node=7 age=30000 => -
 0 terminal kind=resolve node=7 connected=true => - armed=true
 5000 session => - armed=false
+
+# F17c review M-D: original H2. The native runtime saw the SOS but its create
+# was never claimed by the SDK (not handed over): no guard on any path, even
+# though Dart forwarded frames past the countdown.
+scenario unclaimed_native_create_arms_nothing
+0 seen source=native_unclaimed node=7 age=30000 => -
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=false
+10000 frame node=7 source=dart => pass armed=false
+
+# M-B: a Dart link note (also an owner handover native<->Dart) mid-burst
+# never turns a genuine countdown into a stale stop.
+scenario dart_link_flap_mid_burst_is_still_a_new_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+120200 link_drop source=dart => - armed=true
+120300 link_up source=dart => - armed=true
+120500 frame node=7 source=dart => pending
+121000 frame node=7 source=dart => newSos armed=false
+
+scenario dart_link_note_keeps_the_open_stale_decision
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+120300 link_up source=dart => - armed=true
+122000 decide => stale stop=cancel notice=true armed=true
+
+# M-C: Dart frames delivered late together count at their receivedAtMs.
+scenario late_delivered_dart_burst_counts_by_received_at
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart delivered=121400 => pending
+120500 frame node=7 source=dart delivered=121410 => pending
+121000 frame node=7 source=dart delivered=121420 => newSos armed=false
+
+scenario implausible_received_at_falls_back_to_the_native_clock
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+110000 frame node=7 source=dart delivered=130000 => pending
+140000 frame node=7 source=dart delivered=130100 => duplicate
+132000 decide => stale stop=cancel notice=true armed=true
+
+# Dual path: a late Dart copy of a push native already counted stays a copy,
+# even when it reaches native after the next push.
+scenario dual_path_late_dart_copy_of_a_stale_pair_is_still_one_push
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+120500 frame node=7 source=native => pending
+120002 frame node=7 source=dart delivered=120600 => duplicate
+120502 frame node=7 source=dart delivered=120610 => duplicate
+122000 decide => stale stop=cancel notice=true armed=true
+
+scenario dual_path_burst_with_late_dart_copies_is_one_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+120003 frame node=7 source=dart delivered=120450 => duplicate
+120500 frame node=7 source=native => pending
+120503 frame node=7 source=dart delivered=120900 => duplicate
+121000 frame node=7 source=native => newSos armed=false
+121003 frame node=7 source=dart delivered=121300 => pass armed=false
+
+# Low: another TAG's close frame forwarded by Dart never ends this guard.
+scenario other_tag_close_through_dart_never_ends_the_guard
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+5000 close source=dart node=99 => - armed=true
+10000 frame node=7 source=dart => pending

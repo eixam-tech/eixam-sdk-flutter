@@ -135,6 +135,9 @@ internal object ProtectionSosStaleGuard {
     /** F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s minus the decision window). */
     const val observedHandedOverMs = 18_000L
 
+    /** F17c M-C: a Dart receive time older than this (or in the future) is not trusted. */
+    const val forwardedFrameMaxAgeMs = 5_000L
+
     /**
      * Only a handed-over SOS (like iOS): the native cycle reached createPending
      * and the SDK claimed its create, or (F17c) Dart forwarded frames of an
@@ -185,7 +188,18 @@ internal object ProtectionSosStaleGuard {
         observed: ProtectionSosObservedCycle?,
         frame: ProtectionSosForwardedFrame,
         now: Long,
+        receivedAt: Long? = null,
     ): ProtectionSosForwardedDecision {
+        if (frame.close && state != null && frame.nodeId != null && state.nodeId != null &&
+            normalize(frame.nodeId) != normalize(state.nodeId)
+        ) {
+            // Another TAG's close never ends this guard.
+            return ProtectionSosForwardedDecision(
+                outcome = ProtectionSosStaleOutcome(ProtectionSosStaleAction.ignored, state),
+                observed = observed,
+                verdict = ProtectionOwnTagSosVerdict.proceed,
+            )
+        }
         if (frame.close) {
             return ProtectionSosForwardedDecision(
                 outcome = ProtectionSosStaleOutcome(
@@ -197,7 +211,12 @@ internal object ProtectionSosStaleGuard {
                 verdict = ProtectionOwnTagSosVerdict.proceed,
             )
         }
-        val outcome = onFrame(state, frame.nodeId, now)
+        val outcome = onFrame(
+            state,
+            frame.nodeId,
+            forwardedFrameAt(state, receivedAt, now),
+            deliveredAt = now,
+        )
         val verdict = ProtectionOwnTagSosVerdict.of(outcome)
         return ProtectionSosForwardedDecision(
             outcome = outcome,
@@ -209,6 +228,32 @@ internal object ProtectionSosStaleGuard {
             verdict = verdict,
         )
     }
+
+    /**
+     * F17c M-C: when a Dart-forwarded push happened. Dart's receive time when
+     * plausible (not in the future, at most [forwardedFrameMaxAgeMs] old), so
+     * pushes delivered late together still count as distinct pushes; else the
+     * native clock. Never before the last counted push: a late copy of a push
+     * already counted (other path) stays a copy.
+     */
+    fun forwardedFrameAt(state: ProtectionSosStaleGuardState?, receivedAt: Long?, now: Long): Long {
+        val plausible = receivedAt?.takeIf { it <= now && now - it <= forwardedFrameMaxAgeMs } ?: now
+        val lastPush = state?.lastPushAt ?: return plausible
+        return if (plausible < lastPush && lastPush <= now) lastPush else plausible
+    }
+
+    /**
+     * F17c M-B: Dart's own link note (also a native<->Dart owner handover).
+     * Like iOS noteLinkUp: the gap clock restarts, but a burst being counted
+     * (and its pending decision) is kept: a flip mid-countdown must never turn
+     * a genuine new SOS into a stale stop.
+     */
+    fun onForwardedLinkUp(state: ProtectionSosStaleGuardState, now: Long): ProtectionSosStaleGuardState =
+        state.copy(lastFrameAt = now, linkDroppedSinceLastFrame = false)
+
+    /** F17c M-B: like iOS noteLinkDropped: the open candidate is kept. */
+    fun onForwardedLinkDropped(state: ProtectionSosStaleGuardState): ProtectionSosStaleGuardState =
+        state.copy(linkDroppedSinceLastFrame = true)
 
     fun arm(
         terminal: ProtectionSosStaleTerminal,
@@ -251,10 +296,16 @@ internal object ProtectionSosStaleGuard {
     @Suppress("UNUSED_PARAMETER")
     fun onSessionChanged(state: ProtectionSosStaleGuardState?): ProtectionSosStaleGuardState? = null
 
+    /**
+     * [now] is when the push happened; [deliveredAt] when it reached native
+     * (they differ only for a late Dart-forwarded push): the decision is
+     * scheduled from delivery, so late pushes of the burst still arrive first.
+     */
     fun onFrame(
         state: ProtectionSosStaleGuardState?,
         frameNodeId: Int?,
         now: Long,
+        deliveredAt: Long = now,
     ): ProtectionSosStaleOutcome {
         state ?: return ProtectionSosStaleOutcome(ProtectionSosStaleAction.notArmed, null)
         if (frameNodeId != null && state.nodeId != null &&
@@ -303,7 +354,7 @@ internal object ProtectionSosStaleGuard {
             state = current.copy(candidateFirstAt = now, candidatePushes = 1, lastPushAt = now),
             sendStop = sendStop,
             showNotice = showNotice,
-            decideAt = now + decideAfterMs,
+            decideAt = maxOf(now, deliveredAt) + decideAfterMs,
         )
     }
 

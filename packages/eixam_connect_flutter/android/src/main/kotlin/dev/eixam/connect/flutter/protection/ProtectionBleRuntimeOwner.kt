@@ -2168,26 +2168,33 @@ internal class ProtectionBleRuntimeOwner(
      * frame whichever path received it: the same guard, copy collapse (< 300 ms,
      * also across paths) and burst rule. Works with or without Protection
      * armed (pure persistence). Dart acts only on the returned verdict.
+     * [receivedAtMs]: when Dart received the frame (M-C, sanity-bounded).
      */
-    fun observeForwardedOwnTagSosFrame(payload: List<Int>): ProtectionOwnTagSosVerdict {
+    fun observeForwardedOwnTagSosFrame(
+        payload: List<Int>,
+        receivedAtMs: Long? = null,
+    ): ProtectionOwnTagSosVerdict {
         val frame = ProtectionSosForwardedFrame.parse(payload)
             ?: return ProtectionOwnTagSosVerdict.proceed
         val effects = SosStaleEffects()
         val decision = synchronized(sosLifecycleLock) {
             val now = System.currentTimeMillis()
-            if (frame.close) {
-                runtimeStore.recordOwnSosCloseObserved(now)
-            } else {
-                runtimeStore.recordOwnSosFrameObserved(now)
-            }
             val decision = ProtectionSosStaleGuard.onForwardedFrame(
                 sosStaleGuard,
                 sosObservedCycle,
                 frame,
                 now,
+                receivedAt = receivedAtMs,
             )
+            val otherTag = decision.outcome.action == ProtectionSosStaleAction.ignored
+            if (frame.close && !otherTag) {
+                runtimeStore.recordOwnSosCloseObserved(now)
+            } else if (!frame.close) {
+                runtimeStore.recordOwnSosFrameObserved(now)
+            }
             if (frame.close) {
-                disarmSosStaleGuardLocked("tag_close_dart")
+                // Another TAG's close never ends this guard.
+                if (!otherTag) disarmSosStaleGuardLocked("tag_close_dart")
             } else {
                 applySosStaleOutcomeLocked(decision.outcome, effects)
             }
@@ -2210,9 +2217,29 @@ internal class ProtectionBleRuntimeOwner(
         synchronized(sosLifecycleLock) { disarmSosStaleGuardLocked(reason) }
     }
 
-    /** F17c: Dart's own TAG link changed (native sees no link events while Dart owns it). */
+    /**
+     * F17c: Dart's own TAG link changed (native sees no link events while Dart
+     * owns it). M-B: Dart notes every command-path flip, a native<->Dart owner
+     * handover included, so this never resets a burst being counted nor
+     * cancels its pending decision (iOS noteLinkUp semantics).
+     */
     fun noteForwardedOwnTagLink(up: Boolean) {
-        if (up) onSosStaleGuardReconnected("dart_link_up") else markSosStaleGuardLinkDropped("dart_link_down")
+        val now = System.currentTimeMillis()
+        synchronized(sosLifecycleLock) {
+            val current = sosStaleGuard ?: return
+            if (up && ProtectionSosStaleGuard.isExpired(current, now)) {
+                disarmSosStaleGuardLocked("cap")
+                return
+            }
+            val next = if (up) {
+                ProtectionSosStaleGuard.onForwardedLinkUp(current, now)
+            } else {
+                ProtectionSosStaleGuard.onForwardedLinkDropped(current)
+            }
+            sosStaleGuard = next
+            runtimeStore.saveSosStaleGuard(next)
+        }
+        Log.i(logTag, "NATIVE_SOS_STALE_GUARD_DART_LINK up=$up")
     }
 
     private fun setSosObservedCycleLocked(observed: ProtectionSosObservedCycle?) {

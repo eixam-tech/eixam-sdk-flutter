@@ -295,7 +295,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         result(["verdict": "proceed"])
         return
       }
-      let decision = sosDelivery.observeForwardedSosFrame(kind: parsed.kind, nodeId: parsed.nodeId)
+      // M-C: Dart's receive time (sanity-bounded by the store).
+      let decision = sosDelivery.observeForwardedSosFrame(
+        kind: parsed.kind,
+        nodeId: parsed.nodeId,
+        receivedAtMs: (arguments?["receivedAtMs"] as? NSNumber)?.intValue
+      )
       if decision.verdict != "proceed" {
         logSosDelivery(
           "NATIVE_SOS_STALE_DART_FRAME verdict=\(decision.verdict) action=\(sosDelivery.lastStaleAction)")
@@ -866,12 +871,16 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     let payload: Data
     let forceCmdCharacteristic: Bool
     let result: FlutterResult
+    /// Checked right before the GATT write: false skips it (e.g. a stale-SOS
+    /// stop whose guard ended while the write was queued).
+    var stillWanted: (() -> Bool)? = nil
   }
 
   private func enqueueProtectionCommand(
     label: String,
     bytes: [Int],
     forceCmdCharacteristic: Bool,
+    stillWanted: (() -> Bool)? = nil,
     result: @escaping FlutterResult
   ) {
     let route = "iosPlugin"
@@ -898,7 +907,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       label: label,
       payload: Data(bytes.map { UInt8($0 & 0xFF) }),
       forceCmdCharacteristic: forceCmdCharacteristic,
-      result: result
+      result: result,
+      stillWanted: stillWanted
     )
     if inFlightProtectionWrite != nil {
       protectionWriteQueue.append(command)
@@ -909,6 +919,11 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
 
   private func startProtectionWrite(_ command: PendingProtectionWrite) {
     let route = "iosPlugin"
+    if let stillWanted = command.stillWanted, !stillWanted() {
+      command.result(commandResult(success: false, route: route, result: nil, error: "Command no longer wanted."))
+      startNextProtectionWrite()
+      return
+    }
     guard isArmed else {
       let error = "Protection Mode is off on iOS, so the plugin runtime does not own BLE commands."
       defaults.set(error, forKey: Keys.lastCommandError)
@@ -1557,14 +1572,27 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
   /// The SDK's own terminal command: cancel `0x04`, resolve `0x07` (SOS ACK),
   /// on the CMD characteristic. Only for an SOS the SDK already closed.
+  /// Written only while the guard is still armed, checked again right before
+  /// the GATT write: a new SDK SOS disarms it (M3), so a stop decided for the
+  /// closed SOS never reaches a genuine new one.
   private func sendStaleStop(_ kind: IosSosTerminalKind, reason: String, dartFallback: Bool) {
+    guard sosDelivery.staleGuardKind == kind else {
+      logSosDelivery("NATIVE_SOS_STALE_STOP_SKIPPED terminal=\(kind.rawValue) reason=guard_ended")
+      return
+    }
     let label = kind == .cancel ? "SOS CANCEL" : "SOS ACK"
     let bytes = kind == .cancel ? [0x04] : [0x07]
-    enqueueProtectionCommand(label: label, bytes: bytes, forceCmdCharacteristic: true) { [weak self] value in
+    enqueueProtectionCommand(
+      label: label,
+      bytes: bytes,
+      forceCmdCharacteristic: true,
+      stillWanted: { [weak self] in self?.sosDelivery.staleGuardKind == kind }
+    ) { [weak self] value in
+      guard let self else { return }
       let ok = (value as? [String: Any])?["success"] as? Bool ?? false
-      self?.logSosDelivery("NATIVE_SOS_STALE_STOP_SENT terminal=\(kind.rawValue) reason=\(reason) accepted=\(ok)")
-      if !ok && dartFallback {
-        self?.requestDartStaleStop(kind, reason: "\(reason)_native_write_failed")
+      self.logSosDelivery("NATIVE_SOS_STALE_STOP_SENT terminal=\(kind.rawValue) reason=\(reason) accepted=\(ok)")
+      if !ok && dartFallback && self.sosDelivery.staleGuardKind == kind {
+        self.requestDartStaleStop(kind, reason: "\(reason)_native_write_failed")
       }
     }
   }

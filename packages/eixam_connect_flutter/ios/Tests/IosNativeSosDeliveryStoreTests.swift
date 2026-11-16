@@ -791,6 +791,12 @@ struct IosNativeSosDeliveryStoreTests {
         case "native":
           clock = base + t - age
           deliver(store, key: "sos:\(node):1")
+        case "native_unclaimed":
+          // The native create was queued but never claimed by the SDK.
+          clock = base + t - age
+          _ = store.observe(kind: .active, nodeId: node, cycleKey: "sos:\(node):1", deviceId: nil)
+          clock += 20_000
+          _ = store.promoteExpiredCountdown(deviceId: nil)
         case "dart":
           clock = base + t - age
           _ = store.observeForwardedSosFrame(kind: .active, nodeId: node)
@@ -807,7 +813,10 @@ struct IosNativeSosDeliveryStoreTests {
       case "frame":
         clock = base + t
         if args["source"] == "dart" {
-          let result = store.observeForwardedSosFrame(kind: .active, nodeId: node)
+          // t is Dart's receivedAtMs; delivered the native clock.
+          clock = base + (Int(args["delivered"] ?? "") ?? t)
+          let result = store.observeForwardedSosFrame(
+            kind: .active, nodeId: node, receivedAtMs: base + t)
           transition = result.transition
           let wantVerdict = expect[0] == "pass" ? "proceed" : expect[0] == "newSos" ? "newSos" : "suppress"
           check(result.verdict == wantVerdict, "\(label): verdict \(result.verdict) != \(wantVerdict)")

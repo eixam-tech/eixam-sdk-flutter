@@ -338,9 +338,11 @@ class ProtectionSosStaleGuardTest {
         var state: ProtectionSosStaleGuardState? = null
         var observed: ProtectionSosObservedCycle? = null
         var lifecycle = ProtectionSosLifecycleState.idle
+        var unclaimed = false
         var name = ""
         var steps = 0
         var dartFrames = 0
+        val failures = mutableListOf<String>()
         val base = 5_000_000L
         for (raw in fixture!!.readLines()) {
             val line = raw.trim()
@@ -350,6 +352,7 @@ class ProtectionSosStaleGuardTest {
                 state = null
                 observed = null
                 lifecycle = ProtectionSosLifecycleState.idle
+                unclaimed = false
                 continue
             }
             val (eventPart, expectPart) = line.split(" => ")
@@ -365,9 +368,14 @@ class ProtectionSosStaleGuardTest {
             val node = args["node"]?.toInt() ?: 7
             val label = "$name @${event[0]} ${event[1]}"
             var outcome: ProtectionSosStaleOutcome? = null
+            try {
             when (event[1]) {
                 "seen" -> when (args["source"]) {
                     "native" -> lifecycle = ProtectionSosLifecycleState.createPending
+                    "native_unclaimed" -> {
+                        lifecycle = ProtectionSosLifecycleState.createPending
+                        unclaimed = true
+                    }
                     "dart" -> {
                         val age = args["age"]!!.toLong()
                         val sos = ProtectionSosForwardedFrame(close = false, nodeId = node)
@@ -378,18 +386,22 @@ class ProtectionSosStaleGuardTest {
                 }
                 "terminal" -> {
                     val terminal = ProtectionSosStaleTerminal.fromWire(args["kind"])!!
-                    if (guard.shouldArm(terminal, lifecycle, false, observed, t)) {
+                    if (guard.shouldArm(terminal, lifecycle, unclaimed, observed, t)) {
                         state = guard.arm(terminal, node, t, connected = args["connected"] == "true")
                         observed = null
                     }
                     lifecycle = ProtectionSosLifecycleState.idle
+                    unclaimed = false
                 }
                 "frame" -> if (args["source"] == "dart") {
+                    // t is Dart's receivedAtMs; delivered the native clock.
+                    val delivered = args["delivered"]?.let { base + it.toLong() } ?: t
                     val decision = guard.onForwardedFrame(
                         state,
                         observed,
                         ProtectionSosForwardedFrame(close = false, nodeId = node),
-                        t,
+                        delivered,
+                        receivedAt = t,
                     )
                     outcome = decision.outcome
                     observed = decision.observed
@@ -424,8 +436,12 @@ class ProtectionSosStaleGuardTest {
                     state = guard.onTagClose(state)
                     observed = null
                 }
-                "link_drop" -> state = state?.let { guard.onLinkDropped(it) }
-                "link_up" -> state = state?.let { guard.onReconnected(it, t) }
+                "link_drop" -> state = state?.let {
+                    if (args["source"] == "dart") guard.onForwardedLinkDropped(it) else guard.onLinkDropped(it)
+                }
+                "link_up" -> state = state?.let {
+                    if (args["source"] == "dart") guard.onForwardedLinkUp(it, t) else guard.onReconnected(it, t)
+                }
                 "session" -> {
                     state = guard.onSessionChanged(state)
                     observed = null
@@ -448,7 +464,12 @@ class ProtectionSosStaleGuardTest {
             assertEquals("$label: stop", want["stop"] ?: "none", stop)
             assertEquals("$label: notice", want["notice"] == "true", outcome?.showNotice == true)
             want["armed"]?.let { assertEquals("$label: armed", it == "true", state != null) }
+            } catch (failure: AssertionError) {
+                // Every failing step is reported, not only the first one.
+                failures.add(failure.message ?: label)
+            }
         }
+        assertTrue("scenario failures:\n" + failures.joinToString("\n"), failures.isEmpty())
         assertTrue("fixture replayed ($steps steps)", steps > 100)
         assertTrue("dart frames replayed ($dartFrames)", dartFrames > 20)
     }
