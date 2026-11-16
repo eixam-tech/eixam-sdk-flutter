@@ -15,6 +15,8 @@ import 'package:eixam_connect_flutter/src/device/ble_scan_result.dart';
 import 'package:eixam_connect_flutter/src/device/ble_adapter_state.dart';
 import 'package:eixam_connect_flutter/src/firmware_version.dart';
 import 'package:eixam_connect_flutter/src/sdk/dfu_preflight.dart';
+import 'package:eixam_connect_flutter/src/sdk/dfu_recovery_controller.dart';
+import 'package:eixam_connect_flutter/src/sdk/dfu_recovery_record_store.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_dfu_transport.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_update_coordinator.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_update_session_store.dart';
@@ -1816,6 +1818,139 @@ void main() {
         expect(states.contains(FirmwareUpdateState.transferring), isTrue);
       },
     );
+
+    group('F1: the running update is live, never interrupted', () {
+      // The TAG is visible as the DFU bootloader for the whole run: the
+      // strongest "looks interrupted" evidence a healthy update produces.
+      final adaDfu = BleScanResult(
+        deviceId: 'demo-device',
+        canonicalHardwareId: 'hw-demo',
+        name: 'AdaDFU',
+        rssi: -40,
+        connectable: true,
+        advertisedServiceUuids: const <String>[
+          '00001530-1212-efde-1523-785feabcd123',
+        ],
+        discoveredAt: DateTime.utc(2026, 1, 1),
+      );
+
+      DfuRecoveryController recoveryFor(FirmwareUpdateCoordinator c) =>
+          DfuRecoveryController(
+            firmware: c,
+            bleClient: _FirmwareBleClient([adaDfu]),
+            recordStore: InMemoryDfuRecoveryRecordStore(),
+            inspectStock: (_, _) => throw StateError('not stock'),
+            // No periodic tick during the test: every status after the start
+            // comes from a sample below or from the terminal-session refresh.
+            config: const EixamDfuRecoveryConfig(
+              observeInterval: Duration(hours: 1),
+            ),
+            scanTimeout: Duration.zero,
+          );
+
+      bool offersCable(DfuRecoveryStatus s) =>
+          s.forwardActions.contains(DfuRecoveryAction.openCableRecoveryGuide);
+
+      Future<void> until(bool Function() done) async {
+        for (var i = 0; i < 200 && !done(); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+      }
+
+      test('starts -> progresses -> completes: never a cable action, cleared '
+          'on completion without a tick', () async {
+        final coordinator = buildCoordinator(
+          transport: _SlowUploadDfuTransport(
+            tickInterval: const Duration(milliseconds: 20),
+            ticksToComplete: 4,
+            onComplete: () => deviceRepository.setCurrentStatusSilently(
+              _readyStatus(firmwareVersion: '2.0.0'),
+            ),
+          ),
+          postDfuVerificationPollInterval: const Duration(milliseconds: 10),
+        );
+        addTearDown(coordinator.dispose);
+        final recovery = recoveryFor(coordinator);
+        addTearDown(recovery.dispose);
+        final seen = <DfuRecoveryStatus>[];
+        final sub = recovery.watchDfuRecovery().listen(seen.add);
+        addTearDown(sub.cancel);
+        final liveIds = <String?>[];
+        final samples = <Future<DfuRecoveryStatus>>[];
+        final progressSub = coordinator.watchProgress().listen((p) {
+          if (!p.nativeTransferEngaged) return;
+          if (p.state != FirmwareUpdateState.completed) {
+            liveIds.add(coordinator.liveUpdateSessionId);
+          }
+          samples.add(recovery.getDfuRecoveryStatus());
+        });
+        addTearDown(progressSub.cancel);
+
+        final session = await coordinator.startFirmwareUpdate(
+          deviceId: 'demo-device',
+          releaseId: 'fw-1',
+          policy: const FirmwareUpdatePolicy(
+            interruptionWarningAcknowledged: true,
+          ),
+        );
+        final sampled = await Future.wait(samples);
+        await until(
+          () => seen.last.reason == DfuRecoveryReason.noInterruptedUpdate,
+        );
+
+        expect(session.state, FirmwareUpdateState.completed);
+        expect(sampled, isNotEmpty);
+        // Progress is delivered asynchronously: a late event may already see
+        // the ended update. While live, the id is always this session's.
+        expect(liveIds, contains(session.sessionId));
+        expect(liveIds.whereType<String>(), everyElement(session.sessionId));
+        expect(coordinator.liveUpdateSessionId, isNull);
+        expect(coordinator.liveUpdateEnded, isFalse);
+        expect(
+          seen.map((s) => s.reason),
+          contains(DfuRecoveryReason.updateInProgress),
+        );
+        expect([...sampled, ...seen].any(offersCable), isFalse);
+        expect(
+          [...sampled, ...seen].map((s) => s.state),
+          everyElement(DfuRecoveryState.unknown),
+        );
+        expect(seen.last.reason, DfuRecoveryReason.noInterruptedUpdate);
+      });
+
+      test(
+        'a mid-flash failure ends recoverable (E1 + cable) right away',
+        () async {
+          final coordinator = buildCoordinator(
+            transport: _MidFlashErrorDfuTransport(),
+          );
+          addTearDown(coordinator.dispose);
+          final recovery = recoveryFor(coordinator);
+          addTearDown(recovery.dispose);
+          final seen = <DfuRecoveryStatus>[];
+          final sub = recovery.watchDfuRecovery().listen(seen.add);
+          addTearDown(sub.cancel);
+
+          final session = await coordinator.startFirmwareUpdate(
+            deviceId: 'demo-device',
+            releaseId: 'fw-1',
+            policy: const FirmwareUpdatePolicy(
+              interruptionWarningAcknowledged: true,
+            ),
+          );
+          await until(() => seen.last.state == DfuRecoveryState.resumable);
+
+          expect(session.state, FirmwareUpdateState.recoveryRequired);
+          expect(coordinator.liveUpdateSessionId, isNull);
+          expect(seen.last.state, DfuRecoveryState.resumable);
+          expect(
+            seen.last.availableAction,
+            DfuRecoveryAction.prepareCableRecovery,
+          );
+          expect(offersCable(seen.last), isTrue);
+        },
+      );
+    });
 
     test('e2e: BLE handoff hooks bracket the transfer in order', () async {
       final calls = <String>[];

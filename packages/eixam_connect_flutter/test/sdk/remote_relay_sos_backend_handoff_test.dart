@@ -3868,6 +3868,24 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
 }
 
 class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
+  int ackPendingNativeSosCancelCalls = 0;
+
+  @override
+  Future<void> setSosDeliveryPending(bool pending) async {}
+
+  @override
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) async {}
+
+  @override
+  Future<bool> ackPendingNativeSosCancel() async {
+    ackPendingNativeSosCancelCalls++;
+    return true;
+  }
+
   _FakeProtectionPlatformAdapter({required this.platformEvents});
 
   final Stream<ProtectionPlatformEvent> platformEvents;
@@ -3902,7 +3920,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {}
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {}
 
   @override
   Future<void> ensureProtectionRuntimeActive({
@@ -4034,6 +4052,15 @@ bool _hasDebugMessage(String token, [Matcher? matcher]) {
 }
 
 class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
+  final List<DateTime> publishedSosCancels = <DateTime>[];
+  Future<void> Function(DateTime timestamp)? publishSosCancelHook;
+
+  @override
+  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+    publishedSosCancels.add(timestamp);
+    await publishSosCancelHook?.call(timestamp);
+  }
+
   final List<MqttOperationalSosRequest> publishedSos =
       <MqttOperationalSosRequest>[];
   final List<SdkTelemetryPayload> publishedTelemetry = <SdkTelemetryPayload>[];

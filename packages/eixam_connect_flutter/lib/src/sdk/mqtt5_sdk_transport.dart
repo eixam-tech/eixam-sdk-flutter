@@ -248,13 +248,92 @@ class Mqtt5SdkTransport implements SdkMqttTransport {
   }) async {
     final client = _requireClient();
     final builder = MqttPayloadBuilder()..addString(payload);
-    client.publishMessage(
-      topic,
-      _toMqttQos(qos),
-      builder.payload!,
-      retain: retain,
-    );
+    if (qos != SdkMqttQos.atLeastOnce) {
+      client.publishMessage(
+        topic,
+        _toMqttQos(qos),
+        builder.payload!,
+        retain: retain,
+      );
+      return;
+    }
+    // QoS 1 completes only on the broker PUBACK for this message id. Without
+    // this, a publish into a dead socket or one the broker ACL rejects (deny
+    // action = disconnect) "returned" successfully and the SOS was lost.
+    final acked = Completer<void>();
+    var messageId = -1;
+    final pendingAcks = <MqttPublishMessage>[];
+    final pendingFails = <MqttPublishAckMessage>[];
+    void completeError(Object error) {
+      if (!acked.isCompleted) {
+        acked.completeError(error);
+      }
+    }
+
+    void onAck(MqttPublishMessage message) {
+      if (messageId < 0) {
+        pendingAcks.add(message);
+        return;
+      }
+      if (message.variableHeader?.messageIdentifier == messageId &&
+          !acked.isCompleted) {
+        acked.complete();
+      }
+    }
+
+    void onFail(MqttPublishAckMessage message) {
+      if (messageId < 0) {
+        pendingFails.add(message);
+        return;
+      }
+      if (message.variableHeader?.messageIdentifier == messageId) {
+        completeError(
+          StateError(
+            'MQTT publish rejected: '
+            '${MqttPublishReasonCodeSupport.mqttPublishReasonCode.asString(message.reasonCode)}',
+          ),
+        );
+      }
+    }
+
+    final ackSub = client.published?.listen(onAck);
+    final failSub = client.publishFail?.listen(onFail);
+    final disconnectSub = _disconnectController.stream.listen((_) {
+      completeError(StateError('MQTT disconnected before PUBACK.'));
+    });
+    try {
+      messageId = client.publishMessage(
+        topic,
+        _toMqttQos(qos),
+        builder.payload!,
+        retain: retain,
+      );
+      for (final message in pendingAcks) {
+        onAck(message);
+      }
+      for (final message in pendingFails) {
+        onFail(message);
+      }
+      if (ackSub == null) {
+        // No ack stream (client torn down): treat as not delivered.
+        throw StateError('MQTT publish ack stream unavailable.');
+      }
+      await acked.future.timeout(
+        publishAckTimeout,
+        onTimeout: () => throw TimeoutException(
+          'MQTT PUBACK not received',
+          publishAckTimeout,
+        ),
+      );
+    } finally {
+      await ackSub?.cancel();
+      await failSub?.cancel();
+      await disconnectSub.cancel();
+    }
   }
+
+  /// Bound for one QoS 1 publish round trip. Callers retry on failure.
+  static const Duration publishAckTimeout = Duration(seconds: 10);
 
   @override
   Stream<SdkMqttIncomingMessage> watchMessages() => _messageController.stream;

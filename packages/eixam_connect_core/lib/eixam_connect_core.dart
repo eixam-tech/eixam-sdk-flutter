@@ -68,6 +68,7 @@ export 'src/enums/device_lifecycle_state.dart';
 export 'src/enums/device_provisioning_status.dart';
 export 'src/enums/device_battery_level.dart';
 export 'src/enums/device_battery_source.dart';
+export 'src/enums/device_link_health.dart';
 export 'src/enums/device_sos_state.dart';
 export 'src/enums/device_sos_transition_source.dart';
 export 'src/enums/death_man_status.dart';

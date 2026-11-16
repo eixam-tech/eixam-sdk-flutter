@@ -143,16 +143,15 @@ internal class ProtectionForegroundService : Service() {
             description = runtimeStore.protectionModeChannelDescription()
         }
         manager.createNotificationChannel(runtimeChannel)
-        if (!runtimeStore.hostAppManagedNotifications()) {
-            val sosChannel = NotificationChannel(
-                sosNotificationChannelId,
-                runtimeStore.protectionSosChannelName(),
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = runtimeStore.protectionSosChannelDescription()
-            }
-            manager.createNotificationChannel(sosChannel)
+        // Always available: SOS alarm must not depend on Dart being alive.
+        val sosChannel = NotificationChannel(
+            sosNotificationChannelId,
+            runtimeStore.protectionSosChannelName(),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = runtimeStore.protectionSosChannelDescription()
         }
+        manager.createNotificationChannel(sosChannel)
     }
 
     private fun ensureProtectionRuntime(
@@ -196,6 +195,7 @@ internal class ProtectionForegroundService : Service() {
         private const val preConfirmNotificationId = 6022
         private const val activeNotificationId = 6023
         private const val resolvedNotificationId = 6024
+        private const val staleStoppedNotificationId = 6025
         private const val defaultReconnectBackoffMs = 5000L
         private const val logTag = "EixamProtectionService"
         private const val actionStart = "dev.eixam.connect.flutter.action.PROTECTION_START"
@@ -261,6 +261,18 @@ internal class ProtectionForegroundService : Service() {
             )
         }
 
+        /** F17b: the app stopped on the TAG an SOS that was already closed. */
+        fun showSosStaleStoppedNotification(context: Context) {
+            val runtimeStore = ProtectionRuntimeStore(context)
+            showEventNotification(
+                context = context,
+                notificationId = staleStoppedNotificationId,
+                type = "sosStaleStopped",
+                title = runtimeStore.protectionSosStaleStoppedTitle(),
+                body = runtimeStore.protectionSosStaleStoppedBody(),
+            )
+        }
+
         private fun showEventNotification(
             context: Context,
             notificationId: Int,
@@ -268,7 +280,10 @@ internal class ProtectionForegroundService : Service() {
             title: String,
             body: String,
         ) {
-            if (ProtectionRuntimeStore(context).hostAppManagedNotifications()) {
+            if (ProtectionRuntimeStore(context).hostAppManagedNotifications() &&
+                ProtectionRuntimeBridge.isFlutterListening()
+            ) {
+                // The host app notifies from SDK intents while Dart runs.
                 return
             }
             val notification = NotificationCompat.Builder(context, sosNotificationChannelId)

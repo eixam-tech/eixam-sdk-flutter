@@ -82,6 +82,9 @@ class EixamNotificationTexts {
     this.nearbyMessageChannelName = 'Nearby',
     this.nearbyMessageChannelDescription = 'Incoming nearby messages',
     this.nearbyMessageFallbackTitle = 'Nearby',
+    this.protectionSosStaleStoppedTitle = 'SOS stopped on your TAG',
+    this.protectionSosStaleStoppedBody =
+        'We stopped on your TAG an SOS that had already ended.',
   });
 
   final String protectionActiveTitle;
@@ -101,4 +104,9 @@ class EixamNotificationTexts {
   final String nearbyMessageChannelName;
   final String nearbyMessageChannelDescription;
   final String nearbyMessageFallbackTitle;
+
+  /// Local notice when the app stops on the TAG an SOS that was already
+  /// cancelled / resolved but the TAG kept running (F17b). Optional.
+  final String protectionSosStaleStoppedTitle;
+  final String protectionSosStaleStoppedBody;
 }

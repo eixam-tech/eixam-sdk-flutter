@@ -81,6 +81,7 @@ class ProtectionStatus {
     required this.updatedAt,
     this.pendingNativeSosCreateCount = 0,
     this.pendingNativeSosCancelCount = 0,
+    this.nativeSosCycleInFlight = false,
     this.platformRuntimeConfigured = false,
     this.foregroundServiceRunning = false,
     this.protectionRuntimeActive = false,
@@ -140,6 +141,13 @@ class ProtectionStatus {
   final int pendingTelemetryCount;
   final int pendingNativeSosCreateCount;
   final int pendingNativeSosCancelCount;
+
+  /// True while the native protection runtime is running a TAG countdown
+  /// (`preConfirmSeen`, not past its deadline plus a grace period) that it
+  /// has not promoted yet. Hosts must not stop the native runtime while this
+  /// is true. Durable native create/cancel records do not count: they
+  /// survive a stop and are delivered by the SDK outbox.
+  final bool nativeSosCycleInFlight;
   final bool platformRuntimeConfigured;
   final bool foregroundServiceRunning;
   final bool protectionRuntimeActive;
@@ -200,6 +208,7 @@ class ProtectionStatus {
     int? pendingTelemetryCount,
     int? pendingNativeSosCreateCount,
     int? pendingNativeSosCancelCount,
+    bool? nativeSosCycleInFlight,
     bool? platformRuntimeConfigured,
     bool? foregroundServiceRunning,
     bool? protectionRuntimeActive,
@@ -268,6 +277,8 @@ class ProtectionStatus {
           pendingNativeSosCreateCount ?? this.pendingNativeSosCreateCount,
       pendingNativeSosCancelCount:
           pendingNativeSosCancelCount ?? this.pendingNativeSosCancelCount,
+      nativeSosCycleInFlight:
+          nativeSosCycleInFlight ?? this.nativeSosCycleInFlight,
       platformRuntimeConfigured:
           platformRuntimeConfigured ?? this.platformRuntimeConfigured,
       foregroundServiceRunning:

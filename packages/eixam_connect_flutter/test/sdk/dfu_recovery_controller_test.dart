@@ -148,6 +148,18 @@ class _Firmware extends FirmwareUpdateCoordinator {
   @override
   bool get operationInProgress => busy;
 
+  /// Session an ordinary update in this process is transferring (F1).
+  String? live;
+
+  /// That update ended; the lock only persists its result.
+  bool liveEnded = false;
+
+  @override
+  String? get liveUpdateSessionId => live;
+
+  @override
+  bool get liveUpdateEnded => liveEnded;
+
   @override
   Future<FirmwareUpdateSession?> getActiveFirmwareUpdate() async => session;
 
@@ -1388,6 +1400,210 @@ void main() {
         DfuPreflightFailure.actionNotAvailable,
       );
       expect(h.reconnects, isEmpty);
+    });
+  });
+
+  group('F1: a healthy running update is never an interrupted one', () {
+    Future<void> settle() =>
+        Future<void>.delayed(const Duration(milliseconds: 10));
+
+    bool offersCable(DfuRecoveryStatus s) =>
+        s.forwardActions.contains(DfuRecoveryAction.openCableRecoveryGuide);
+
+    // The update this process is running: engaged, mid-transfer, TAG visible
+    // as AdaDFU (it reboots into its bootloader for the transfer).
+    _Harness running() {
+      final h = _Harness(
+        session: _interrupted(
+          state: FirmwareUpdateState.transferring,
+        ).copyWith(requiresRecovery: false),
+      );
+      h.firmware
+        ..busy = true
+        ..live = 'session-1';
+      return h;
+    }
+
+    test('rule 1: running update -> no cable action, no interrupted state, '
+        'no marker', () async {
+      final h = running();
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.unknown);
+      expect(status.reason, DfuRecoveryReason.updateInProgress);
+      expect(status.deviceId, isNull);
+      expect(status.forwardActions, [DfuRecoveryAction.checkAgain]);
+      expect(h.store.record.interruptedAt, isNull);
+      expect(h.ble.scanCalls, 0);
+    });
+
+    test('rule 1: running update while the migration owns BLE -> no cable '
+        'action', () async {
+      final h = running();
+      h.firmware.busy = false;
+      h.otherOperation = true;
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(offersCable(status), isFalse);
+    });
+
+    test('rule 2: recorded interrupted update held by another owner keeps the '
+        'cable action (F19 iPhone dead end)', () async {
+      final h = _Harness();
+      h.firmware.busy = true; // not this process's live update
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.reason, DfuRecoveryReason.updateInProgress);
+      expect(status.deviceId, _id);
+      expect(
+        status.forwardActions.first,
+        DfuRecoveryAction.openCableRecoveryGuide,
+      );
+    });
+
+    test(
+      'rule 2: recorded interrupted update + AdaDFU -> E1 unchanged',
+      () async {
+        final h = _Harness();
+        final status = await h.controller.getDfuRecoveryStatus();
+        expect(status.state, DfuRecoveryState.resumable);
+        expect(status.availableAction, DfuRecoveryAction.prepareCableRecovery);
+        expect(status.forwardActions, [
+          DfuRecoveryAction.prepareCableRecovery,
+          DfuRecoveryAction.openCableRecoveryGuide,
+        ]);
+        expect(h.store.record.interruptedAt, isNotNull);
+      },
+    );
+
+    test('rule 3: a successful update clears the status immediately and the '
+        'marker, without waiting for a tick', () async {
+      final h = running();
+      h.store.record = DfuRecoveryRecord(
+        sessionId: 'session-1',
+        deviceId: _id,
+        hardwareId: _hw,
+        firstMissAt: h.now,
+      );
+      final seen = <DfuRecoveryStatus>[];
+      final sub = h.controller.watchDfuRecovery().listen(seen.add);
+      await settle();
+      expect(seen.single.reason, DfuRecoveryReason.updateInProgress);
+      // Terminal state emitted while the lock still persists the result.
+      final done = h.firmware.session!.copyWith(
+        state: FirmwareUpdateState.completed,
+        completedAt: h.now,
+      );
+      h.firmware
+        ..session = null
+        ..live = null
+        ..liveEnded = true;
+      h.firmware.sessions.add(done);
+      await settle();
+      expect(seen.last.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(seen.any(offersCable), isFalse);
+      expect(h.store.record.sessionId, isNull);
+      expect(h.store.record.firstMissAt, isNull);
+      expect(h.store.record.interruptedAt, isNull);
+      await sub.cancel();
+      await h.controller.dispose();
+    });
+
+    test('rule 3: success on the TAG with a recorded interruption still '
+        'reports recovered', () async {
+      final h = running();
+      h.store.record = DfuRecoveryRecord(
+        deviceId: _id,
+        hardwareId: _hw,
+        interruptedAt: h.now,
+      );
+      final sub = h.controller.watchDfuRecovery().listen((_) {});
+      await settle();
+      h.firmware
+        ..session = null
+        ..live = null
+        ..liveEnded = true;
+      h.firmware.sessions.add(
+        _interrupted(
+          state: FirmwareUpdateState.completed,
+        ).copyWith(completedAt: h.now),
+      );
+      await settle();
+      expect(h.store.record.recoveredAt, isNotNull);
+      final status = await h.controller.getDfuRecoveryStatus();
+      expect(status.state, DfuRecoveryState.recovered);
+      await sub.cancel();
+      await h.controller.dispose();
+    });
+
+    test('rule 4: a running update that fails becomes recoverable right '
+        'away', () async {
+      final h = running();
+      final seen = <DfuRecoveryStatus>[];
+      final sub = h.controller.watchDfuRecovery().listen(seen.add);
+      await settle();
+      expect(seen.any(offersCable), isFalse);
+      final failed = _interrupted().copyWith(completedAt: h.now);
+      h.firmware
+        ..session = failed
+        ..live = null
+        ..liveEnded = true;
+      h.firmware.sessions.add(failed);
+      await settle();
+      expect(seen.last.state, DfuRecoveryState.resumable);
+      expect(seen.last.availableAction, DfuRecoveryAction.prepareCableRecovery);
+      expect(offersCable(seen.last), isTrue);
+      expect(h.store.record.interruptedAt, isNotNull);
+      await sub.cancel();
+      await h.controller.dispose();
+    });
+
+    test('starts -> progresses -> completes: no cable action at any '
+        'point', () async {
+      final h = _Harness();
+      h.firmware.session = null;
+      final seen = <DfuRecoveryStatus>[];
+      final sub = h.controller.watchDfuRecovery().listen(seen.add);
+      await settle();
+      // Download / prepare: not engaged yet.
+      final base = _interrupted(
+        state: FirmwareUpdateState.downloading,
+      ).copyWith(requiresRecovery: false);
+      h.firmware
+        ..busy = true
+        ..live = 'session-1'
+        ..session = base.copyWith(nativeTransferEngaged: false);
+      await h.controller.getDfuRecoveryStatus();
+      // Transfer engaged; TAG in its bootloader, then silent for long.
+      for (final state in [
+        FirmwareUpdateState.transferring,
+        FirmwareUpdateState.reconnecting,
+        FirmwareUpdateState.verifyingInstalledVersion,
+      ]) {
+        h.firmware.session = base.copyWith(state: state);
+        await h.controller.getDfuRecoveryStatus();
+        h.ble.scans = [];
+        h.now = h.now.add(const Duration(minutes: 3));
+        await h.controller.getDfuRecoveryStatus();
+        h.ble.scans = [_adaDfu()];
+      }
+      h.firmware
+        ..session = null
+        ..live = null
+        ..liveEnded = true;
+      h.firmware.sessions.add(
+        base.copyWith(state: FirmwareUpdateState.completed, completedAt: h.now),
+      );
+      await settle();
+      h.firmware
+        ..busy = false
+        ..liveEnded = false;
+      await h.controller.getDfuRecoveryStatus();
+      await settle();
+      expect(seen.any(offersCable), isFalse);
+      expect(seen.map((s) => s.state), everyElement(DfuRecoveryState.unknown));
+      expect(seen.last.reason, DfuRecoveryReason.noInterruptedUpdate);
+      expect(h.store.record.interruptedAt, isNull);
+      expect(h.firmware.physicalCalls, 0);
+      await sub.cancel();
+      await h.controller.dispose();
     });
   });
 }

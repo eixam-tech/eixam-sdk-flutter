@@ -322,6 +322,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   @override
   Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
+
+  /// When a TAG SOS frame (own, relayed, unknown origin, clear or cancel)
+  /// was last classified: the TAG notification liveness check never drops
+  /// the link with an SOS frame still being processed.
+  DateTime? get lastSosFrameAt => _lastSosFrameAt;
+  DateTime? _lastSosFrameAt;
+
+  /// A `0x23` request is waiting for its reply (another caller's timeout).
+  bool get hasPendingRuntimeStatusRequest =>
+      _pendingRuntimeStatusRequest != null;
+
   bool get hasCommandChannel =>
       _connectedDeviceId != null &&
       BleDebugRegistry.instance.currentState.cmdFound;
@@ -1939,6 +1950,37 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
   }
 
+  /// Tears down the Flutter-owned link exactly as an unexpected drop would be
+  /// seen, so the existing reconnect path (unexpected disconnect -> backoff ->
+  /// preferred reconnect) brings it back with fresh notification
+  /// registrations. No new connection mechanism.
+  Future<bool> dropLinkForRecovery({required String reason}) async {
+    final deviceId = _connectedDeviceId;
+    final currentStatus = _lastRuntimeStatus;
+    if (_disposed ||
+        _ownershipSuspended ||
+        deviceId == null ||
+        currentStatus == null ||
+        !currentStatus.connected) {
+      return false;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_LINK_RECOVERY_DROP reason=$reason',
+    );
+    try {
+      await _bleClient.disconnect(deviceId);
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_LINK_RECOVERY_DROP disconnect_failed errorType=${error.runtimeType}',
+      );
+    }
+    // The connection monitor normally reports this; calling it directly keeps
+    // the drop observable even if the platform stream does not emit for a
+    // locally initiated disconnect. It is idempotent.
+    await _handleUnexpectedDisconnect(deviceId);
+    return true;
+  }
+
   Future<void> _handleUnexpectedDisconnect(String deviceId) async {
     if (_ownershipSuspended) {
       BleDebugRegistry.instance.recordEvent(
@@ -2801,7 +2843,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     bool hasRecentExternalRelayContext = false,
     RemoteRelaySosSource? remoteRelaySource,
   }) {
-    return _lastKnownPositions.bind(
+    final classification = _lastKnownPositions.bind(
       _payloadClassifier.classifySosPayload(
         payload: payload,
         payloadHex: payloadHex,
@@ -2815,6 +2857,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       ),
       receivedAt: receivedAt,
     );
+    switch (classification.kind) {
+      case BleIncomingPayloadKind.ownDeviceSos:
+      case BleIncomingPayloadKind.remoteRelaySos:
+      case BleIncomingPayloadKind.unknownOriginSos:
+      case BleIncomingPayloadKind.sosClear:
+      case BleIncomingPayloadKind.sosCancel:
+        _lastSosFrameAt = DateTime.now();
+      case BleIncomingPayloadKind.telPosition:
+      case BleIncomingPayloadKind.telRelayRx:
+      case BleIncomingPayloadKind.unknown:
+        break;
+    }
+    return classification;
   }
 
   BleIncomingPayloadClassification _classifyD2RelayPeerPayload({

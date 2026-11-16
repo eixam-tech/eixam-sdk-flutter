@@ -21,6 +21,7 @@ import '../data/datasources_remote/sos_remote_data_source.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/api_sos_repository.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
+import '../diagnostics/sdk_release_log.dart';
 import '../diagnostics/security_diagnostics_redactor.dart';
 import '../data/datasources_remote/sdk_device_config_remote_data_source.dart';
 import '../data/datasources_remote/sdk_feedback_remote_data_source.dart';
@@ -58,6 +59,7 @@ import '../data/datasources_local/activity_recording_store.dart';
 import '../data/datasources_local/activity_recording_database.dart';
 import 'activity_availability_controller.dart';
 import 'tag_alerts_controller.dart';
+import 'tag_notify_liveness_monitor.dart';
 import '../data/datasources_local/tag_alert_store.dart';
 import '../tag_alerts/tag_alert_notification_ids.dart';
 import '../tag_alerts/tag_alert_permission_gateway.dart';
@@ -99,6 +101,7 @@ import 'latest_phone_position_sink.dart';
 import 'sdk_resolved_location_resolver.dart';
 import 'sdk_mqtt_contract.dart';
 import 'sos_backend_identity_normalizer.dart';
+import 'sos_delivery_outbox.dart';
 import 'sos_incident_correlation.dart';
 import 'sos_origin_classifier.dart';
 import 'sos_location_ownership_effect.dart';
@@ -171,6 +174,15 @@ enum NativeProtectionCommandReadinessFailure {
   targetIdentityMismatch,
   operationQueueFailed,
 }
+
+/// F17b: the TAG command kind native must write for an SOS the SDK closed
+/// (cancel `0x04`, resolve `0x07`); none for an activation failure.
+@visibleForTesting
+String? nativeSosCycleTerminalFor(SosLifecycleStage stage) => switch (stage) {
+  SosLifecycleStage.cancelled => 'cancel',
+  SosLifecycleStage.resolved => 'resolve',
+  _ => null,
+};
 
 @visibleForTesting
 class NativeProtectionCommandReadiness {
@@ -290,6 +302,8 @@ class EixamConnectSdkImpl
     ActivityAvailabilityStore? activityAvailabilityStore,
     @visibleForTesting this.tagBatteryProbeRequest,
     @visibleForTesting this.tagLeaseDisarmsInBackground,
+    @visibleForTesting
+    this.tagNotifyLivenessTiming = const TagNotifyLivenessTiming(),
     TagAlertStore? tagAlertStore,
     TagAlertNotifier? tagAlertNotifier,
     TagAlertPermissionGateway? tagAlertPermissions,
@@ -518,6 +532,7 @@ class EixamConnectSdkImpl
           .listen(_handleRejectedTerminalReconciliationRequest);
     }
     _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
+      _closeNativeSosCycleOnLifecycleTerminal(lifecycle);
       final silenceTarget = _physicalSosSilenceTarget;
       if (silenceTarget != null &&
           (!lifecycle.isOpen ||
@@ -698,6 +713,70 @@ class EixamConnectSdkImpl
   /// background. Null means yes, on every platform: a suspended app cannot push
   /// the lease. Only the periodic push is affected, never arm-at-disconnect.
   final bool? tagLeaseDisarmsInBackground;
+
+  /// Test seam: timing of the TAG notification liveness checks.
+  final TagNotifyLivenessTiming tagNotifyLivenessTiming;
+  bool _tagNotifyLivenessPairPending = false;
+
+  /// F12/F16 mitigation: a TAG was unpaired by the user through
+  /// [unpairDevice]/[disconnectDevice] (`userInitiated`) in this process (any SDK instance; the BLE plugin state outlives an instance).
+  /// Never reset.
+  static bool _tagUnpairedThisSession = false;
+
+  /// F12/F16 mitigation: [pairDevice] was called after
+  /// [_tagUnpairedThisSession] was set; the next paired + connected status
+  /// completes that re-pair.
+  bool _tagRepairPending = false;
+
+  /// F12/F16 mitigation: a TAG pairing completed after [_tagUnpairedThisSession]
+  /// was set. Sticky until the process restarts; projected as
+  /// [DeviceLinkHealth.restartRequiredAfterRepair] while a TAG is paired.
+  static bool _tagRepairedWithoutRestart = false;
+
+  /// Test seam: a fresh process for the F12/F16 re-pair state.
+  @visibleForTesting
+  static void resetTagRepairStateForTesting() {
+    _tagUnpairedThisSession = false;
+    _tagRepairedWithoutRestart = false;
+  }
+
+  static const Duration _nativeMirrorWriteTimeout = Duration(
+    milliseconds: 2500,
+  );
+
+  /// Upper bound an app cancel waits for a native countdown write that
+  /// outlived [_nativeMirrorWriteTimeout]: both native owners fail a pending
+  /// write after 10 s (Android `commandWriteTimeoutMs`, iOS
+  /// `protectionWriteTimeout`).
+  static const Duration _nativeMirrorCancelOrderingWait = Duration(seconds: 11);
+
+  /// F15 M2: the native countdown (0x06) write still pending after
+  /// [_nativeMirrorWriteTimeout], and its lifecycle generation. It may still
+  /// land on the TAG.
+  Future<void>? _nativeMirrorWriteInFlight;
+  int? _nativeMirrorWriteInFlightGeneration;
+  static const Duration _tagNotifyLivenessSosFrameQuietWindow = Duration(
+    seconds: 10,
+  );
+  late final TagNotifyLivenessMonitor _tagNotifyLiveness =
+      TagNotifyLivenessMonitor(
+        timing: tagNotifyLivenessTiming,
+        skipReason: () => _tagNotifyLivenessSkipReason,
+        probe: _probeTagNotifyLiveness,
+        recover: _recoverTagNotifyLiveness,
+        onRestartRequiredChanged: (_) =>
+            scheduleMicrotask(_republishDeviceStatusForTagNotifyLiveness),
+        log: sdkReleaseLog,
+        isStatusSupportProven: () {
+          final status = _lastDeviceStatus;
+          return status != null &&
+              status.deviceId.isNotEmpty &&
+              status.deviceId == _tagStatusReplyProvenFor;
+        },
+      );
+
+  /// The TAG (transport id) that answered a `0x23` in this app session.
+  String? _tagStatusReplyProvenFor;
   final Future<void> Function()? disposeCallback;
 
   final StreamController<EixamSdkEvent> _eventsController =
@@ -805,6 +884,11 @@ class EixamConnectSdkImpl
   final Set<String> _emittedNotificationIntentKeys = <String>{};
   final List<String> _emittedNotificationIntentKeyOrder = <String>[];
   bool _disposed = false;
+  Timer? _nativePendingSosPumpTimer;
+  StreamSubscription<SosOutboxStatus>? _sosDeliveryHoldSub;
+  bool? _sosDeliveryHoldReported;
+  bool _nativePendingSosPumpRunning = false;
+  int _nativePendingSosPumpAttempt = 0;
   bool _debugTransientAppSosCorrelationDropped = false;
   String? _activeDeviceSosCycleKey;
   String? _notifiedDeviceSosCycleKey;
@@ -823,6 +907,10 @@ class EixamConnectSdkImpl
   SdkBridgeDiagnostics _bridgeDiagnostics = const SdkBridgeDiagnostics();
   SdkResolvedLocation? _lastResolvedLocation;
   SosState _publicSosState = SosState.idle;
+
+  /// When the public state last became cancelled/resolved. A terminal state
+  /// left over from a previous SOS must never cancel a newer native SOS.
+  DateTime? _publicTerminalAt;
   int _publicSosStateGeneration = 0;
   int? _publicTerminalGeneration;
   int? _publicAcknowledgedGeneration;
@@ -1175,6 +1263,11 @@ class EixamConnectSdkImpl
       trigger: 'initialize',
     );
     await _restorePersistedPreSosSession(trigger: 'initialize');
+    // A native SOS (or TAG cancel) stored before process death is delivered
+    // now.
+    _startNativePendingSosPump('initialize');
+    unawaited(_recoverNativePendingCancel('initialize'));
+    _bindSosDeliveryHold();
     if (!config.deferRuntimeStartup) {
       await _rehydrateSosRuntimeState();
     }
@@ -1418,6 +1511,7 @@ class EixamConnectSdkImpl
         if (state == RealtimeConnectionState.connected &&
             previousState != RealtimeConnectionState.connected &&
             _session != null) {
+          _kickSosDelivery('mqtt_connected');
           unawaited(
             _rehydrateSosRuntimeState(
               trigger: 'mqtt_reconnected',
@@ -1615,6 +1709,13 @@ class EixamConnectSdkImpl
     _bleIncomingEventDiagnosticsSub?.cancel();
     _bleIncomingEventDiagnosticsSub = bleIncomingEvents.listen(
       (event) {
+        final replied = event.deviceRuntimeStatusPacket;
+        if (replied != null) {
+          _markTagStatusReplyProven(
+            replyDeviceId: event.deviceId,
+            replyNodeId: replied.status.nodeId,
+          );
+        }
         _ingestTagBatteryFromEvent(event);
         _trackTagPosition(event);
         if (event.type == BleIncomingEventType.telPositionBacklog) {
@@ -2990,6 +3091,38 @@ class EixamConnectSdkImpl
       await (repository as SosRuntimeSessionIsolation)
           .clearSosRuntimeForSessionChange();
     }
+    await _dropNativeSosRecordsForSessionChange();
+  }
+
+  /// A native SOS / TAG cancel stored for the previous account must never be
+  /// delivered under the next one (native records carry no account scope).
+  Future<void> _dropNativeSosRecordsForSessionChange() async {
+    try {
+      final pending = await protectionPlatformAdapter
+          .peekPendingNativeSosCreate();
+      if (pending != null) {
+        await protectionPlatformAdapter.dropPendingNativeSosCreate(
+          pending.signature,
+          reason: 'session_changed',
+        );
+      }
+      final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
+      if (snapshot.pendingNativeSosCancelCount > 0) {
+        await protectionPlatformAdapter.ackPendingNativeSosCancel();
+      }
+      if (pending != null || snapshot.pendingNativeSosCancelCount > 0) {
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_RECORDS_DROPPED reason=session_changed',
+        );
+      }
+      // The previous account's TAG cycle must not block the next one's SOS,
+      // and its running countdown must never be promoted under the next one.
+      await protectionPlatformAdapter.closeNativeSosCycle(force: true);
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_RECORDS_DROP_FAILED errorType=${error.runtimeType}',
+      );
+    }
   }
 
   @override
@@ -3966,9 +4099,15 @@ class EixamConnectSdkImpl
     return result;
   }
 
+  /// [userInitiated] (additive, default `true`): pass `false` when the host
+  /// unpairs as an automatic cleanup (e.g. a reconnect-timeout settle), not
+  /// because the user chose Unpair/Forget. Only a user-initiated unpair arms
+  /// the F12/F16 re-pair restart state
+  /// ([DeviceLinkHealth.restartRequiredAfterRepair]); the unpair itself is
+  /// identical either way.
   @override
-  Future<void> disconnectDevice() {
-    return unpairDevice();
+  Future<void> disconnectDevice({bool userInitiated = true}) {
+    return unpairDevice(userInitiated: userInitiated);
   }
 
   @override
@@ -4790,12 +4929,19 @@ class EixamConnectSdkImpl
         model.isNotEmpty;
   }
 
+  /// See [disconnectDevice] for [userInitiated].
   @override
-  Future<void> unpairDevice() async {
+  Future<void> unpairDevice({bool userInitiated = true}) async {
     _manualDisconnectRequested = true;
     _clearDeviceRuntimeResidueAfterManualDisconnect();
     final preferredDevice = await preferredBleDeviceStore.getPreferredDevice();
     final currentStatus = await _readCurrentDeviceStatusForUnpair();
+    if (userInitiated &&
+        (preferredDevice != null ||
+            currentStatus?.paired == true ||
+            _lastDeviceStatus?.paired == true)) {
+      _tagUnpairedThisSession = true;
+    }
     await _stopProtectionRuntimeForManualUnpair();
     await _removeAndroidBluetoothBondsForManualUnpair(
       preferredDevice: preferredDevice,
@@ -4931,10 +5077,25 @@ class EixamConnectSdkImpl
   @override
   Future<DeviceStatus> pairDevice({required String pairingCode}) {
     _manualDisconnectRequested = false;
+    _tagNotifyLivenessPairPending = true;
     BleDebugRegistry.instance.selectDevice(pairingCode);
+    if (_tagUnpairedThisSession) _tagRepairPending = true;
     return _cacheDeviceStatus(
       _bleAutoReconnectCoordinator.pairDeviceManually(pairingCode: pairingCode),
       reason: 'pair_device',
+    );
+  }
+
+  /// F12/F16: after an in-app unpair + re-pair without an app restart, TAG SOS
+  /// notifications may stop reaching the app and the backend (root cause
+  /// unknown; an app restart fixes it). Flags it, sticky for the process.
+  void _markTagRepairedWithoutRestartIfNeeded(DeviceStatus status) {
+    if (!_tagRepairPending || !status.paired || !status.connected) return;
+    _tagRepairPending = false;
+    if (_tagRepairedWithoutRestart) return;
+    _tagRepairedWithoutRestart = true;
+    sdkReleaseLog(
+      'TAG_REPAIR_RESTART_REQUIRED reason=repaired_without_restart',
     );
   }
 
@@ -4948,6 +5109,16 @@ class EixamConnectSdkImpl
           _activityRecordings.reconcileHistoryReadiness(runtimeResumed: true);
         }
         _bleAutoReconnectCoordinator.setAppForeground(true);
+        if (!wasResumed) {
+          // The TAG's backend registration may have been removed while the
+          // app was away; the backend then rejects its SOS silently.
+          final connectedStatus = _lastDeviceStatus;
+          if (connectedStatus != null && connectedStatus.connected) {
+            unawaited(
+              _claimConnectedDeviceAssignment(connectedStatus, recheck: true),
+            );
+          }
+        }
         final sosRehydration = _rehydrateSosStateOnAppResume();
         unawaited(sosRehydration);
         _pushTagLinkSnapshot();
@@ -4960,6 +5131,7 @@ class EixamConnectSdkImpl
           );
         }
         unawaited(_bleAutoReconnectCoordinator.tryAutoConnectOnResume());
+        if (!wasResumed) _tagNotifyLiveness.onResume();
         // Only a real return from the background (paused/detached), never
         // inactive/hidden focus changes such as permission dialogs.
         if (!wasResumed && _tagBatteryProbeArmed) {
@@ -5002,6 +5174,12 @@ class EixamConnectSdkImpl
   Future<void> _rehydrateSosStateOnAppResume() async {
     BleDebugRegistry.instance.recordEvent(
       '[SOS_REHYDRATE] trigger=app_resumed action=start',
+    );
+    _kickSosDelivery('app_resumed');
+    // A TAG countdown the native runtime saw in background becomes the Dart
+    // pre-SOS session, so the app shows (and can cancel) it on reopen.
+    await _syncPreSosSessionFromProtectionPlatformSnapshot(
+      trigger: 'app_resumed',
     );
     await _restorePersistedPreSosSession(trigger: 'app_resumed');
     await _settleExpiredPreSosSession(trigger: 'app_resumed');
@@ -6224,6 +6402,145 @@ class EixamConnectSdkImpl
     deviceSosState: deviceSosController.currentStatus.state,
   );
 
+  /// Credits `0x23` support only for a reply of THIS TAG: same transport id
+  /// and, when both are known, the same node id.
+  void _markTagStatusReplyProven({
+    required String? replyDeviceId,
+    required int? replyNodeId,
+  }) {
+    final status = _lastDeviceStatus;
+    if (status == null ||
+        !status.paired ||
+        status.deviceId.isEmpty ||
+        replyDeviceId != status.deviceId) {
+      return;
+    }
+    final tagNodeId = status.nodeId;
+    if (tagNodeId != null && replyNodeId != null && tagNodeId != replyNodeId) {
+      return;
+    }
+    _tagStatusReplyProvenFor = status.deviceId;
+  }
+
+  void _observeTagNotifyLiveness(DeviceStatus status) {
+    // Proof is per TAG: a TAG change or an unpair needs a new 0x23 reply; a
+    // reconnect of the same TAG keeps it.
+    if (!status.paired ||
+        (status.deviceId.isNotEmpty &&
+            status.deviceId != _tagStatusReplyProvenFor)) {
+      _tagStatusReplyProvenFor = null;
+    }
+    // Only a Flutter-owned link is checked: a native owner looks like a
+    // disconnect (timers cancelled) and its hand-back like a new connection
+    // (+5 s/+60 s/+3 min checks).
+    final connected = status.connected && !_isProtectionPlatformOwningBle;
+    final trigger = _tagNotifyLivenessPairPending ? 'pair' : 'reconnect';
+    if (connected) _tagNotifyLivenessPairPending = false;
+    _tagNotifyLiveness.onLink(
+      connected: connected,
+      deviceKey: status.paired && status.deviceId.isNotEmpty
+          ? status.deviceId
+          : null,
+      trigger: trigger,
+    );
+  }
+
+  /// Why a TAG notification liveness check (or its recovery reconnect) must
+  /// not run now; null when it may. Only the Flutter-owned link is checked;
+  /// an SOS in any stage, firmware/migration/provisioning work and a running
+  /// reconnect defer it.
+  String? get _tagNotifyLivenessSkipReason {
+    if (_disposed) return 'disposed';
+    if (_isProtectionPlatformOwningBle) return 'native_owner';
+    if (_isAppBackgrounded) return 'background';
+    // A TAG in its DFU bootloader runs no EIXAM firmware (F11). Stock
+    // Meshtastic never reaches a Flutter EIXAM link (incompatible connects are
+    // refused) and has no EIXAM command path ('path_not_ready').
+    if (_lastDeviceStatus?.inDfuBootloader == true) return 'dfu_bootloader';
+    final sos = sosRepository;
+    if (TagBatteryProbeGate.isSosActive(
+          preSosActive: _hasActivePreSosSession,
+          sosStage: _sosLifecycle.current.stage,
+          deviceSosState: deviceSosController.currentStatus.state,
+        ) ||
+        (sos is MqttOperationalSosRepository && !sos.deliveryStatus.isEmpty)) {
+      return 'sos_active';
+    }
+    final repository = deviceRepository;
+    if (repository is InMemoryDeviceRepository) {
+      final lastSosFrameAt = repository.lastSosFrameAt;
+      if (lastSosFrameAt != null &&
+          DateTime.now().difference(lastSosFrameAt) <
+              _tagNotifyLivenessSosFrameQuietWindow) {
+        return 'sos_frame_recent';
+      }
+      // Never join another caller's 0x23: its timeout may be shorter.
+      if (repository.hasPendingRuntimeStatusRequest) {
+        return 'status_request_pending';
+      }
+    }
+    if (_firmwareOtaInProgress ||
+        firmwareUpdateCoordinator?.hasActiveSession == true) {
+      return 'firmware_update';
+    }
+    if (deviceMigrationCoordinator?.ownsBleOperation == true) {
+      return 'migration';
+    }
+    if (_deviceProvisioningCoordinator?.isBusy == true) return 'provisioning';
+    if (_bleAutoReconnectCoordinator.connectionAttemptActive ||
+        _bleAutoReconnectCoordinator.reconnectCampaignActive) {
+      return 'reconnecting';
+    }
+    if (repository is! InMemoryDeviceRepository ||
+        !repository.hasCommandCapableBleRuntime) {
+      return 'path_not_ready';
+    }
+    return null;
+  }
+
+  /// One `0x23 GET_DEVICE_STATUS` on the Flutter command path: its reply only
+  /// arrives as a TAG notification. A failed write is reported as such and is
+  /// never a missed reply. Never reconnects or rebinds.
+  Future<TagNotifyProbeResult> _probeTagNotifyLiveness(Duration timeout) async {
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository ||
+        _isProtectionPlatformOwningBle ||
+        !repository.hasCommandCapableBleRuntime ||
+        repository.hasPendingRuntimeStatusRequest) {
+      return TagNotifyProbeResult.notReady;
+    }
+    try {
+      // Support is proven only by the reply event itself (its device id and
+      // node id are matched in the incoming-event listener).
+      await repository.requestRuntimeStatusForLiveness(timeout: timeout);
+      return TagNotifyProbeResult.replied;
+    } on DeviceException catch (error) {
+      return switch (error.code) {
+        'E_DEVICE_STATUS_TIMEOUT' => TagNotifyProbeResult.noReply,
+        'E_DEVICE_COMMAND_NOT_READY' => TagNotifyProbeResult.notReady,
+        _ => TagNotifyProbeResult.writeFailed,
+      };
+    } catch (_) {
+      return TagNotifyProbeResult.writeFailed;
+    }
+  }
+
+  /// Drops the Flutter-owned link; the existing unexpected-disconnect path
+  /// (reconnect coordinator backoff -> preferred reconnect) brings it back.
+  /// The monitor re-evaluates [_tagNotifyLivenessSkipReason] synchronously
+  /// right before calling this.
+  Future<bool> _recoverTagNotifyLiveness() async {
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository) return false;
+    return repository.dropBleLinkForRecovery(reason: 'notify_liveness');
+  }
+
+  void _republishDeviceStatusForTagNotifyLiveness() {
+    final raw = _lastDeviceStatus;
+    if (_disposed || raw == null) return;
+    _publishPublicDeviceStatus(rawStatus: raw, reason: 'tag_notify_liveness');
+  }
+
   /// Starts one `0x23 GET_DEVICE_STATUS` only if the command path is **already**
   /// usable, and returns null otherwise. It never goes through
   /// [getDeviceRuntimeStatus], whose readiness helper may start a reconnect
@@ -6761,7 +7078,11 @@ class EixamConnectSdkImpl
         return _protectionModeController.getStatus();
       }
     }
-    return _protectionModeController.exit();
+    // F11: the host's foreground exit keeps a running native TAG countdown
+    // (signed in only); unpair, suspension and session changes never do.
+    return _protectionModeController.exit(
+      keepNativeSosCountdown: _session != null,
+    );
   }
 
   @override
@@ -8367,10 +8688,18 @@ class EixamConnectSdkImpl
       lifecycleRevision: armingLifecycle.revision,
       operationRevision: ++_pendingSosActivationRevision,
     );
-    final canMirrorPreSosOnDevice = runtimeStatus != null;
+    // F15: while the native runtime owns the TAG link (its command path
+    // ready), the Flutter runtime cannot report a command-ready status, but
+    // the countdown still reaches the TAG through the native command channel.
+    final mirrorThroughNativeOwner =
+        runtimeStatus == null && _isAuthoritativeNativeProtectionBleOwner;
+    final canMirrorPreSosOnDevice =
+        runtimeStatus != null || mirrorThroughNativeOwner;
     _logSosDeviceMirrorDecision(
       attempt: canMirrorPreSosOnDevice,
-      reason: canMirrorPreSosOnDevice
+      reason: mirrorThroughNativeOwner
+          ? 'native_owner_command_ready'
+          : canMirrorPreSosOnDevice
           ? 'connected_command_ready_tag'
           : executionCapability.hasConnectedDevice
           ? 'command_channel_not_ready'
@@ -8392,6 +8721,9 @@ class EixamConnectSdkImpl
       'nodeId=${runtimeStatus?.nodeId?.toString() ?? "-"} '
       'hardwareId=${runtimeStatus?.canonicalHardwareId ?? "-"}',
     );
+    // The countdown is anchored to the user's hold, never to how long the
+    // TAG write takes (F15).
+    final userTriggeredAt = DateTime.now();
     if (canMirrorPreSosOnDevice) {
       try {
         BleDebugRegistry.instance.recordEvent(
@@ -8401,7 +8733,14 @@ class EixamConnectSdkImpl
           '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
           'path=ble_inet_sos_trigger countdown=${countdown.inSeconds}',
         );
-        final deviceStatus = await triggerDeviceSos();
+        final deviceStatus = mirrorThroughNativeOwner
+            ? await _triggerNativeMirrorWrite(armingLifecycle.generation)
+            : await triggerDeviceSos();
+        if (mirrorThroughNativeOwner) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_MIRROR_NATIVE result=sent',
+          );
+        }
         _deviceMirrorDispatchedGenerations.add(armingLifecycle.generation);
         mirroredOnDevice =
             deviceStatus.derivedFromBlePacket &&
@@ -8436,12 +8775,22 @@ class EixamConnectSdkImpl
           owner: owner,
           cycleKey:
               observedDeviceCycleKey ?? _newLocalPreSosCycleKey(localStartedAt),
-          originatorNodeId: deviceStatus.nodeId ?? runtimeStatus.nodeId,
+          originatorNodeId: deviceStatus.nodeId ?? runtimeStatus?.nodeId,
           packetId: deviceStatus.packetId,
           activationPayload: activationPayload,
         );
         return;
       } catch (error) {
+        if (mirrorThroughNativeOwner) {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS_DEVICE_MIRROR_NATIVE result=failed reason='
+            '${error is TimeoutException
+                ? 'timeout'
+                : error is EixamSdkException
+                ? error.code
+                : error.runtimeType}',
+          );
+        }
         BleDebugRegistry.instance.recordEvent(
           '[APP_PRE_SOS_DEVICE_COMMAND] action=skip '
           'reason=send_failed bleConnected=true cmd=${deviceSosController.longCommandAvailable} '
@@ -8458,7 +8807,7 @@ class EixamConnectSdkImpl
       );
     }
 
-    final startedAt = DateTime.now();
+    final startedAt = userTriggeredAt;
     _syncPreSosSession(
       startedAt: startedAt,
       expectedActivationAt: startedAt.add(countdown),
@@ -8496,12 +8845,72 @@ class EixamConnectSdkImpl
     });
   }
 
+  /// F15 M2: the native countdown write, bounded for the countdown. On
+  /// timeout the write keeps running natively and may still reach the TAG, so
+  /// the generation counts as mirrored (TAG frames of that episode are not a
+  /// new SOS after a cancel) and an app cancel waits for it before sending the
+  /// TAG cancel. Android's native queue is not strictly FIFO: a queued write
+  /// drained from the GATT callback thread is re-posted to the main thread
+  /// (ProtectionBleRuntimeOwner.drainQueuedCommand), where a newer command can
+  /// start first.
+  Future<DeviceSosStatus> _triggerNativeMirrorWrite(int generation) async {
+    final write = triggerDeviceSos();
+    try {
+      return await write.timeout(_nativeMirrorWriteTimeout);
+    } on TimeoutException {
+      _deviceMirrorDispatchedGenerations.add(generation);
+      late final Future<void> inFlight;
+      inFlight = write.then<void>((_) {}, onError: (Object _) {}).whenComplete(
+        () {
+          if (identical(_nativeMirrorWriteInFlight, inFlight)) {
+            _nativeMirrorWriteInFlight = null;
+            _nativeMirrorWriteInFlightGeneration = null;
+          }
+        },
+      );
+      _nativeMirrorWriteInFlight = inFlight;
+      _nativeMirrorWriteInFlightGeneration = generation;
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_MIRROR_NATIVE write_in_flight generation=$generation',
+      );
+      rethrow;
+    }
+  }
+
+  /// F15 M2: an app cancel never overtakes a countdown write that may still
+  /// land on the TAG.
+  Future<void> _awaitNativeMirrorWriteBeforeCancel(int generation) async {
+    final inFlight = _nativeMirrorWriteInFlight;
+    if (inFlight == null ||
+        _nativeMirrorWriteInFlightGeneration != generation) {
+      return;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_MIRROR_NATIVE cancel_waits_for_write generation=$generation',
+    );
+    await inFlight.timeout(_nativeMirrorCancelOrderingWait, onTimeout: () {});
+  }
+
   @override
   Future<void> cancelPreSos() async {
     final previousClosureInFlight = _publicSosClosureInFlight;
     final lifecycleAtCancellationStart = _sosLifecycle.current;
     final pendingActivationAtCancellationStart = _pendingSosActivation;
     _publicSosClosureInFlight = _SosClosureIntent.cancel;
+    // F15 Q1: the user's cancel stops the app countdown at once, before any
+    // TAG command wait: the countdown can no longer dispatch the SOS (no
+    // revision bump, so the terminalization below still matches it). Only a
+    // failed TAG cancel (rethrown below) lets the countdown resume, as before.
+    final pendingToHold = pendingActivationAtCancellationStart;
+    final heldPendingActivation =
+        pendingToHold != null &&
+        !pendingToHold.dispatchCommitted &&
+        !pendingToHold.cancellationRequested &&
+        pendingToHold.generation == lifecycleAtCancellationStart.generation;
+    if (heldPendingActivation) {
+      pendingToHold.cancellationRequested = true;
+    }
+    var cancelCompleted = false;
     try {
       final status = await deviceSosController.getStatus();
       final activeSession = _preSosSession;
@@ -8537,7 +8946,14 @@ class EixamConnectSdkImpl
           runtimeStatus?.deviceId ??
           _lastDeviceStatus?.deviceId ??
           '-';
-      final cancelDecision = deviceConnected && commandAvailable
+      // F15 M2: a countdown write that may still land on the TAG always gets
+      // its TAG cancel while the native runtime owns the link.
+      final nativeMirrorPossiblyLanded =
+          _nativeMirrorWriteInFlightGeneration ==
+              lifecycleAtCancellationStart.generation &&
+          _isAuthoritativeNativeProtectionBleOwner;
+      final cancelDecision =
+          (deviceConnected && commandAvailable) || nativeMirrorPossiblyLanded
           ? 'send_device_cancel'
           : 'local_only_cancel';
       BleDebugRegistry.instance.recordEvent(
@@ -8565,11 +8981,25 @@ class EixamConnectSdkImpl
             '[APP_PRE_SOS_DEVICE_COMMAND] action=attempt '
             'path=ble_pre_sos_cancel countdown=0',
           );
-          await _closeDeviceSos(
-            intent: _SosClosureIntent.cancel,
-            syncBackendForDeviceOriginatedCycle: false,
-            waitForDeviceAcknowledgement: false,
+          await _awaitNativeMirrorWriteBeforeCancel(
+            lifecycleAtCancellationStart.generation,
           );
+          // Never send this cancel into a newer cycle started meanwhile.
+          if (_sameSosGeneration(
+            _sosLifecycle.current,
+            lifecycleAtCancellationStart,
+          )) {
+            await _closeDeviceSos(
+              intent: _SosClosureIntent.cancel,
+              syncBackendForDeviceOriginatedCycle: false,
+              waitForDeviceAcknowledgement: false,
+            );
+          } else {
+            BleDebugRegistry.instance.recordEvent(
+              '[APP_PRE_SOS_CANCEL] action=device_cancel_skipped '
+              'reason=newer_generation',
+            );
+          }
           BleDebugRegistry.instance.recordEvent(
             '[APP_PRE_SOS_DEVICE_COMMAND] action=sent '
             'path=ble_pre_sos_cancel',
@@ -8590,7 +9020,10 @@ class EixamConnectSdkImpl
             'decision=send_device_cancel result=device_cancel_failed '
             'error=${_compactDiagnosticValue(error)}',
           );
-          rethrow;
+          // Only the F15 M2 extra attempt (the command path looked
+          // unavailable) is best effort: before it this was a local-only
+          // cancel. Otherwise unchanged.
+          if (deviceConnected && commandAvailable) rethrow;
         }
       }
       if (status.state == DeviceSosState.preConfirm) {
@@ -8602,6 +9035,7 @@ class EixamConnectSdkImpl
         cycleKey: activeSession?.cycleKey,
         hasBackendIncident: hasIncidentId,
       );
+      await _settleNativeCreateDeferredToAppCountdown(cancelled: true);
       _clearPreSosSession(
         reason: 'public_pre_sos_cancelled',
         emitIdleState: true,
@@ -8610,8 +9044,19 @@ class EixamConnectSdkImpl
         '[APP_PRE_SOS_CANCEL] action=cancel_pre_sos '
         'decision=$cancelDecision result=local_state_cleared',
       );
+      cancelCompleted = true;
     } finally {
       _publicSosClosureInFlight = previousClosureInFlight;
+      if (heldPendingActivation &&
+          !cancelCompleted &&
+          !pendingToHold.cancelled &&
+          identical(_pendingSosActivation, pendingToHold)) {
+        // The cancel failed: the countdown resumes (known risk M3).
+        pendingToHold.cancellationRequested = false;
+        BleDebugRegistry.instance.recordEvent(
+          '[APP_PRE_SOS_CANCEL] action=countdown_resumed reason=cancel_failed',
+        );
+      }
     }
   }
 
@@ -13253,10 +13698,29 @@ class EixamConnectSdkImpl
       return;
     }
     if (state == 'cancelPending') {
+      // A native TAG cancel always cancels a TAG-owned or TAG-mirrored
+      // countdown, never an app countdown the TAG never ran (F9).
+      final session = _preSosSession;
+      if (session != null &&
+          session.owner == _SosOwner.app &&
+          !session.mirroredOnDevice) {
+        BleDebugRegistry.instance.recordEvent(
+          'SOS_NATIVE_CANCEL_PENDING_IGNORED reason=unmirrored_app_countdown',
+        );
+        return;
+      }
       _clearPreSosSession(
         reason: 'native_pre_sos_cancel_pending',
         emitIdleState: false,
       );
+      if (session != null) {
+        // The TAG closed this cycle while the native runtime owned BLE: the
+        // countdown cached by the Flutter controller is stale and must not
+        // resurrect the session on the next rehydration.
+        deviceSosController.clearPreSosLocally(
+          reason: 'native_pre_sos_cancel_pending',
+        );
+      }
       return;
     }
     if (state == 'createPending') {
@@ -13384,6 +13848,13 @@ class EixamConnectSdkImpl
     }
 
     if (normalizedKind == 'active') {
+      if (snapshot.pendingNativeSosCreateCount > 0) {
+        // Not yet handed to the outbox: deliver it (published and confirmed)
+        // like Android's pending create, never as a device-only incident.
+        _startNativePendingSosPump('ios_snapshot_active_pending');
+        return null;
+      }
+      // Already handed to the outbox (or an earlier build): show it.
       _applyIosBleSosActiveSnapshot(snapshot, trigger: trigger);
       return SosState.sent;
     }
@@ -13668,6 +14139,285 @@ class EixamConnectSdkImpl
     }
   }
 
+  /// Hands a native TAG cancel to the durable MQTT outbox, then retires the
+  /// native pending cancel. The native layer no longer calls REST.
+  Future<void> _deliverNativeQueuedCancel({DateTime? observedAt}) async {
+    final repository = sosRepository;
+    if (repository is! MqttOperationalSosRepository) {
+      return;
+    }
+    try {
+      await repository.deliverDeviceCancel(
+        reason: 'native_device_cycle_closed',
+        observedAt: observedAt,
+      );
+      await protectionPlatformAdapter.ackPendingNativeSosCancel();
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_CANCEL_HANDOFF_FAILED errorType=${error.runtimeType}',
+      );
+    }
+  }
+
+  Future<void> _emitNativePendingSosActiveIntent() async {
+    try {
+      final pending = await protectionPlatformAdapter
+          .peekPendingNativeSosCreate();
+      if (pending == null) {
+        return;
+      }
+      _emitSosActiveNotificationIntent(
+        SosIncident(
+          id: pending.incidentId,
+          state: SosState.sending,
+          createdAt: pending.createdAt.toUtc(),
+          cycleKey: pending.cycleKey,
+          deviceId: pending.deviceId,
+          originatorNodeId: pending.nodeId,
+          owner: 'device',
+          triggerSource: pending.triggerSource,
+        ),
+        dedupeKey: 'sos-cycle:${pending.cycleKey}',
+        nodeId: pending.nodeId,
+      );
+      sdkReleaseLog('SOS_OUTBOX_NATIVE_SOS_NOTIFICATION_INTENT emitted=true');
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_SOS_NOTIFICATION_INTENT emitted=false '
+        'errorType=${error.runtimeType}',
+      );
+    }
+  }
+
+  /// Keeps handing a native pending SOS create to the outbox until it is
+  /// accepted. The first native event used to be the only attempt: one
+  /// failed gate or a missed event left the SOS on the phone (F4).
+  void _startNativePendingSosPump(String trigger) {
+    _nativePendingSosPumpAttempt = 0;
+    _nativePendingSosPumpTimer?.cancel();
+    _nativePendingSosPumpTimer = null;
+    unawaited(_runNativePendingSosPump(trigger));
+  }
+
+  Future<void> _runNativePendingSosPump(String trigger) async {
+    if (_disposed || _nativePendingSosPumpRunning) {
+      return;
+    }
+    _nativePendingSosPumpRunning = true;
+    var retry = false;
+    try {
+      final pending = await protectionPlatformAdapter
+          .peekPendingNativeSosCreate();
+      if (pending == null ||
+          pending.state == 'mqtt_published_pending_backend_confirm') {
+        return;
+      }
+      await _syncNativePreSosBackendPending(trigger: trigger);
+      final remaining = await protectionPlatformAdapter
+          .peekPendingNativeSosCreate();
+      retry =
+          remaining != null &&
+          remaining.state != 'mqtt_published_pending_backend_confirm';
+    } catch (error) {
+      retry = true;
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_PENDING_PUMP_FAILED errorType=${error.runtimeType}',
+      );
+    } finally {
+      _nativePendingSosPumpRunning = false;
+    }
+    if (!retry || _disposed) {
+      return;
+    }
+    const backoff = SosDeliveryOutbox.defaultBackoff;
+    final delay =
+        backoff[_nativePendingSosPumpAttempt.clamp(0, backoff.length - 1)];
+    _nativePendingSosPumpAttempt++;
+    sdkReleaseLog(
+      'SOS_OUTBOX_NATIVE_PENDING_RETRY attempt=$_nativePendingSosPumpAttempt '
+      'delayMs=${delay.inMilliseconds}',
+    );
+    _nativePendingSosPumpTimer?.cancel();
+    _nativePendingSosPumpTimer = Timer(
+      delay,
+      () => unawaited(_runNativePendingSosPump('native_pending_pump')),
+    );
+  }
+
+  /// The platform keeps background execution time (iOS) while the SOS outbox
+  /// holds an action the backend has not confirmed yet.
+  void _bindSosDeliveryHold() {
+    final repository = sosRepository;
+    if (repository is! MqttOperationalSosRepository ||
+        _sosDeliveryHoldSub != null) {
+      return;
+    }
+    void report(SosOutboxStatus status) {
+      final pending = !status.isEmpty;
+      if (_disposed || _sosDeliveryHoldReported == pending) {
+        return;
+      }
+      _sosDeliveryHoldReported = pending;
+      unawaited(
+        protectionPlatformAdapter
+            .setSosDeliveryPending(pending)
+            .catchError(
+              (Object error) => sdkReleaseLog(
+                'SOS_OUTBOX_DELIVERY_HOLD_FAILED errorType=${error.runtimeType}',
+              ),
+            ),
+      );
+    }
+
+    report(repository.deliveryStatus);
+    _sosDeliveryHoldSub = repository.watchDeliveryStatus().listen(report);
+    repository.unconfirmedTriggerPrecheck = _ensureSosReportingDeviceRegistered;
+  }
+
+  /// An SOS the broker acknowledged was not confirmed by the backend. The
+  /// backend accepts an SOS only while the account has at least one
+  /// registered TAG (otherwise it rejects it silently, 422 "Authenticated user
+  /// has no paired reporting device"), e.g. after the registration was
+  /// removed while this process kept its local pairing. Restores it with the
+  /// existing registration call when this phone has that TAG paired;
+  /// otherwise the user is told the TAG is not linked (the SOS cannot be
+  /// accepted until a TAG is paired again; the outbox keeps retrying).
+  Future<({bool known, String? issue})> _ensureSosReportingDeviceRegistered(
+    MqttOperationalSosRequest request,
+  ) async {
+    const unknown = (known: false, issue: null);
+    const fine = (known: true, issue: null);
+    const notLinked = (
+      known: true,
+      issue: SosIncident.deliveryIssueDeviceNotRegistered,
+    );
+    const step = Duration(seconds: 2);
+    if (!_hasAuthenticatedDeviceRegistrySession()) {
+      return unknown;
+    }
+    final revision = _identityRevision;
+    List<BackendRegisteredDevice> devices;
+    try {
+      devices = await deviceRegistryRepository.listRegisteredDevices().timeout(
+        step,
+      );
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION result=check_failed '
+        'errorType=${error.runtimeType}',
+      );
+      return unknown;
+    }
+    if (_disposed || revision != _identityRevision) return unknown;
+    if (devices.isNotEmpty) {
+      // The registration rule is met; the cause is elsewhere.
+      sdkReleaseLog('SOS_OUTBOX_DEVICE_REGISTRATION result=present');
+      return fine;
+    }
+    final nodeId = int.tryParse(request.deviceId?.trim() ?? '');
+    final status = _lastDeviceStatus;
+    final locallyPaired =
+        nodeId != null &&
+        status != null &&
+        status.nodeId == nodeId &&
+        (status.paired || status.connected);
+    if (!locallyPaired) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION result=missing_not_paired_here',
+      );
+      return notLinked;
+    }
+    if (!_assignmentClaimInFlight.add(nodeId)) {
+      // A connect-time claim is registering it right now.
+      return unknown;
+    }
+    try {
+      final registered = await _registerPairedDevice(status).timeout(step);
+      if (_disposed || revision != _identityRevision) return unknown;
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION '
+        'result=${registered ? "reregistered" : "register_mismatch"}',
+      );
+      return registered ? fine : notLinked;
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_DEVICE_REGISTRATION result=register_failed '
+        'errorType=${error.runtimeType}',
+      );
+      // Retried on the next attempt; meanwhile the user learns why.
+      return notLinked;
+    } finally {
+      _assignmentClaimInFlight.remove(nodeId);
+    }
+  }
+
+  /// Existing registration call (`upsertRegisteredDevice`) for the paired
+  /// TAG; the same payload the connect-time claim uses.
+  Future<bool> _registerPairedDevice(DeviceStatus status) async {
+    final nodeId = status.nodeId;
+    if (nodeId == null) return false;
+    final firmwareVersion = status.firmwareVersion?.trim();
+    final hardwareModel = (status.model ?? status.deviceAlias)?.trim();
+    final registered = await deviceRegistryRepository.upsertRegisteredDevice(
+      hardwareId: nodeId.toString(),
+      firmwareVersion: firmwareVersion == null || firmwareVersion.isEmpty
+          ? 'unknown'
+          : firmwareVersion,
+      hardwareModel: hardwareModel == null || hardwareModel.isEmpty
+          ? 'EIXAM R1'
+          : hardwareModel,
+      pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
+    );
+    final ok = registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId);
+    if (ok) {
+      _rememberVerifiedDeviceAssignment(nodeId);
+    }
+    return ok;
+  }
+
+  /// Connectivity regained / app resumed / start-up: retry every pending SOS
+  /// delivery now instead of waiting for the next backoff step.
+  void _kickSosDelivery(String reason) {
+    final repository = sosRepository;
+    if (repository is MqttOperationalSosRepository) {
+      repository.kickDelivery(reason);
+    }
+    _startNativePendingSosPump(reason);
+    unawaited(_recoverNativePendingCancel(reason));
+  }
+
+  /// A native TAG cancel stored before process death (its event was lost
+  /// with the process). Delivered with its real observation time: the
+  /// outbox drops it if a newer SOS already reached the broker and orders it
+  /// before newer queued SOS; the repository settles only an older local
+  /// SOS. Without that time it is delivered only when nothing is open.
+  Future<void> _recoverNativePendingCancel(String reason) async {
+    final repository = sosRepository;
+    if (repository is! MqttOperationalSosRepository) {
+      return;
+    }
+    try {
+      final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
+      if (snapshot.pendingNativeSosCancelCount <= 0) {
+        return;
+      }
+      final observedAt = snapshot.pendingNativeSosCancelCreatedAt;
+      if (observedAt == null &&
+          (_sosLifecycle.current.isOpen || repository.hasPendingSosTrigger)) {
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_CANCEL_RECOVERY_DEFERRED reason=unknown_observation_time',
+        );
+        return;
+      }
+      sdkReleaseLog('SOS_OUTBOX_NATIVE_CANCEL_RECOVERED trigger=$reason');
+      await _deliverNativeQueuedCancel(observedAt: observedAt);
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CANCEL_RECOVERY_FAILED errorType=${error.runtimeType}',
+      );
+    }
+  }
+
   Future<void> _syncNativePreSosBackendPending({
     required String trigger,
     int maxAttempts = 1,
@@ -13739,6 +14489,52 @@ class EixamConnectSdkImpl
     _emitPublicSosState(SosState.sending, source: trigger);
   }
 
+  /// Native create queued (by the TAG's own timer) while the app countdown
+  /// still runs: published only through the app dispatch at its deadline.
+  String? _nativeCreateDeferredToAppCountdown;
+
+  bool get _appCountdownOwnsNativeCreate {
+    final operation = _pendingSosActivation;
+    return _preSosSession?.owner == _SosOwner.app &&
+        operation != null &&
+        _isPendingSosActivationCurrent(operation) &&
+        !operation.dispatchCommitted;
+  }
+
+  /// After the app countdown: the deferred native create is the same SOS. It
+  /// is acked once the app dispatch produced an incident, dropped on cancel.
+  Future<void> _settleNativeCreateDeferredToAppCountdown({
+    required bool cancelled,
+    SosIncident? incident,
+  }) async {
+    final signature = _nativeCreateDeferredToAppCountdown;
+    if (signature == null || (!cancelled && incident == null)) return;
+    _nativeCreateDeferredToAppCountdown = null;
+    try {
+      if (cancelled) {
+        await protectionPlatformAdapter.dropPendingNativeSosCreate(
+          signature,
+          reason: 'app_countdown_cancelled',
+        );
+      } else {
+        await protectionPlatformAdapter.ackPendingNativeSosCreate(
+          signature,
+          backendIncidentId: _isLocalAppSosIncidentId(incident!.id)
+              ? null
+              : incident.id,
+        );
+      }
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CREATE_SETTLED_BY_APP_COUNTDOWN '
+        'result=${cancelled ? "dropped" : "acked"}',
+      );
+    } catch (error) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_CREATE_SETTLE_FAILED errorType=${error.runtimeType}',
+      );
+    }
+  }
+
   bool _reconcileNativeCreateWithPendingAppActivation({
     required String trigger,
   }) {
@@ -13797,11 +14593,7 @@ class EixamConnectSdkImpl
       return;
     }
     try {
-      if (_terminalWatermarkRejectsRestoredEvidence(
-        observedAt: pending.updatedAt,
-        nodeId: pending.nodeId,
-        cycleKey: pending.cycleKey,
-      )) {
+      if (_terminalWatermarkRejectsNativePendingCreate(pending)) {
         await protectionPlatformAdapter.dropPendingNativeSosCreate(
           pending.signature,
           reason: 'authoritative_terminal_watermark',
@@ -13816,6 +14608,20 @@ class EixamConnectSdkImpl
         trigger: trigger,
       )) {
         return;
+      }
+      // F15: the TAG's own timer can expire up to ~2 s before the app
+      // countdown it mirrors. Never publish before the app deadline.
+      if (_appCountdownOwnsNativeCreate) {
+        _nativeCreateDeferredToAppCountdown = pending.signature;
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_CREATE_DEFERRED reason=app_countdown_running',
+        );
+        return;
+      }
+      // No app countdown owns it any more (e.g. the app dispatch failed):
+      // the normal flush settles it, so a later app cancel never drops it.
+      if (_nativeCreateDeferredToAppCountdown == pending.signature) {
+        _nativeCreateDeferredToAppCountdown = null;
       }
       final confirmedIncident = await sosRepository.getCurrentIncident();
       if (_hasNonRuntimeVisibleSosIncident(confirmedIncident)) {
@@ -13883,11 +14689,7 @@ class EixamConnectSdkImpl
 
       // Snapshot acquisition yields to native cancellation/terminal events.
       // Revalidate their existing authoritative fences before publishing.
-      if (_terminalWatermarkRejectsRestoredEvidence(
-        observedAt: pending.updatedAt,
-        nodeId: pending.nodeId,
-        cycleKey: pending.cycleKey,
-      )) {
+      if (_terminalWatermarkRejectsNativePendingCreate(pending)) {
         await protectionPlatformAdapter.dropPendingNativeSosCreate(
           pending.signature,
           reason: 'authoritative_terminal_watermark',
@@ -14183,10 +14985,24 @@ class EixamConnectSdkImpl
     required String trigger,
   }) async {
     String? cancellationReason;
-    if (_publicSosState == SosState.cancelled ||
-        _publicSosState == SosState.resolved) {
+    final publicTerminalAt = _publicTerminalAt;
+    if ((_publicSosState == SosState.cancelled ||
+            _publicSosState == SosState.resolved) &&
+        publicTerminalAt != null &&
+        publicTerminalAt.isAfter(pending.createdAt.toUtc())) {
+      // Only a terminal reached after this pending SOS was created cancels
+      // it. The terminal state of the previous SOS (e.g. a TAG cancel leaves
+      // the public state `cancelled`) used to drop every following
+      // background TAG SOS silently (F4).
       cancellationReason = 'public_terminal:${_publicSosState.name}';
     } else {
+      if (_publicSosState == SosState.cancelled ||
+          _publicSosState == SosState.resolved) {
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_PENDING_KEPT reason=terminal_predates_pending '
+          'state=${_publicSosState.name}',
+        );
+      }
       try {
         final snapshot = await protectionPlatformAdapter.getPlatformSnapshot();
         if (snapshot.preSosLifecycleState == 'cancelPending') {
@@ -14711,6 +15527,11 @@ class EixamConnectSdkImpl
       );
       return;
     }
+    // F15 Q1: a user cancel in progress holds the app countdown.
+    if (session.owner == _SosOwner.app &&
+        _pendingSosActivation?.cancellationRequested == true) {
+      return;
+    }
     if (_isPreSosSessionExpired(session)) {
       if (_pendingPreSosConfirmation == null) {
         await _confirmPreSosFromCountdownZero();
@@ -14783,6 +15604,10 @@ class EixamConnectSdkImpl
       if (operation != null && !operation.dispatchResult.isCompleted) {
         operation.dispatchResult.complete();
       }
+      await _settleNativeCreateDeferredToAppCountdown(
+        cancelled: false,
+        incident: incident,
+      );
       if (operation != null &&
           (!_isPendingSosActivationCurrent(operation) ||
               operation.cancellationRequested)) {
@@ -17354,6 +18179,116 @@ class EixamConnectSdkImpl
     return null;
   }
 
+  /// A native pending create is stored only after the native runtime saw a
+  /// fresh pre-SOS and the full device countdown elapse, so it is a new
+  /// physical SOS when it was created after the terminal boundary and its
+  /// TAG cycle key is not the terminated cycle. In the background Dart never
+  /// observes the device inactive boundary (native owns BLE), and the generic
+  /// fence below then rejected every following TAG SOS (F4). A missed SOS is
+  /// worse than a duplicate one, which the user can cancel.
+  bool _terminalWatermarkRejectsNativePendingCreate(
+    ProtectionPendingNativeSosCreate pending,
+  ) {
+    if (_cancelCoversNativePendingCreateCycle(pending)) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_NATIVE_PENDING_REJECTED reason=cycle_cancelled',
+      );
+      return true;
+    }
+    final activeWatermark = _sosLifecycle.activeTerminalWatermark;
+    final current = _sosLifecycle.current;
+    final terminal = activeWatermark ?? (current.isTerminal ? current : null);
+    final cycleKey = pending.cycleKey.trim();
+    if (terminal != null &&
+        cycleKey.isNotEmpty &&
+        pending.createdAt.toUtc().isAfter(
+          terminal.lastAuthoritativeObservation.toUtc(),
+        )) {
+      final terminalCycleIds = <String>{
+        if (terminal.deviceCycleKey?.trim() case final value?
+            when value.isNotEmpty)
+          value,
+        if (terminal.incident?.cycleKey?.trim() case final value?
+            when value.isNotEmpty)
+          value,
+        if (terminal.localIncidentId?.trim() case final value?
+            when value.isNotEmpty)
+          value,
+        if (terminal.lifecycleId.trim() case final value when value.isNotEmpty)
+          value,
+        if (_deviceCycleKeyCorrelatedToLifecycle(terminal)?.trim()
+            case final value? when value.isNotEmpty)
+          value,
+      };
+      final incomingCycleIds = <String>{
+        cycleKey,
+        'device-runtime-$cycleKey',
+        'device-cycle:$cycleKey',
+      };
+      if (!incomingCycleIds.any(terminalCycleIds.contains)) {
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_PENDING_ADMITTED reason=new_cycle_after_terminal',
+        );
+        return false;
+      }
+    }
+    return _terminalWatermarkRejectsRestoredEvidence(
+      observedAt: pending.updatedAt,
+      nodeId: pending.nodeId,
+      cycleKey: pending.cycleKey,
+    );
+  }
+
+  /// M5: a TAG cycle with a cancel (TAG or app) never publishes a trigger
+  /// afterwards; it would open a new backend incident (false SOS). The
+  /// native create of that cycle is rejected when a cancel of the same TAG
+  /// (an unknown node counts as the same: one TAG per user) was observed at
+  /// or after the cycle START. Start, not `createdAt` (promotion time) or
+  /// `updatedAt` (advances on every retry). A cycle started after the
+  /// cancel is a new SOS and is admitted.
+  bool _cancelCoversNativePendingCreateCycle(
+    ProtectionPendingNativeSosCreate pending,
+  ) {
+    final cycleStartedAt = _nativePendingCreateCycleStartedAt(pending);
+    for (final cancel in <SosLifecycleSnapshot?>[
+      _sosLifecycle.current,
+      _sosLifecycle.activeTerminalWatermark,
+      _lastCancelledSosLifecycle,
+    ]) {
+      if (cancel == null || cancel.stage != SosLifecycleStage.cancelled) {
+        continue;
+      }
+      final cancelNode = cancel.nodeId;
+      final pendingNode = pending.nodeId;
+      if (cancelNode != null &&
+          pendingNode != null &&
+          _normalizeNodeId(cancelNode) != _normalizeNodeId(pendingNode)) {
+        continue;
+      }
+      if (!cancel.lastAuthoritativeObservation.toUtc().isBefore(
+        cycleStartedAt,
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Native hand-off keys are `<frameKey>@<cycleStartedMs>` (iOS and
+  /// Android); `createdAt` is the fallback for a key without a start.
+  DateTime _nativePendingCreateCycleStartedAt(
+    ProtectionPendingNativeSosCreate pending,
+  ) {
+    final key = pending.cycleKey.trim();
+    final separator = key.lastIndexOf('@');
+    final startedMs = separator < 0
+        ? null
+        : int.tryParse(key.substring(separator + 1));
+    return startedMs == null
+        ? pending.createdAt.toUtc()
+        : DateTime.fromMillisecondsSinceEpoch(startedMs, isUtc: true);
+  }
+
   bool _terminalWatermarkRejectsRestoredEvidence({
     required DateTime? observedAt,
     required int? nodeId,
@@ -18124,6 +19059,47 @@ class EixamConnectSdkImpl
     _applyPublicSosState(nextState, source: source, emit: true);
   }
 
+  int? _nativeSosCycleClosedGeneration;
+
+  /// Latest cancelled lifecycle, kept after a newer generation opens (M5).
+  SosLifecycleSnapshot? _lastCancelledSosLifecycle;
+
+  /// The SOS of this lifecycle generation really ended (cancelled, resolved
+  /// or activation failed): a native TAG cycle already handed over must not stay open
+  /// when its close frame never reached the phone (otherwise the next TAG SOS
+  /// is ignored natively). Driven by the lifecycle, never by a public `idle`
+  /// or projection: that closed the cycle of a live SOS, whose TAG cancel then
+  /// reached nobody (F8). Never during `cancelling` either: a failed cancel
+  /// leaves the SOS open. Native keeps a cycle whose SOS was not handed over.
+  void _closeNativeSosCycleOnLifecycleTerminal(SosLifecycleSnapshot lifecycle) {
+    if (lifecycle.stage == SosLifecycleStage.cancelled) {
+      _lastCancelledSosLifecycle = lifecycle;
+    }
+    if (_disposed ||
+        (lifecycle.stage != SosLifecycleStage.cancelled &&
+            lifecycle.stage != SosLifecycleStage.resolved &&
+            lifecycle.stage != SosLifecycleStage.activationFailed) ||
+        _nativeSosCycleClosedGeneration == lifecycle.generation) {
+      return;
+    }
+    _nativeSosCycleClosedGeneration = lifecycle.generation;
+    unawaited(
+      protectionPlatformAdapter
+          .closeNativeSosCycle(
+            nodeId: lifecycle.nodeId,
+            terminal: nativeSosCycleTerminalFor(lifecycle.stage),
+          )
+          .catchError(
+            (Object error) => sdkReleaseLog(
+              'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
+            ),
+          ),
+    );
+  }
+
+  /// Sign-out / account change clears everything, an open SOS included.
+  bool _isSessionClearSosSource(String source) => source == 'clear_session';
+
   bool _hasNewAuthoritativeGenerationSinceTerminal() {
     final watermark = _sosLifecycle.activeTerminalWatermark;
     final current = _sosLifecycle.current;
@@ -18139,6 +19115,25 @@ class EixamConnectSdkImpl
   }) {
     _alignPublicSosProjectionWithCurrentGeneration(source: source);
     final authoritativeLifecycle = _sosLifecycle.current;
+    if (nextState == SosState.idle &&
+        _publicSosState != SosState.idle &&
+        authoritativeLifecycle.isOpen &&
+        (authoritativeLifecycle.stage != SosLifecycleStage.arming ||
+            _hasActivePreSosSession) &&
+        !_isSessionClearSosSource(source)) {
+      // An open SOS (past its countdown, or a countdown still running) is
+      // never projected as idle: a passive read (repository still idle before
+      // its trigger is queued, device evidence not admitted yet) made hosts
+      // drop the SOS screen takeover (F6). The lifecycle ends an SOS. A
+      // countdown whose pre-SOS session was already cleared may settle.
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_OPEN_LIFECYCLE_IDLE_REJECTED source=$source '
+        'generation=${authoritativeLifecycle.generation} '
+        'stage=${authoritativeLifecycle.stage.name} '
+        'current=${_publicSosState.name}',
+      );
+      return false;
+    }
     final terminalProjectionIncident =
         _publicSosFallbackIncident ?? _lastKnownActiveSosIncident;
     final terminalProjectionMatchesCurrentGeneration =
@@ -18222,6 +19217,7 @@ class EixamConnectSdkImpl
     _publicSosState = nextState;
     _publicSosStateGeneration = _sosLifecycle.current.generation;
     if (_isTerminalPublicSosState(nextState)) {
+      _publicTerminalAt = DateTime.now().toUtc();
       _publicTerminalGeneration = _publicSosStateGeneration;
     } else {
       _publicTerminalGeneration = null;
@@ -19639,11 +20635,24 @@ class EixamConnectSdkImpl
         !DateTime.now().isBefore(status.expectedActivationAt!);
     final cycleKey = _deriveDeviceSosCycleKey(status);
     SosState? chosenPublicState;
+    // A closed TAG status (inactive/resolved) cached before an app-owned,
+    // unmirrored countdown started (e.g. a background TAG cancel) says
+    // nothing about that countdown (F9). An open TAG SOS is never stale.
+    final statusObservedAt = status.derivedFromBlePacket
+        ? (status.lastPacketAt ?? status.updatedAt)
+        : status.updatedAt;
+    final staleForAppCountdown =
+        session != null &&
+        session.owner == _SosOwner.app &&
+        !session.mirroredOnDevice &&
+        (status.state == DeviceSosState.inactive ||
+            status.state == DeviceSosState.resolved) &&
+        !statusObservedAt.isAfter(session.startedAt);
 
     if (session != null &&
         !sessionExpired &&
         !session.mirroredOnDevice &&
-        !status.derivedFromBlePacket) {
+        (!status.derivedFromBlePacket || staleForAppCountdown)) {
       chosenPublicState = SosState.arming;
     } else if (status.state == DeviceSosState.preConfirm &&
         !deviceCountdownExpired) {
@@ -20527,16 +21536,23 @@ class EixamConnectSdkImpl
     if (!nodeIdChanged && !becameConnected) {
       return;
     }
-    unawaited(_claimConnectedDeviceAssignment(status));
+    // Every (re)connection re-checks the backend registration: it can be
+    // removed while this process runs (unpair elsewhere, portal), and the
+    // backend then rejects every SOS of this TAG.
+    unawaited(_claimConnectedDeviceAssignment(status, recheck: true));
   }
 
-  Future<void> _claimConnectedDeviceAssignment(DeviceStatus status) async {
+  Future<void> _claimConnectedDeviceAssignment(
+    DeviceStatus status, {
+    bool recheck = false,
+  }) async {
     final revision = _identityRevision;
     final nodeId = status.nodeId;
     if (nodeId == null || !_hasAuthenticatedDeviceRegistrySession()) {
       return;
     }
-    if (_verifiedAssignedNodeIdsForSession.contains(nodeId.toString())) {
+    if (!recheck &&
+        _verifiedAssignedNodeIdsForSession.contains(nodeId.toString())) {
       return;
     }
     if (!_assignmentClaimInFlight.add(nodeId)) {
@@ -20562,21 +21578,9 @@ class EixamConnectSdkImpl
         );
         return;
       }
-      final firmwareVersion = status.firmwareVersion?.trim();
-      final hardwareModel = (status.model ?? status.deviceAlias)?.trim();
-      final registered = await deviceRegistryRepository.upsertRegisteredDevice(
-        hardwareId: nodeId.toString(),
-        firmwareVersion: firmwareVersion == null || firmwareVersion.isEmpty
-            ? 'unknown'
-            : firmwareVersion,
-        hardwareModel: hardwareModel == null || hardwareModel.isEmpty
-            ? 'EIXAM R1'
-            : hardwareModel,
-        pairedAt: (status.lastSeen ?? DateTime.now()).toUtc(),
-      );
+      final registered = await _registerPairedDevice(status);
       if (_disposed || revision != _identityRevision) return;
-      if (registeredHardwareIdMatchesNodeId(registered.hardwareId, nodeId)) {
-        _rememberVerifiedDeviceAssignment(nodeId);
+      if (registered) {
         _rememberRecordingAssignment(nodeId, revision);
         BleDebugRegistry.instance.recordEvent(
           'DEVICE_ASSIGNMENT result=created action=auto_claim',
@@ -23025,6 +24029,7 @@ class EixamConnectSdkImpl
     // stream and the native Protection status stream), so a drop observed by
     // the native owner reaches the disconnect policy too.
     _observeTagLink(publicStatus);
+    _observeTagNotifyLiveness(publicStatus);
     unawaited(
       _activityRecordings
           .inputDisconnected(
@@ -23119,7 +24124,7 @@ class EixamConnectSdkImpl
         'reason=flutter_ble_owner',
       );
     }
-    final publicStatus = projection.visibleConnected && !rawStatus.connected
+    final projectedStatus = projection.visibleConnected && !rawStatus.connected
         ? rawStatus.copyWith(
             connected: true,
             lifecycleState: rawStatus.activated
@@ -23128,6 +24133,17 @@ class EixamConnectSdkImpl
             lastSeen: rawStatus.lastSeen ?? DateTime.now(),
           )
         : rawStatus;
+    _markTagRepairedWithoutRestartIfNeeded(projectedStatus);
+    final linkHealth = _tagRepairedWithoutRestart && projectedStatus.paired
+        ? DeviceLinkHealth.restartRequiredAfterRepair
+        : projectedStatus.connected &&
+              _tagNotifyLiveness.restartRequired &&
+              !_isProtectionPlatformOwningBle
+        ? DeviceLinkHealth.restartRequired
+        : DeviceLinkHealth.ok;
+    final publicStatus = projectedStatus.linkHealth == linkHealth
+        ? projectedStatus
+        : projectedStatus.copyWith(linkHealth: linkHealth);
 
     BleDebugRegistry.instance.recordEvent(
       '[DEVICE_FLOW] sdk_public_device_status '
@@ -23587,7 +24603,8 @@ class EixamConnectSdkImpl
         previous.firmwareVersion != next.firmwareVersion ||
         previous.signalQuality != next.signalQuality ||
         previous.lifecycleState != next.lifecycleState ||
-        previous.provisioningError != next.provisioningError;
+        previous.provisioningError != next.provisioningError ||
+        previous.linkHealth != next.linkHealth;
   }
 
   Future<void> _resumeDeathManMonitoringIfNeeded() async {
@@ -24860,17 +25877,20 @@ class EixamConnectSdkImpl
               source: 'native_backend_sync_queued_cancel_backstop',
             );
           }
+          // The TAG closed its cycle while native owned BLE: the backend must
+          // follow over MQTT even without a known backend incident (F5).
+          unawaited(_deliverNativeQueuedCancel(observedAt: event.timestamp));
         } else {
           _emitPublicSosState(
             SosState.sending,
             source: 'native_backend_sync_queued',
           );
-          unawaited(
-            _syncNativePreSosBackendPending(
-              trigger: 'native_backend_sync_queued',
-              maxAttempts: 1,
-            ),
-          );
+          // Alarm/notification never waits for the network. iOS posts its
+          // own native SOS notification (also without Dart).
+          if (protectionPlatformAdapter.platform != ProtectionPlatform.ios) {
+            unawaited(_emitNativePendingSosActiveIntent());
+          }
+          _startNativePendingSosPump('native_backend_sync_queued');
         }
         return true;
       case ProtectionPlatformEventType.nativeBackendSyncSucceeded:
@@ -25292,8 +26312,59 @@ class EixamConnectSdkImpl
       'decision=accept_terminal incidentId=${terminalIncident.id} '
       'canonicalIncidentId=${terminalIncident.id} reason=$reason',
     );
+    _deliverTagCancelOfOpenSos(reason: reason, terminalState: terminalState);
     _emitPublicSosState(terminalState, source: 'device_terminal_event');
     _emitOperationalDiagnostics();
+  }
+
+  /// The TAG cancelled (0xE1, after its countdown) an SOS that was open on
+  /// the phone. The backend must follow over MQTT even when this phone's own
+  /// BLE path never tracked the TAG cycle (an SOS born from the native
+  /// hand-off): otherwise the app and the TAG go idle while the backend keeps
+  /// the incident active (F8). Never for a backend close (0xE3 → resolved)
+  /// nor a countdown cancel (`pre_sos`, stays local). A cancel also queued by
+  /// another path is a backend no-op.
+  void _deliverTagCancelOfOpenSos({
+    required String reason,
+    required SosState terminalState,
+  }) {
+    const deliveredOrDelivering = <SosState>{
+      SosState.sending,
+      SosState.sent,
+      SosState.acknowledged,
+    };
+    final repository = sosRepository;
+    final status = deviceSosController.currentStatus;
+    final lifecycle = _sosLifecycle.current;
+    if (terminalState != SosState.cancelled ||
+        reason != 'device_terminal_event:inactive' ||
+        !deliveredOrDelivering.contains(_publicSosState) ||
+        repository is! MqttOperationalSosRepository ||
+        // Only this phone's connected TAG closing this phone's own SOS: never
+        // a relayed/remote closure nor an external-only (LoRa) incident.
+        status.transitionSource != DeviceSosTransitionSource.device ||
+        // The user's cancel on the TAG (0xE1), never a backend resolve close
+        // (0xE3) that reaches here as the same `inactive` terminal.
+        !_isOwnDeviceUserDeactivatedEvent(status) ||
+        !_isConnectedOwnDeviceSosStatus(status) ||
+        lifecycle.externalOnly) {
+      return;
+    }
+    sdkReleaseLog('SOS_OUTBOX_TAG_CANCEL_OF_OPEN_SOS');
+    unawaited(
+      repository
+          .deliverDeviceCancel(
+            reason: 'tag_cancel_open_sos',
+            // The frame's own time: a newer SOS created after it is never
+            // superseded by this cancel.
+            observedAt: status.updatedAt.toUtc(),
+          )
+          .catchError(
+            (Object error) => sdkReleaseLog(
+              'SOS_OUTBOX_TAG_CANCEL_FAILED errorType=${error.runtimeType}',
+            ),
+          ),
+    );
   }
 
   bool _deferDeviceTerminalDuringPublicCancellation({required String source}) {
@@ -27777,6 +28848,10 @@ class EixamConnectSdkImpl
       return;
     }
     _disposed = true;
+    _nativePendingSosPumpTimer?.cancel();
+    _nativePendingSosPumpTimer = null;
+    unawaited(_sosDeliveryHoldSub?.cancel());
+    _sosDeliveryHoldSub = null;
     _cancelRemoteTerminalDeviceClearAckTimers();
     _advanceIdentityRevision();
     final recordingDisposal = _activityRecordings.dispose();
@@ -27790,6 +28865,7 @@ class EixamConnectSdkImpl
       availabilityDisposalError = error;
       availabilityDisposalStack = stack;
     }
+    _tagNotifyLiveness.dispose();
     _tagLeaseTicker?.cancel();
     _tagLeaseTicker = null;
     unawaited(_tagRekeySub?.cancel());

@@ -17,11 +17,19 @@ internal object ProtectionSosLifecycleLogic {
             else -> currentState
         }
 
-    fun onClosePacket(currentState: ProtectionSosLifecycleState): CloseOutcome =
+    /**
+     * [backendTerminal]: the close is the backend's own terminal relayed to the
+     * TAG (`0xE3`, e.g. resolved in the portal). That is not a user cancel and
+     * must never send a backend cancel.
+     */
+    fun onClosePacket(
+        currentState: ProtectionSosLifecycleState,
+        backendTerminal: Boolean = false,
+    ): CloseOutcome =
         when (currentState) {
             ProtectionSosLifecycleState.createPending -> CloseOutcome(
                 nextState = ProtectionSosLifecycleState.cancelPending,
-                shouldCancelBackend = true,
+                shouldCancelBackend = !backendTerminal,
             )
 
             ProtectionSosLifecycleState.preConfirmSeen,
@@ -36,6 +44,60 @@ internal object ProtectionSosLifecycleLogic {
                 shouldCancelBackend = false,
             )
         }
+
+    /**
+     * Whether a native pending SOS create is already on the backend and can be
+     * retired natively instead of being handed to the SDK. Only when the stored
+     * backend incident belongs to this same TAG cycle: the stored id is never
+     * cleared when an SOS ends, so an incident of an earlier SOS (cancelled
+     * from the app) retired every later background TAG SOS, which then never
+     * reached the backend (F7 Android). Hand-off cycle keys are unique per SOS
+     * (`nativeHandoffCycleKey`); anything else stays pending for the SDK, which
+     * confirms an already open incident itself.
+     */
+    fun isNativeCreateAlreadySynced(
+        activeBackendIncidentId: String?,
+        activeBackendIncidentLifecycleId: String?,
+        pendingCreateCycleKey: String?,
+    ): Boolean {
+        if (activeBackendIncidentId.isNullOrBlank()) return false
+        val incidentCycle = activeBackendIncidentLifecycleId?.trim()
+        val pendingCycle = pendingCreateCycleKey?.trim()
+        return !incidentCycle.isNullOrEmpty() && incidentCycle == pendingCycle
+    }
+
+    /**
+     * Identity of the native SOS hand-off for one TAG cycle. The frame cycle
+     * key (`sos:<node>:<4-bit packet id>`) repeats across SOS; the SDK fences
+     * a pending SOS whose cycle equals the one it just closed, so a new SOS
+     * with a recycled key was dropped as a replay. The cycle start makes it
+     * unique per SOS and stable for the same cycle.
+     */
+    fun nativeHandoffCycleKey(frameCycleKey: String?, cycleStartedAt: Long?): String? {
+        val key = frameCycleKey?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val started = cycleStartedAt?.takeIf { it > 0L } ?: return key
+        return "$key@$started"
+    }
+
+    /**
+     * F17b/M5: the SDK ended an SOS (any terminal). A handed-over cycle
+     * (createPending whose create the SDK claimed) closes, so a runtime restart
+     * never re-creates it. A running countdown and an unclaimed create (maybe a
+     * newer SOS) are never touched.
+     */
+    fun onSdkClose(
+        currentState: ProtectionSosLifecycleState,
+        hasUnclaimedNativeCreate: Boolean,
+    ): ProtectionSosLifecycleState =
+        if (currentState == ProtectionSosLifecycleState.createPending && !hasUnclaimedNativeCreate) {
+            ProtectionSosLifecycleState.idle
+        } else {
+            currentState
+        }
+
+    /** Rehydrate re-queues a native create only for an open, unclosed cycle. */
+    fun shouldRequeueCreateOnRehydrate(state: ProtectionSosLifecycleState): Boolean =
+        state == ProtectionSosLifecycleState.createPending
 
     data class CloseOutcome(
         val nextState: ProtectionSosLifecycleState,

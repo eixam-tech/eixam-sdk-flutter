@@ -75,7 +75,7 @@ active) even with bit 5 set, as in `AGENTS.md`. Notifications from any other
 characteristic (INET `ea03`, CMD `ea04`) are never SOS candidates. Frames that
 are not SOS on TEL
 continue to `emitTelNotify`. iOS keeps 7 B `sosType 0` as a clear (Android maps
-it to `Unknown`). Tests: `ios/Tests/IosBleSosFrameClassifierTests.swift`
+it to `Unknown`). Tests: `ios/Tests/IosBleSosFrameClassifierTests.swift` (background SOS hand-off: `ios/Tests/IosNativeSosDeliveryStoreTests.swift`, same swiftc recipe plus `Classes/IosNativeSosDeliveryStore.swift`)
 (swiftc command in its header).
 
 ## Device-Origin Events
