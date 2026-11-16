@@ -19120,6 +19120,9 @@ class EixamConnectSdkImpl
     milliseconds: 200,
   );
 
+  /// M-A: a native stop decision older than this is never executed.
+  static const Duration _staleStopRequiredMaxAge = Duration(seconds: 5);
+
   int? _staleGuardDisarmedGeneration;
 
   bool get _nativeOwnTagSosClassifierAvailable {
@@ -19200,10 +19203,23 @@ class EixamConnectSdkImpl
   /// Native classified a TAG frame as the SOS the SDK closed and holds no
   /// writable TAG link: Dart, the link owner, writes the SDK's own terminal
   /// command. Never once a new SOS is open (M3).
-  Future<void> _writeStaleSosStopRequiredByNative(String? terminal) async {
+  Future<void> _writeStaleSosStopRequiredByNative(
+    String? terminal, {
+    required DateTime decidedAt,
+  }) async {
     final resolve = terminal?.trim() == 'resolve';
     final wire = resolve ? 'resolve' : 'cancel';
     if (_disposed) {
+      return;
+    }
+    // M-A: the decision is valid only for the guard state when native made
+    // it. A delayed or replayed one (or one from a skewed clock) may hit a
+    // genuine new SOS the TAG started meanwhile: never written.
+    final age = DateTime.now().difference(decidedAt);
+    if (age > _staleStopRequiredMaxAge || age < -_staleStopRequiredMaxAge) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_STALE_STOP_SKIPPED terminal=$wire reason=decision_too_old',
+      );
       return;
     }
     if (_sosLifecycle.current.isOpen) {
@@ -25346,7 +25362,12 @@ class EixamConnectSdkImpl
 
   void _handleProtectionPlatformSosEvent(ProtectionPlatformEvent event) {
     if (event.type == ProtectionPlatformEventType.ownTagSosStopRequired) {
-      unawaited(_writeStaleSosStopRequiredByNative(event.reason));
+      unawaited(
+        _writeStaleSosStopRequiredByNative(
+          event.reason,
+          decidedAt: event.timestamp,
+        ),
+      );
       return;
     }
     final runtimeGeneration = event.sessionGeneration;

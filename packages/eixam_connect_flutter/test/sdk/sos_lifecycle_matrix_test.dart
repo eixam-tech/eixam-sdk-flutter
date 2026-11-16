@@ -16834,6 +16834,50 @@ void main() {
       }
     });
 
+    test('M-A: a stop required by native that reaches Dart late (replayed '
+        'or delayed > 5 s) is never written', () async {
+      final adapter = nativeAdapter(platform: ProtectionPlatform.android);
+      final written = <int>[];
+      final harness = await tagSosThenCancelWhileDisconnected(adapter, written);
+      try {
+        await reconnect(harness, written);
+        expect((await harness.sdk.getSosLifecycle()).isOpen, isFalse);
+        final writesBefore = written.length;
+        adapter.emit(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.ownTagSosStopRequired,
+            timestamp: DateTime.now().toUtc().subtract(
+              const Duration(seconds: 10),
+            ),
+            reason: 'cancel',
+          ),
+        );
+        await settle(50);
+        expect(
+          written.skip(writesBefore),
+          isEmpty,
+          reason: 'a stale decision may stop a genuine new SOS',
+        );
+        expect(
+          messages,
+          contains(
+            'SOS_OUTBOX_STALE_STOP_SKIPPED terminal=cancel reason=decision_too_old',
+          ),
+        );
+        adapter.emit(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.ownTagSosStopRequired,
+            timestamp: DateTime.now().toUtc(),
+            reason: 'cancel',
+          ),
+        );
+        await settle(50);
+        expect(written.skip(writesBefore), <int>[0x04], reason: 'fresh one');
+      } finally {
+        await harness.dispose();
+      }
+    });
+
     test('a genuine press after the TAG close frame is admitted once', () async {
       final adapter = nativeAdapter(platform: ProtectionPlatform.android);
       var tagClosed = false;

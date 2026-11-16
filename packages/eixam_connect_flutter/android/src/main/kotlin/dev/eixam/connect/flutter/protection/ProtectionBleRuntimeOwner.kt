@@ -2352,7 +2352,9 @@ internal class ProtectionBleRuntimeOwner(
                 logTag,
                 "NATIVE_SOS_STALE_STOP_RESULT terminal=${terminal.wire} success=$success",
             )
-            if (!success) {
+            // Only while the guard is still armed: a new SDK SOS may have
+            // disarmed it while the write was queued (M3).
+            if (!success && synchronized(sosLifecycleLock) { sosStaleGuard } != null) {
                 requestDartSosStaleStop(terminal, "${reason}_native_write_failed")
             }
         }
@@ -2361,8 +2363,11 @@ internal class ProtectionBleRuntimeOwner(
     private fun requestDartSosStaleStop(terminal: ProtectionSosStaleTerminal, reason: String) {
         Log.i(
             logTag,
-            "NATIVE_SOS_STALE_STOP_REQUIRED_FROM_DART terminal=${terminal.wire} reason=$reason",
+            "NATIVE_SOS_STALE_STOP_REQUIRED_FROM_DART terminal=${terminal.wire} reason=$reason " +
+                "dartListening=${ProtectionRuntimeBridge.isFlutterListening()}",
         )
+        // M-A: delivered to a live listener only, never buffered and replayed
+        // later (ProtectionPlatformEventBuffer.liveOnlyTypes).
         ProtectionRuntimeBridge.recordPlatformEvent(
             context = context,
             type = "ownTagSosStopRequired",
