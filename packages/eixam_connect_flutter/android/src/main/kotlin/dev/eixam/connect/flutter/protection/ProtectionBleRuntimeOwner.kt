@@ -68,6 +68,18 @@ internal class ProtectionBleRuntimeOwner(
             scheduleRetry = ::scheduleBackendFlush,
         )
 
+    /** F17c: the native 30 s prompt timer (works with Flutter not running). */
+    private var sosPromptTimeoutRunnable: Runnable? = null
+
+    init {
+        // F17c: a prompt that outlived the process: its timer is re-armed, or
+        // the timeout applies at once when the deadline already passed.
+        val deadline = synchronized(sosLifecycleLock) { sosStaleGuard?.promptDeadlineAt }
+        if (deadline != null) {
+            mainHandler.post { synchronized(sosLifecycleLock) { schedulePromptTimeoutLocked(deadline) } }
+        }
+    }
+
     /** The SDK's MQTT outbox accepted the TAG cancel: retire the native record. */
     fun ackPendingNativeSosCancel(): Boolean = backendHandoff.ackPendingCancelHandedToMqtt()
 
@@ -2038,6 +2050,7 @@ internal class ProtectionBleRuntimeOwner(
             5, 7, 10, 12 -> {
                 val now = System.currentTimeMillis()
                 runtimeStore.recordOwnSosFrameObserved(now)
+                expirePromptLocked(now, effects)
                 val outcome = ProtectionSosStaleGuard.onFrame(
                     sosStaleGuard,
                     readPacketOriginatorNodeId(payload),
@@ -2134,7 +2147,7 @@ internal class ProtectionBleRuntimeOwner(
                     )
                 }
                 val observed = sosObservedCycle
-                val dartSeen = ProtectionSosStaleGuard.observedHandedOver(observed, now)
+                val dartSeen = ProtectionSosStaleGuard.observedRecently(observed, now)
                 if (terminal == null ||
                     !ProtectionSosStaleGuard.shouldArm(terminal, lifecycleState, unclaimed, observed, now)
                 ) {
@@ -2153,7 +2166,8 @@ internal class ProtectionBleRuntimeOwner(
                     now = now,
                     connected = connected,
                 )
-                cancelSosStaleDecide()
+                // One record at a time: a new unconfirmed stop replaces an older one.
+                disarmSosStaleGuardLocked("rearmed")
                 sosStaleGuard = armed
                 runtimeStore.saveSosStaleGuard(armed)
                 setSosObservedCycleLocked(null)
@@ -2191,6 +2205,7 @@ internal class ProtectionBleRuntimeOwner(
         val effects = SosStaleEffects()
         val decision = synchronized(sosLifecycleLock) {
             val now = System.currentTimeMillis()
+            expirePromptLocked(now, effects)
             val decision = ProtectionSosStaleGuard.onForwardedFrame(
                 sosStaleGuard,
                 sosObservedCycle,
@@ -2262,7 +2277,11 @@ internal class ProtectionBleRuntimeOwner(
 
     private class SosStaleEffects {
         var sendStop = false
-        var showNotice = false
+        var stopReason = "stale_frame"
+        /** F17c: the user's "No": show the post-"No" confirmation. */
+        var stoppedByUser = false
+        /** F17c: the native create was queued (send / timeout). */
+        var openSos: String? = null
     }
 
     private fun applySosStaleOutcomeLocked(outcome: ProtectionSosStaleOutcome, effects: SosStaleEffects) {
@@ -2279,25 +2298,149 @@ internal class ProtectionBleRuntimeOwner(
             ProtectionSosStaleAction.newSos ->
                 disarmSosStaleGuardLocked(outcome.reason ?: "countdown_burst")
 
+            ProtectionSosStaleAction.sosOpened -> {
+                disarmSosStaleGuardLocked(outcome.reason ?: "prompt_send_sos")
+                effects.openSos = outcome.reason ?: "prompt_send_sos"
+                openNativeSosFromPromptLocked(effects.openSos!!)
+            }
+
             ProtectionSosStaleAction.pending,
             ProtectionSosStaleAction.stale,
+            ProtectionSosStaleAction.prompt,
+            ProtectionSosStaleAction.stop,
             -> {
                 sosStaleGuard = outcome.state
                 runtimeStore.saveSosStaleGuard(outcome.state)
                 outcome.decideAt?.let(::scheduleSosStaleDecideLocked)
+                if (outcome.closePrompt) {
+                    closePromptLocked(outcome.reason ?: outcome.action.name)
+                }
+                val deadline = outcome.state?.promptDeadlineAt
+                if (outcome.openPrompt && deadline != null) {
+                    openPromptLocked(outcome.state.terminal, deadline)
+                }
             }
         }
         if (outcome.sendStop) effects.sendStop = true
-        if (outcome.showNotice) effects.showNotice = true
+        if (outcome.action == ProtectionSosStaleAction.stop) {
+            effects.stopReason = "prompt_stop_tag"
+            effects.stoppedByUser = true
+        }
     }
 
     private fun runSosStaleEffects(effects: SosStaleEffects) {
         if (effects.sendStop) {
-            sendSosStaleStop(reason = "stale_frame")
+            sendSosStaleStop(reason = effects.stopReason)
         }
-        if (effects.showNotice) {
-            ProtectionForegroundService.showSosStaleStoppedNotification(context)
+        if (effects.stoppedByUser) {
+            ProtectionSosPromptNotifications.showStopped(context)
         }
+        effects.openSos?.let { reason ->
+            ProtectionForegroundService.showActiveSosNotification(context)
+            backendHandoff.queueCreate("ambiguous_$reason")
+        }
+    }
+
+    /**
+     * F17c: the user's answer to the ambiguous-SOS prompt (`sendSos`, `stopTag`)
+     * from the notification or the app. Returns the decision name (`sosOpened`,
+     * `stop`, or `none` when no prompt is open).
+     */
+    fun answerOwnTagSosPrompt(choice: String, source: String): String {
+        val effects = SosStaleEffects()
+        val action = synchronized(sosLifecycleLock) {
+            val now = System.currentTimeMillis()
+            val outcome = ProtectionSosStaleGuard.onAnswer(sosStaleGuard, choice, now)
+            applySosStaleOutcomeLocked(outcome, effects)
+            outcome.action
+        }
+        Log.i(logTag, "NATIVE_SOS_PROMPT_ANSWERED choice=$choice source=$source action=${action.name}")
+        runSosStaleEffects(effects)
+        return action.name
+    }
+
+    /** F17c: the open prompt for the SDK (`{terminal, deadlineAtMs}`), or null. */
+    fun currentOwnTagSosPrompt(): Map<String, Any>? {
+        val effects = SosStaleEffects()
+        val prompt = synchronized(sosLifecycleLock) {
+            // A deadline that passed (timer not run yet) is the timeout first.
+            expirePromptLocked(System.currentTimeMillis(), effects)
+            val state = sosStaleGuard ?: return@synchronized null
+            val deadline = state.promptDeadlineAt ?: return@synchronized null
+            mapOf("terminal" to state.terminal.wire, "deadlineAtMs" to deadline)
+        }
+        runSosStaleEffects(effects)
+        return prompt
+    }
+
+    private fun openPromptLocked(terminal: ProtectionSosStaleTerminal, deadline: Long) {
+        Log.i(logTag, "NATIVE_SOS_PROMPT_OPENED terminal=${terminal.wire} deadlineAt=$deadline")
+        schedulePromptTimeoutLocked(deadline)
+        ProtectionSosPromptNotifications.show(context, deadline)
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "ownTagSosPromptOpened",
+            reason = terminal.wire,
+        )
+    }
+
+    private fun closePromptLocked(reason: String) {
+        sosPromptTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        sosPromptTimeoutRunnable = null
+        ProtectionSosPromptNotifications.cancel(context)
+        Log.i(logTag, "NATIVE_SOS_PROMPT_CLOSED reason=$reason")
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "ownTagSosPromptClosed",
+            reason = reason,
+        )
+    }
+
+    private fun schedulePromptTimeoutLocked(deadline: Long) {
+        sosPromptTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        sosPromptTimeoutRunnable = Runnable {
+            val effects = SosStaleEffects()
+            synchronized(sosLifecycleLock) {
+                sosPromptTimeoutRunnable = null
+                expirePromptLocked(System.currentTimeMillis(), effects)
+            }
+            runSosStaleEffects(effects)
+        }.also {
+            mainHandler.postDelayed(it, (deadline - System.currentTimeMillis()).coerceAtLeast(0L))
+        }
+    }
+
+    /** F17c: no answer by the deadline (also checked before any frame): send the SOS. */
+    private fun expirePromptLocked(now: Long, effects: SosStaleEffects) {
+        val state = sosStaleGuard ?: return
+        val deadline = state.promptDeadlineAt ?: return
+        if (now < deadline) return
+        applySosStaleOutcomeLocked(ProtectionSosStaleGuard.onAnswer(state, "timeout", now), effects)
+    }
+
+    /**
+     * F17c: send / timeout opens the SOS through the native create, as for a
+     * TAG SOS whose countdown elapsed (Dart claims it into the MQTT outbox; it
+     * is cancellable as usual). Nothing when a native SOS is already running.
+     */
+    private fun openNativeSosFromPromptLocked(reason: String) {
+        if (pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
+            Log.i(logTag, "NATIVE_SOS_PROMPT_SOS_ALREADY_RUNNING lifecycle=${pendingSosLifecycleState.name}")
+            return
+        }
+        val now = System.currentTimeMillis()
+        cancelSosActivationTimeout()
+        pendingSosLifecycleState = ProtectionSosLifecycleState.createPending
+        runtimeStore.recordPreSosLifecycle(
+            state = pendingSosLifecycleState.name,
+            cycleKey = "ambiguous-prompt",
+            owner = "device",
+            startedAt = now,
+            expectedActivationAt = now,
+            originatorNodeId = connectedBleNodeId,
+            packetId = null,
+        )
+        Log.i(logTag, "NATIVE_SOS_PROMPT_SOS_OPENED reason=$reason")
     }
 
     private fun scheduleSosStaleDecideLocked(decideAt: Long) {
@@ -2336,7 +2479,12 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun disarmSosStaleGuardLocked(reason: String) {
         val had = sosStaleGuard != null
+        val promptOpen = sosStaleGuard?.promptDeadlineAt != null
         cancelSosStaleDecide()
+        if (promptOpen) {
+            // Answered, timeout, burst, TAG close, cap, session, new SDK SOS.
+            closePromptLocked(reason)
+        }
         sosStaleGuard = null
         runtimeStore.saveSosStaleGuard(null)
         if (had) {

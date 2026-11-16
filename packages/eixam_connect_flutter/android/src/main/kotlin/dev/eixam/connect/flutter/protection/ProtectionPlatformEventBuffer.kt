@@ -26,6 +26,12 @@ internal class ProtectionPlatformEventBuffer(
 
     companion object {
         /** Events delivered to a live listener only, never replayed. */
-        val liveOnlyTypes: Set<String> = setOf("ownTagSosStopRequired")
+        val liveOnlyTypes: Set<String> = setOf(
+            "ownTagSosStopRequired",
+            // F17c: the prompt state is read back with `getOwnTagSosPrompt`
+            // when Dart attaches; a replayed open/close would be stale.
+            "ownTagSosPromptOpened",
+            "ownTagSosPromptClosed",
+        )
     }
 }

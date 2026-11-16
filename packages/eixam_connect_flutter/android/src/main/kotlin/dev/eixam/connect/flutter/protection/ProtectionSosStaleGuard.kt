@@ -1,10 +1,13 @@
 package dev.eixam.connect.flutter.protection
 
 /**
- * F17b: the SDK closed a handed-over SOS (app cancel / backend resolve) but the
- * stop never reached the TAG, which keeps sending the frames of that SOS. The
- * guard sends the SDK's own terminal command to the TAG and never lets those
- * frames open a new SOS, without ever hiding a real new one.
+ * F17b/F17c: the SDK closed an own-TAG SOS (app cancel / backend resolve) the
+ * TAG never confirmed closing: the "unconfirmed stop" record. Without a
+ * firmware episode id, a non-burst frame under it is AMBIGUOUS (the closed SOS
+ * still running, or a genuine SOS pressed out of range): the user is asked
+ * (prompt, native 30 s timeout sends the SOS). It never stops the TAG and never
+ * drops a frame without the user's answer; after the user's "No" (consent for
+ * [consentMs]) the matching stop is written again on the next retry.
  *
  * Firmware facts: every BLE SOS push is sent twice (SOS notify, then TEL
  * notify, ms apart). COUNTDOWN pushes every 500 ms in its first 2 s (4 pushes);
@@ -14,12 +17,12 @@ package dev.eixam.connect.flutter.protection
  * - a frame < [duplicateMs] after the previous accepted push is a copy: ignored;
  * - a candidate window opens at the first push; [burstPushes] distinct pushes
  *   within [burstWindowMs] = COUNTDOWN = a genuine new SOS (always admitted);
- * - [decideAfterMs] after the first push, fewer pushes = the closed SOS still
- *   running: stop again (notice once).
- * The guard ends on the TAG's close frame (`0xE1/0xE2/0xE3`), a frame gap over
- * [gapMs] while the link stayed up, [capMs] after arming, or a session change.
- * A link drop does not end it (A1); on reconnect the gap clock restarts and no
- * stop is written before a frame proves the closed SOS is still running.
+ * - [decideAfterMs] after the first push, fewer pushes = ambiguous: prompt
+ *   (once; a later retry while it is open never re-prompts).
+ * The record ends on the TAG's close frame (`0xE1/0xE2/0xE3`), a countdown
+ * burst, the user's send / the timeout, a frame gap over [gapMs] while the link
+ * stayed up, [capMs] after arming, a new SDK SOS or a session change. A link
+ * drop does not end it (A1).
  */
 internal enum class ProtectionSosStaleTerminal(
     val wire: String,
@@ -43,7 +46,10 @@ internal data class ProtectionSosStaleGuardState(
     /** Gap clock: last push of the closed SOS, the arm time or the reconnect time. */
     val lastFrameAt: Long,
     val linkDroppedSinceLastFrame: Boolean,
-    val noticeShown: Boolean = false,
+    /** F17c prompt: open until this time (the native timeout then sends the SOS). */
+    val promptDeadlineAt: Long? = null,
+    /** F17c prompt: the user's "No" (stop the TAG), consent for [ProtectionSosStaleGuard.consentMs]. */
+    val stopConfirmedAt: Long? = null,
     /** Open candidate window (not persisted). */
     val candidateFirstAt: Long? = null,
     val candidatePushes: Int = 0,
@@ -57,7 +63,8 @@ internal data class ProtectionSosStaleGuardState(
             "armedAt" to armedAt,
             "lastFrameAt" to lastFrameAt,
             "linkDroppedSinceLastFrame" to linkDroppedSinceLastFrame,
-            "noticeShown" to noticeShown,
+            "promptDeadlineAt" to promptDeadlineAt,
+            "stopConfirmedAt" to stopConfirmedAt,
         )
 
     companion object {
@@ -71,7 +78,8 @@ internal data class ProtectionSosStaleGuardState(
                 armedAt = armedAt,
                 lastFrameAt = (values["lastFrameAt"] as? Number)?.toLong() ?: armedAt,
                 linkDroppedSinceLastFrame = values["linkDroppedSinceLastFrame"] as? Boolean ?: true,
-                noticeShown = values["noticeShown"] as? Boolean ?: false,
+                promptDeadlineAt = (values["promptDeadlineAt"] as? Number)?.toLong(),
+                stopConfirmedAt = (values["stopConfirmedAt"] as? Number)?.toLong(),
             )
         }
     }
@@ -96,8 +104,17 @@ internal enum class ProtectionSosStaleAction {
     /** COUNTDOWN burst: a genuine new SOS starting at [ProtectionSosStaleOutcome.startedAt]. */
     newSos,
 
-    /** The closed SOS still running: stop it again. */
+    /** The user already answered "No" (within [ProtectionSosStaleGuard.consentMs]): stop it again. */
     stale,
+
+    /** F17c: ambiguous: ask the user ([ProtectionSosStaleOutcome.openPrompt] when newly opened). */
+    prompt,
+
+    /** F17c: the user's "Send SOS" or the prompt timeout: native opens the SOS (create). */
+    sosOpened,
+
+    /** F17c: the user's "No": write the matching stop, open nothing. */
+    stop,
 
     /** Nothing to do. */
     none,
@@ -108,7 +125,12 @@ internal data class ProtectionSosStaleOutcome(
     /** Next guard state; null once the guard ended. */
     val state: ProtectionSosStaleGuardState?,
     val sendStop: Boolean = false,
-    val showNotice: Boolean = false,
+    /** F17c: show the prompt (notification + SDK event) until [ProtectionSosStaleGuardState.promptDeadlineAt]. */
+    val openPrompt: Boolean = false,
+    /** F17c: an open prompt ends (answered, timeout, burst, TAG close, cap, session, new SDK SOS). */
+    val closePrompt: Boolean = false,
+    /** F17c: open the SOS through the native create (send / timeout). */
+    val openSos: Boolean = false,
     val startedAt: Long? = null,
     val reason: String? = null,
     /** Schedule [ProtectionSosStaleGuard.onDecide] at this time. */
@@ -124,7 +146,18 @@ internal data class ProtectionSosStaleOutcome(
 
 internal object ProtectionSosStaleGuard {
     const val gapMs = 90_000L
-    const val capMs = 600_000L
+
+    /** F17c: the record asks instead of stopping, so it lives up to a day (a TAG long out of range). */
+    const val capMs = 86_400_000L
+
+    /** F17c: the native prompt timeout; no answer sends the SOS. */
+    const val promptMs = 30_000L
+
+    /** F17c: the user's "No" lets later retries be stopped without asking for this long. */
+    const val consentMs = 600_000L
+
+    /** F17c: an SOS Dart forwarded frames of this recently was seen (arms the record). */
+    const val observedRecentMs = 600_000L
     const val duplicateMs = 300L
     const val burstWindowMs = 1_700L
     const val decideAfterMs = 2_000L
@@ -132,18 +165,15 @@ internal object ProtectionSosStaleGuard {
     const val recentFrameMs = 90_000L
     private const val decideToleranceMs = 100L
 
-    /** F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s minus the decision window). */
-    const val observedHandedOverMs = 18_000L
-
     /** F17c M-C: a Dart receive time older than this (or in the future) is not trusted. */
     const val forwardedFrameMaxAgeMs = 5_000L
 
     /**
-     * Only a handed-over SOS (like iOS): the native cycle reached createPending
-     * and the SDK claimed its create, or (F17c) Dart forwarded frames of an
-     * SOS that ran past its countdown ([observed]: native never saw the cycle
-     * because Dart owned the link). Never a running countdown, never an
-     * unclaimed native create.
+     * F17c ONE rule on every platform: any SDK cancel/resolve of an own-TAG SOS
+     * seen on any path arms the "unconfirmed stop" record: a handed-over native
+     * create, a native countdown, or frames Dart forwarded ([observed]). Never
+     * while native still owes an unclaimed create of that SOS (the terminal is
+     * not a stop of it).
      */
     fun shouldArm(
         terminal: ProtectionSosStaleTerminal?,
@@ -155,20 +185,18 @@ internal object ProtectionSosStaleGuard {
         terminal != null &&
             !hasUnclaimedNativeCreate &&
             (lifecycleState == ProtectionSosLifecycleState.createPending ||
-                observedHandedOver(observed, now))
+                lifecycleState == ProtectionSosLifecycleState.preConfirmSeen ||
+                observedRecently(observed, now))
 
-    /** F17c: Dart forwarded frames of this SOS for longer than its countdown, recently. */
-    fun observedHandedOver(observed: ProtectionSosObservedCycle?, now: Long): Boolean =
-        observed != null &&
-            now - observed.firstSeenAt >= observedHandedOverMs &&
-            now - observed.lastSeenAt in 0..capMs
+    /** F17c: Dart forwarded frames of this TAG's SOS recently. */
+    fun observedRecently(observed: ProtectionSosObservedCycle?, now: Long): Boolean =
+        observed != null && now - observed.lastSeenAt in 0..observedRecentMs
 
     /**
      * F17c-cdc: the SDK cancel of this TAG's running native countdown ends it:
      * it is never promoted into a native create at its deadline (the SDK
-     * already drops the create of a cycle cancelled after its start, M5). It
-     * arms nothing: without a firmware episode id, frames after a reconnect
-     * are ambiguous and a missed SOS is worse than a duplicate.
+     * already drops the create of a cycle cancelled after its start, M5). The
+     * record arms as for any other unconfirmed stop ([shouldArm]).
      */
     fun cancelsRunningCountdown(
         terminal: ProtectionSosStaleTerminal?,
@@ -226,6 +254,7 @@ internal object ProtectionSosStaleGuard {
                     ProtectionSosStaleAction.disarmed,
                     null,
                     reason = "tag_close",
+                    closePrompt = state?.promptDeadlineAt != null,
                 ),
                 observed = null,
                 verdict = ProtectionOwnTagSosVerdict.proceed,
@@ -334,7 +363,12 @@ internal object ProtectionSosStaleGuard {
             return ProtectionSosStaleOutcome(ProtectionSosStaleAction.ignored, state)
         }
         if (isExpired(state, now)) {
-            return ProtectionSosStaleOutcome(ProtectionSosStaleAction.disarmed, null, reason = "cap")
+            return ProtectionSosStaleOutcome(
+                ProtectionSosStaleAction.disarmed,
+                null,
+                reason = "cap",
+                closePrompt = state.promptDeadlineAt != null,
+            )
         }
         val lastPush = state.lastPushAt
         if (lastPush != null && now - lastPush in 0 until duplicateMs) {
@@ -342,7 +376,7 @@ internal object ProtectionSosStaleGuard {
         }
         var current = state
         var sendStop = false
-        var showNotice = false
+        var openPrompt = false
         val first = current.candidateFirstAt
         if (first != null) {
             if (now - first <= burstWindowMs) {
@@ -353,6 +387,7 @@ internal object ProtectionSosStaleGuard {
                         null,
                         startedAt = first,
                         reason = "countdown_burst",
+                        closePrompt = current.promptDeadlineAt != null,
                     )
                 }
                 return ProtectionSosStaleOutcome(
@@ -360,20 +395,25 @@ internal object ProtectionSosStaleGuard {
                     current.copy(candidatePushes = pushes, lastPushAt = now),
                 )
             }
-            // A later push: the old candidate was the closed SOS; then a new window.
-            val resolved = resolveStale(current)
+            // A later push: the old candidate was decided late (no burst); then a new window.
+            val resolved = resolveDecision(current, now)
             current = resolved.state!!
             sendStop = resolved.sendStop
-            showNotice = resolved.showNotice
+            openPrompt = resolved.openPrompt
         }
         if (!current.linkDroppedSinceLastFrame && now - current.lastFrameAt > gapMs) {
-            return ProtectionSosStaleOutcome(ProtectionSosStaleAction.disarmed, null, reason = "gap")
+            return ProtectionSosStaleOutcome(
+                ProtectionSosStaleAction.disarmed,
+                null,
+                reason = "gap",
+                closePrompt = current.promptDeadlineAt != null,
+            )
         }
         return ProtectionSosStaleOutcome(
             action = ProtectionSosStaleAction.pending,
             state = current.copy(candidateFirstAt = now, candidatePushes = 1, lastPushAt = now),
             sendStop = sendStop,
-            showNotice = showNotice,
+            openPrompt = openPrompt,
             decideAt = maxOf(now, deliveredAt) + decideAfterMs,
         )
     }
@@ -391,24 +431,87 @@ internal object ProtectionSosStaleGuard {
                 null,
                 startedAt = first,
                 reason = "countdown_burst",
+                closePrompt = state.promptDeadlineAt != null,
             )
         }
-        return resolveStale(state)
+        return resolveDecision(state, now)
     }
 
-    private fun resolveStale(state: ProtectionSosStaleGuardState): ProtectionSosStaleOutcome =
-        ProtectionSosStaleOutcome(
-            action = ProtectionSosStaleAction.stale,
-            state = state.copy(
-                lastFrameAt = state.lastPushAt ?: state.candidateFirstAt ?: state.lastFrameAt,
-                linkDroppedSinceLastFrame = false,
-                noticeShown = true,
-                candidateFirstAt = null,
-                candidatePushes = 0,
-            ),
-            sendStop = true,
-            showNotice = !state.noticeShown,
+    /**
+     * F17c: no countdown burst followed: ambiguous. Ask the user (once: an
+     * open prompt is never re-opened), unless the user already answered "No"
+     * within [consentMs]: then the stop is written again.
+     */
+    private fun resolveDecision(
+        state: ProtectionSosStaleGuardState,
+        now: Long,
+    ): ProtectionSosStaleOutcome {
+        val decided = state.copy(
+            lastFrameAt = state.lastPushAt ?: state.candidateFirstAt ?: state.lastFrameAt,
+            linkDroppedSinceLastFrame = false,
+            candidateFirstAt = null,
+            candidatePushes = 0,
         )
+        val consent = state.stopConfirmedAt
+        if (state.promptDeadlineAt == null && consent != null && now - consent in 0..consentMs) {
+            return ProtectionSosStaleOutcome(
+                action = ProtectionSosStaleAction.stale,
+                state = decided,
+                sendStop = true,
+            )
+        }
+        if (state.promptDeadlineAt != null) {
+            return ProtectionSosStaleOutcome(ProtectionSosStaleAction.prompt, decided)
+        }
+        return ProtectionSosStaleOutcome(
+            action = ProtectionSosStaleAction.prompt,
+            state = decided.copy(promptDeadlineAt = now + promptMs, stopConfirmedAt = null),
+            openPrompt = true,
+        )
+    }
+
+    /**
+     * F17c: the user's answer ([choice] `sendSos` / `stopTag`) or the native
+     * timer (`timeout`). Only while a prompt is open. Send and the timeout
+     * open the SOS and end the record; "No" writes the matching stop and keeps
+     * the record (the TAG must still confirm). A "No" at or after the deadline
+     * is the timeout: never a stop without a timely answer.
+     */
+    fun onAnswer(
+        state: ProtectionSosStaleGuardState?,
+        choice: String,
+        now: Long,
+    ): ProtectionSosStaleOutcome {
+        val deadline = state?.promptDeadlineAt
+            ?: return ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, state)
+        val sendSos = ProtectionSosStaleOutcome(
+            action = ProtectionSosStaleAction.sosOpened,
+            state = null,
+            closePrompt = true,
+            openSos = true,
+            reason = if (choice == "sendSos") "prompt_send_sos" else "prompt_timeout",
+        )
+        return when (choice) {
+            "sendSos" -> sendSos
+            "timeout" -> if (now >= deadline) {
+                sendSos
+            } else {
+                ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, state)
+            }
+            "stopTag" -> if (now >= deadline) {
+                sendSos
+            } else {
+                ProtectionSosStaleOutcome(
+                    action = ProtectionSosStaleAction.stop,
+                    state = state.copy(promptDeadlineAt = null, stopConfirmedAt = now),
+                    sendStop = true,
+                    closePrompt = true,
+                    reason = "prompt_stop_tag",
+                )
+            }
+            else -> ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, state)
+        }
+    }
 
     private fun normalize(nodeId: Int): Long = nodeId.toLong() and 0xFFFF_FFFFL
 }

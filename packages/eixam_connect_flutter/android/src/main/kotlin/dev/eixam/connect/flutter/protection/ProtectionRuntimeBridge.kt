@@ -325,6 +325,20 @@ internal object ProtectionRuntimeBridge {
                 ensureRuntimeOwner(context).disarmSosStaleGuard(reason)
                 result.success(null)
             }
+            "answerOwnTagSosPrompt" -> {
+                // F17c: the user's answer from the app's full-screen prompt.
+                val choice = (call.arguments as? Map<*, *>)?.get("choice") as? String
+                if (choice != "sendSos" && choice != "stopTag") {
+                    result.error("invalid_choice", "choice must be sendSos or stopTag", null)
+                } else {
+                    result.success(
+                        mapOf("action" to ensureRuntimeOwner(context).answerOwnTagSosPrompt(choice, source = "app")),
+                    )
+                }
+            }
+            "getOwnTagSosPrompt" -> {
+                result.success(ensureRuntimeOwner(context).currentOwnTagSosPrompt())
+            }
             "noteOwnTagSosLink" -> {
                 val up = (call.arguments as? Map<*, *>)?.get("up") as? Boolean ?: false
                 ensureRuntimeOwner(context).noteForwardedOwnTagLink(up)

@@ -257,6 +257,31 @@ internal class ProtectionRuntimeStore(context: Context) {
                 "protectionSosStaleStoppedBody",
             )
             .putNotificationText(
+                keyProtectionSosAmbiguousTitle,
+                notificationTexts,
+                "protectionSosAmbiguousTitle",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousBody,
+                notificationTexts,
+                "protectionSosAmbiguousBody",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousSendAction,
+                notificationTexts,
+                "protectionSosAmbiguousSendAction",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousStopAction,
+                notificationTexts,
+                "protectionSosAmbiguousStopAction",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousStoppedBody,
+                notificationTexts,
+                "protectionSosAmbiguousStoppedBody",
+            )
+            .putNotificationText(
                 keyNearbyMessageChannelName,
                 notificationTexts,
                 "nearbyMessageChannelName",
@@ -411,6 +436,36 @@ internal class ProtectionRuntimeStore(context: Context) {
         notificationText(
             keyProtectionSosStaleStoppedBody,
             "We stopped on your TAG an SOS that had already ended.",
+        )
+
+    fun protectionSosAmbiguousTitle(): String =
+        notificationText(
+            keyProtectionSosAmbiguousTitle,
+            "Your TAG is still in SOS",
+        )
+
+    fun protectionSosAmbiguousBody(): String =
+        notificationText(
+            keyProtectionSosAmbiguousBody,
+            "You stopped an SOS, but your TAG didn't get it. Is this a new emergency? If you don't answer, we'll send the SOS in 30 s.",
+        )
+
+    fun protectionSosAmbiguousSendAction(): String =
+        notificationText(
+            keyProtectionSosAmbiguousSendAction,
+            "Send SOS",
+        )
+
+    fun protectionSosAmbiguousStopAction(): String =
+        notificationText(
+            keyProtectionSosAmbiguousStopAction,
+            "No, stop the TAG",
+        )
+
+    fun protectionSosAmbiguousStoppedBody(): String =
+        notificationText(
+            keyProtectionSosAmbiguousStoppedBody,
+            "TAG stopped. No SOS was sent.",
         )
 
     fun nearbyMessageChannelName(): String =
@@ -984,7 +1039,8 @@ internal class ProtectionRuntimeStore(context: Context) {
                 "armedAt" to preferences.getLong(keyStaleGuardArmedAt, 0L).takeIf { it > 0L },
                 "lastFrameAt" to preferences.getLong(keyStaleGuardLastFrameAt, 0L).takeIf { it > 0L },
                 "linkDroppedSinceLastFrame" to preferences.getBoolean(keyStaleGuardLinkDropped, true),
-                "noticeShown" to preferences.getBoolean(keyStaleGuardNoticeShown, false),
+                "promptDeadlineAt" to preferences.getLong(keyStaleGuardPromptDeadlineAt, 0L).takeIf { it > 0L },
+                "stopConfirmedAt" to preferences.getLong(keyStaleGuardStopConfirmedAt, 0L).takeIf { it > 0L },
             ),
         )
     }
@@ -998,11 +1054,17 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .remove(keyStaleGuardLastFrameAt)
                 .remove(keyStaleGuardLinkDropped)
                 .remove(keyStaleGuardNoticeShown)
+                .remove(keyStaleGuardPromptDeadlineAt)
+                .remove(keyStaleGuardStopConfirmedAt)
         } else {
             editor.putString(keyStaleGuardTerminal, state.terminal.wire)
                 .putLong(keyStaleGuardArmedAt, state.armedAt)
                 .putBoolean(keyStaleGuardLinkDropped, state.linkDroppedSinceLastFrame)
-                .putBoolean(keyStaleGuardNoticeShown, state.noticeShown)
+                .remove(keyStaleGuardNoticeShown)
+            state.promptDeadlineAt?.let { editor.putLong(keyStaleGuardPromptDeadlineAt, it) }
+                ?: editor.remove(keyStaleGuardPromptDeadlineAt)
+            state.stopConfirmedAt?.let { editor.putLong(keyStaleGuardStopConfirmedAt, it) }
+                ?: editor.remove(keyStaleGuardStopConfirmedAt)
             if (state.nodeId == null) editor.remove(keyStaleGuardNodeId) else editor.putInt(keyStaleGuardNodeId, state.nodeId)
             if (state.lastFrameAt == null) {
                 editor.remove(keyStaleGuardLastFrameAt)
@@ -1597,12 +1659,24 @@ internal class ProtectionRuntimeStore(context: Context) {
             "notification_protection_sos_stale_stopped_title"
         private const val keyProtectionSosStaleStoppedBody =
             "notification_protection_sos_stale_stopped_body"
+        private const val keyProtectionSosAmbiguousTitle =
+            "notification_protection_sos_ambiguous_title"
+        private const val keyProtectionSosAmbiguousBody =
+            "notification_protection_sos_ambiguous_body"
+        private const val keyProtectionSosAmbiguousSendAction =
+            "notification_protection_sos_ambiguous_sendaction"
+        private const val keyProtectionSosAmbiguousStopAction =
+            "notification_protection_sos_ambiguous_stopaction"
+        private const val keyProtectionSosAmbiguousStoppedBody =
+            "notification_protection_sos_ambiguous_stoppedbody"
         private const val keyStaleGuardTerminal = "sos_stale_guard_terminal"
         private const val keyStaleGuardNodeId = "sos_stale_guard_node_id"
         private const val keyStaleGuardArmedAt = "sos_stale_guard_armed_at"
         private const val keyStaleGuardLastFrameAt = "sos_stale_guard_last_frame_at"
         private const val keyStaleGuardLinkDropped = "sos_stale_guard_link_dropped"
         private const val keyStaleGuardNoticeShown = "sos_stale_guard_notice_shown"
+        private const val keyStaleGuardPromptDeadlineAt = "sos_stale_guard_prompt_deadline_at"
+        private const val keyStaleGuardStopConfirmedAt = "sos_stale_guard_stop_confirmed_at"
         private const val keyObservedCycleFirstAt = "sos_observed_cycle_first_at"
         private const val keyObservedCycleLastAt = "sos_observed_cycle_last_at"
         private const val keyObservedCycleNodeId = "sos_observed_cycle_node_id"

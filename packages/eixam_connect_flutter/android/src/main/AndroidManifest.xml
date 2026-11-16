@@ -37,6 +37,20 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- F17c ambiguous TAG SOS prompt: the notification actions. "Send SOS"
+             is a broadcast (one tap, no unlock); "No, stop the TAG" is an
+             activity, so the lock screen asks for the unlock first. No new
+             permission. -->
+        <receiver
+            android:name="dev.eixam.connect.flutter.protection.ProtectionSosPromptActionReceiver"
+            android:exported="false" />
+        <activity
+            android:name="dev.eixam.connect.flutter.protection.ProtectionSosPromptStopActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- TAG alerts (scheduled local notifications). Declared here so hosts
              that do not declare them still get delivery and reboot
              rescheduling. Identical declarations in a host merge cleanly. -->

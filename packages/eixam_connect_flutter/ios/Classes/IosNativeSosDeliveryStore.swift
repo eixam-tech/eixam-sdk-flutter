@@ -36,10 +36,12 @@ struct IosNativeSosTransition: Equatable {
   var countdownDeadlineAt: Int?
   /// The countdown ended without promotion (closed): drop its timer.
   var countdownStopped = false
-  /// F17b: the TAG still runs an SOS the SDK closed: write this command.
+  /// F17b/F17c: write this command to the TAG (the user's "No", or a later
+  /// retry within the "No" consent window). Never on ambiguous evidence alone.
   var stopTag: IosSosTerminalKind?
-  /// F17b: first stop of this guard: tell the user (once).
-  var staleStopNotice = false
+  /// F17c: ambiguous: open the prompt (notification + SDK event) until this
+  /// deadline (ms since epoch); the native timer then sends the SOS.
+  var openPromptDeadlineAt: Int?
   /// F17b: a guarded frame waits for a countdown burst: call
   /// `evaluateStaleCandidate()` at this time (ms since epoch).
   var evaluateStaleAt: Int?
@@ -64,10 +66,14 @@ final class IosNativeSosDeliveryStore {
   static let staleBurstPushes = 3
   static let staleDecisionMs = 2_000
   static let staleGapMs = 90_000
-  static let staleGuardMaxMs = 600_000
-  /// F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s
-  /// minus the decision window): its SDK terminal arms the guard.
-  static let observedHandedOverMs = 18_000
+  /// F17c: the record asks instead of stopping, so it lives up to a day.
+  static let staleGuardMaxMs = 86_400_000
+  /// F17c: the native prompt timeout; no answer sends the SOS.
+  static let promptMs = 30_000
+  /// F17c: the user's "No" lets later retries be stopped without asking.
+  static let consentMs = 600_000
+  /// F17c: an SOS Dart forwarded frames of this recently was seen.
+  static let observedRecentMs = 600_000
   /// F17c M-C: a Dart receive time older than this (or in the future) is
   /// not trusted; the native clock is used instead.
   static let forwardedFrameMaxAgeMs = 5_000
@@ -97,6 +103,8 @@ final class IosNativeSosDeliveryStore {
     static let staleGuardCandidatePushes = "native_sos_stale_guard_candidate_pushes"
     static let staleGuardLastPushAt = "native_sos_stale_guard_last_push_at"
     static let staleGuardNoticeShown = "native_sos_stale_guard_notice_shown"
+    static let staleGuardPromptDeadlineAt = "native_sos_stale_guard_prompt_deadline_at"
+    static let staleGuardStopConfirmedAt = "native_sos_stale_guard_stop_confirmed_at"
     static let lastSosFrameAt = "native_sos_last_frame_at"
     static let dartCycleFirstSeenAt = "native_sos_dart_cycle_first_seen_at"
     static let dartCycleLastSeenAt = "native_sos_dart_cycle_last_seen_at"
@@ -215,31 +223,26 @@ final class IosNativeSosDeliveryStore {
   /// countdown would be promoted into a false SOS at its deadline. Only the
   /// terminal of the same TAG closes it; when either node id is unknown the
   /// terminal closes it (keeping it would risk a false SOS).
-  /// F17b: with [terminal], a handed-over SOS the TAG never confirmed
-  /// closing arms the stale guard: the TAG still runs it (the SDK's own stop
-  /// may not have reached it), so its frames must stop it, never open a new
-  /// incident.
-  /// F17c: the cycle may also have been seen only through Dart's forwarded
-  /// frames (Dart owned the TAG link, native never saw it): the terminal of an
-  /// SOS that ran past its countdown arms the guard too (Android foreground
-  /// `NATIVE_SOS_STALE_GUARD_NOT_ARMED lifecycle=idle`).
+  /// F17c ONE rule (same as Android and the shared fixture): with
+  /// [terminal], any SDK cancel/resolve of an own-TAG SOS seen on any path
+  /// arms the "unconfirmed stop" record: a handed-over native create, a native
+  /// countdown, or frames Dart forwarded recently. Never while native still
+  /// owes an unclaimed create of that SOS. The record never stops the TAG by
+  /// itself: an ambiguous frame asks the user.
   /// F17c-cdc: the SDK cancel of this TAG's running countdown ends it: it is
-  /// never promoted into a native create at its deadline (the SDK already
-  /// drops the create of a cycle cancelled after its start, M5). It arms
-  /// nothing: without a firmware episode id, frames after a reconnect are
-  /// ambiguous and a missed SOS is worse than a duplicate.
+  /// never promoted into a native create at its deadline.
   func closeDeliveredCycle(nodeId: Int? = nil, terminal: IosSosTerminalKind? = nil) -> Bool {
+    let unclaimed = pendingCreateRecord != nil
+    let sameNode = nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId
     let keptCountdown = cycleState == .preConfirmSeen &&
-      defaults.bool(forKey: Keys.cycleKeptAfterStop) &&
-      (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId)
-    let handedOver = cycleState == .createPending && pendingCreateRecord == nil
-    let dartSeen = terminal != nil && cycleState == .idle && pendingCreateRecord == nil &&
-      dartCycleHandedOver
-    let cancelledCountdown = !keptCountdown && terminal == .cancel &&
-      cycleState == .preConfirmSeen && pendingCreateRecord == nil &&
-      (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId) &&
+      defaults.bool(forKey: Keys.cycleKeptAfterStop) && sameNode
+    let handedOver = cycleState == .createPending && !unclaimed
+    let countdownRunning = cycleState == .preConfirmSeen && !unclaimed && sameNode
+    let cancelledCountdown = !keptCountdown && terminal == .cancel && countdownRunning &&
       (defaults.object(forKey: Keys.cycleStartedAt) as? Int).map { now() >= $0 } == true
-    guard keptCountdown || handedOver || dartSeen || cancelledCountdown else {
+    let arm = terminal != nil && !unclaimed &&
+      (handedOver || countdownRunning || dartCycleSeenRecently)
+    guard keptCountdown || handedOver || cancelledCountdown || arm else {
       return false
     }
     let guardNode = cycleNodeId ?? dartCycleNodeId ?? nodeId
@@ -247,7 +250,7 @@ final class IosNativeSosDeliveryStore {
     if keptCountdown || handedOver || cancelledCountdown {
       closeCycle()
     }
-    if handedOver || dartSeen, let terminal {
+    if arm, let terminal {
       armStaleGuard(terminal, nodeId: guardNode, linkDropped: linkDropped)
       clearDartCycle()
     }
@@ -323,14 +326,13 @@ final class IosNativeSosDeliveryStore {
 
   private var dartCycleNodeId: Int? { defaults.object(forKey: Keys.dartCycleNodeId) as? Int }
 
-  private var dartCycleHandedOver: Bool {
+  private var dartCycleSeenRecently: Bool {
     guard let first = defaults.object(forKey: Keys.dartCycleFirstSeenAt) as? Int else {
       return false
     }
     let last = defaults.object(forKey: Keys.dartCycleLastSeenAt) as? Int ?? first
     let timestamp = now()
-    return timestamp - first >= Self.observedHandedOverMs &&
-      timestamp - last >= 0 && timestamp - last <= Self.staleGuardMaxMs
+    return timestamp - last >= 0 && timestamp - last <= Self.observedRecentMs
   }
 
   private func noteDartCycleFrame(nodeId: Int?) {
@@ -361,8 +363,9 @@ final class IosNativeSosDeliveryStore {
   }
 
   /// Last guard decision (`notArmed`, `ignored`, `duplicate`, `disarmed`,
-  /// `pending`, `newSos`, `stale`, `none`, `close`), named like the Android
-  /// guard actions so the shared scenario fixture replays identically.
+  /// `pending`, `newSos`, `prompt`, `stale`, `sosOpened`, `stop`, `none`,
+  /// `close`), named like the Android guard actions so the shared scenario
+  /// fixture replays identically.
   private(set) var lastStaleAction = "notArmed"
 
   /// Right after arming: the TAG link is up and its SOS frames are recent,
@@ -393,8 +396,14 @@ final class IosNativeSosDeliveryStore {
     defaults.set(false, forKey: Keys.staleGuardLinkDropped)
   }
 
-  /// No countdown burst followed the guarded frame: it belongs to the SOS
-  /// the SDK closed. Stop it again; tell the user once.
+  /// F17c: the open prompt's deadline (ms since epoch), nil when none.
+  var promptDeadlineAt: Int? {
+    staleGuardKind == nil ? nil : defaults.object(forKey: Keys.staleGuardPromptDeadlineAt) as? Int
+  }
+
+  /// No countdown burst followed the guarded frame: AMBIGUOUS. Ask the user
+  /// (once: an open prompt is never re-opened), unless the user already
+  /// answered "No" within the consent window: then the stop is written again.
   func evaluateStaleCandidate() -> IosNativeSosTransition {
     var transition = IosNativeSosTransition()
     guard let kind = staleGuardKind,
@@ -403,14 +412,61 @@ final class IosNativeSosDeliveryStore {
       lastStaleAction = "none"
       return transition
     }
-    lastStaleAction = "stale"
     defaults.removeObject(forKey: Keys.staleGuardCandidateAt)
     defaults.removeObject(forKey: Keys.staleGuardCandidatePushes)
-    transition.stopTag = kind
-    if !defaults.bool(forKey: Keys.staleGuardNoticeShown) {
-      defaults.set(true, forKey: Keys.staleGuardNoticeShown)
-      transition.staleStopNotice = true
+    let timestamp = now()
+    if promptDeadlineAt == nil,
+       let consent = defaults.object(forKey: Keys.staleGuardStopConfirmedAt) as? Int,
+       timestamp - consent >= 0, timestamp - consent <= Self.consentMs {
+      lastStaleAction = "stale"
+      transition.stopTag = kind
+      return transition
     }
+    lastStaleAction = "prompt"
+    if promptDeadlineAt == nil {
+      let deadline = timestamp + Self.promptMs
+      defaults.set(deadline, forKey: Keys.staleGuardPromptDeadlineAt)
+      defaults.removeObject(forKey: Keys.staleGuardStopConfirmedAt)
+      transition.openPromptDeadlineAt = deadline
+    }
+    return transition
+  }
+
+  /// F17c: the user's answer (`sendSos`, `stopTag`) or the native timer
+  /// (`timeout`), only while a prompt is open. Send and the timeout open the
+  /// SOS through the native create (Dart claims it, cancellable as usual) and
+  /// end the record; "No" writes the matching stop and keeps the record until
+  /// the TAG confirms. A "No" at or after the deadline is the timeout.
+  func answerPrompt(_ choice: String) -> IosNativeSosTransition {
+    var transition = IosNativeSosTransition()
+    guard let kind = staleGuardKind, let deadline = promptDeadlineAt else {
+      lastStaleAction = "none"
+      return transition
+    }
+    let timestamp = now()
+    let sendSos = choice == "sendSos" ||
+      (choice == "timeout" && timestamp >= deadline) ||
+      (choice == "stopTag" && timestamp >= deadline)
+    if sendSos {
+      lastStaleAction = "sosOpened"
+      let node = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
+      disarmStaleGuard()
+      if cycleState == .idle {
+        setCycle(.preConfirmSeen, key: nil, nodeId: node, deadlineAt: timestamp)
+        defaults.set(timestamp, forKey: Keys.cycleStartedAt)
+        defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+        transition = promoteExpiredCountdown(deviceId: nil)
+      }
+      return transition
+    }
+    guard choice == "stopTag" else {
+      lastStaleAction = "none"
+      return transition
+    }
+    lastStaleAction = "stop"
+    defaults.removeObject(forKey: Keys.staleGuardPromptDeadlineAt)
+    defaults.set(timestamp, forKey: Keys.staleGuardStopConfirmedAt)
+    transition.stopTag = kind
     return transition
   }
 
@@ -433,7 +489,8 @@ final class IosNativeSosDeliveryStore {
     for key in [Keys.staleGuardKind, Keys.staleGuardNodeId, Keys.staleGuardArmedAt,
                 Keys.staleGuardLastFrameAt, Keys.staleGuardLinkDropped,
                 Keys.staleGuardCandidateAt, Keys.staleGuardCandidatePushes,
-                Keys.staleGuardLastPushAt, Keys.staleGuardNoticeShown] {
+                Keys.staleGuardLastPushAt, Keys.staleGuardNoticeShown,
+                Keys.staleGuardPromptDeadlineAt, Keys.staleGuardStopConfirmedAt] {
       defaults.removeObject(forKey: key)
     }
   }
@@ -503,8 +560,8 @@ final class IosNativeSosDeliveryStore {
       }
       return transition
     }
-    // An earlier candidate whose decision was missed (suspended) was the
-    // closed SOS: stop it now. This push opens the next candidate.
+    // An earlier candidate whose decision was missed (suspended) is decided
+    // now (ambiguous: ask). This push opens the next candidate.
     var transition = evaluateStaleCandidate()
     defaults.set(timestamp, forKey: Keys.staleGuardCandidateAt)
     defaults.set(1, forKey: Keys.staleGuardCandidatePushes)
