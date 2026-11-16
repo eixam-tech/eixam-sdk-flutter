@@ -8,6 +8,7 @@ export 'package:eixam_connect_core/src/interfaces/background_location_control.da
 
 export 'package:eixam_connect_core/src/interfaces/activity_session_control.dart';
 export 'package:eixam_connect_core/src/interfaces/activity_availability_control.dart';
+export 'package:eixam_connect_core/src/interfaces/dfu_recovery_control.dart';
 export 'package:eixam_connect_core/src/interfaces/activity_recording_control.dart';
 
 export 'package:eixam_connect_core/src/interfaces/activity_recording_history_control.dart';

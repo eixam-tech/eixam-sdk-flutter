@@ -21,6 +21,9 @@ dependencies:
   permission_handler: ^12.0.3
   # Stay on 22.x: 20+ named-arg APIs; 22 allows xml 7 used by the demo host.
   flutter_local_notifications: ^22.3.0
+  # One-shot absolute-instant schedules use tz.UTC; the host initializes tz data
+  # for tz.local if it needs it. Matches the commercial app's `timezone ^0.11`.
+  timezone: ^0.11.0
   shared_preferences: ^2.3.2
   # Transactional SDK-private recording storage; no host database dependency.
   sqflite: 2.4.2

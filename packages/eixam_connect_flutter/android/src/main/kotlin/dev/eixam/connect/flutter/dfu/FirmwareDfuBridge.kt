@@ -11,8 +11,10 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
+import android.os.PowerManager
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -61,8 +63,12 @@ internal object FirmwareDfuBridge {
     }
 
     fun unregister() {
+        // Never abort() here. The Nordic legacy service answers an abort with a
+        // Reset (Op Code 6) once the transfer started (LegacyDfuImpl
+        // UploadAbortedException path), which reboots a bootloader holding an
+        // erased application into USB/UF2-only mode. A plugin detach only drops
+        // the Dart listener; the foreground DFU service keeps running.
         activeSession?.let { session ->
-            session.controller?.abort()
             cleanupSession(session)
         }
         mainHandler.removeCallbacksAndMessages(null)
@@ -81,6 +87,11 @@ internal object FirmwareDfuBridge {
             )
             "startDfu" -> startDfu(call, result, context)
             "cancelDfu" -> cancelDfu(call, result)
+            "phoneBattery" -> result.success(readPhoneBattery(context))
+            "screenAwake" -> result.success(
+                (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                    ?.isInteractive,
+            )
             else -> result.notImplemented()
         }
     }
@@ -296,7 +307,13 @@ internal object FirmwareDfuBridge {
                 //   first miss.
                 .setUnsafeExperimentalButtonlessServiceInSecureDfuEnabled(true)
                 .setPrepareDataObjectDelay(300L)
-                .setNumberOfRetries(3)
+                // No in-session DFU retry (was 3). A retry re-runs Start against a
+                // bootloader that already holds an interrupted transfer; the
+                // bootloader answers INVALID_STATE and the library then sends
+                // Reset (Op Code 6), turning a recoverable AdaDFU state into
+                // USB/UF2-only (verified on hardware, bootloader 0.4.3).
+                // Connection-establishment retries (error 133) are separate.
+                .setNumberOfRetries(0)
                 // Packet Receipt Notifications MUST be enabled AND kept low for
                 // the legacy (Nordic SDK 11 / Adafruit-RAK) bootloader on the
                 // WisMesh Tag. The Nordic DFU library disables PRN by default on
@@ -378,6 +395,33 @@ internal object FirmwareDfuBridge {
             }
         } catch (error: Exception) {
             Log.w(logTag, "ensureBonded failed address=$deviceId error=${error.message}")
+        }
+    }
+
+    /**
+     * Battery level of the phone for DFU pre-flight. Returns percent (0-100,
+     * null when unreadable) and whether the phone is charging (null when unknown).
+     */
+    private fun readPhoneBattery(context: Context): Map<String, Any?> {
+        return try {
+            val intent = context.registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            )
+            val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+            val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val percent = if (level >= 0 && scale > 0) (level * 100) / scale else null
+            val charging = if (status < 0) {
+                null
+            } else {
+                status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
+            }
+            mapOf("percent" to percent, "charging" to charging)
+        } catch (error: Exception) {
+            Log.w(logTag, "phoneBattery failed: ${error.message}")
+            mapOf("percent" to null, "charging" to null)
         }
     }
 

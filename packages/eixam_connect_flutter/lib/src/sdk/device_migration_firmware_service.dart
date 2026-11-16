@@ -34,9 +34,8 @@ abstract interface class DeviceMigrationFirmwareService {
     required String deviceId,
   });
 
-  Future<FirmwareUpdateSession> recoverMigrationFirmwareUpdate({
-    required String bootloaderDeviceId,
-    required String releaseId,
-    required String targetVersion,
-  });
+  /// Clears an interrupted (engaged, unfinished) firmware record after the
+  /// device was physically recovered and independently re-verified as stock
+  /// firmware. The migration coordinator owns the identity/hardware checks.
+  Future<void> supersedeInterruptedFirmwareUpdate(String sessionId);
 }

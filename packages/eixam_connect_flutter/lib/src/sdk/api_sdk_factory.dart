@@ -1,4 +1,6 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
 
@@ -25,6 +27,9 @@ import '../data/repositories/geolocator_tracking_repository.dart';
 import '../data/repositories/in_memory_death_man_repository.dart';
 import '../data/repositories/in_memory_device_repository.dart';
 import '../data/repositories/local_notifications_repository.dart';
+import '../tag_alerts/local_tag_alert_notifier.dart';
+import '../tag_alerts/tag_alert_permission_gateway.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../data/repositories/mqtt_operational_sos_repository.dart';
 import '../data/repositories/mqtt_telemetry_repository.dart';
 import '../data/repositories/platform_permissions_repository.dart';
@@ -38,6 +43,9 @@ import 'eixam_connect_sdk_impl.dart';
 import '../data/datasources_local/activity_session_store.dart';
 import 'device_migration_coordinator.dart';
 import 'device_migration_session_store.dart';
+import 'dfu_preflight.dart';
+import 'dfu_recovery_controller.dart';
+import 'dfu_recovery_record_store.dart';
 import 'firmware_dfu_transport_factory.dart';
 import 'firmware_update_coordinator.dart';
 import 'frozen_qa_firmware_source.dart';
@@ -67,6 +75,9 @@ class ApiSdkFactory {
     bool enableLogging = false,
     bool allowInsecureLocalEndpoints = false,
     bool deferRuntimeStartup = false,
+    TagAlertNotifier? tagAlertNotifier,
+    TagAlertTextResolver? tagAlertTextResolver,
+    EixamDfuRecoveryConfig dfuRecovery = const EixamDfuRecoveryConfig(),
   }) => _createHttpApi(
     apiBaseUrl: apiBaseUrl,
     websocketUrl: websocketUrl,
@@ -78,6 +89,9 @@ class ApiSdkFactory {
     allowInsecureLocalEndpoints: allowInsecureLocalEndpoints,
     deferRuntimeStartup: deferRuntimeStartup,
     recoverUnreadablePersistedSession: false,
+    tagAlertNotifier: tagAlertNotifier,
+    tagAlertTextResolver: tagAlertTextResolver,
+    dfuRecovery: dfuRecovery,
   );
 
   static Future<EixamConnectSdk> _createHttpApi({
@@ -91,6 +105,9 @@ class ApiSdkFactory {
     required bool allowInsecureLocalEndpoints,
     required bool deferRuntimeStartup,
     required bool recoverUnreadablePersistedSession,
+    TagAlertNotifier? tagAlertNotifier,
+    TagAlertTextResolver? tagAlertTextResolver,
+    EixamDfuRecoveryConfig dfuRecovery = const EixamDfuRecoveryConfig(),
   }) async {
     BleDebugRegistry.instance.reset();
 
@@ -211,6 +228,9 @@ class ApiSdkFactory {
           deviceRuntimeProvider.deviceSosController.getStatus,
       preSosStatusProvider: () => sdk.getPreSosStatus(),
       appLifecycleStateProvider: () => WidgetsBinding.instance.lifecycleState,
+      adapterStateProvider: bleClient.getAdapterState,
+      phoneBatteryProvider: readPlatformPhoneBattery,
+      screenAwakeProvider: readPlatformScreenAwake,
       prepareForDfuTransfer: ({required deviceId}) =>
           sdk.prepareForFirmwareDfuTransfer(deviceId: deviceId),
       releaseBleForDfuTransfer: ({required deviceId}) =>
@@ -230,6 +250,54 @@ class ApiSdkFactory {
       metadataProbe: FlutterBlueMeshtasticMetadataProbe(),
       firmwareUpdates: firmwareUpdateCoordinator,
       sessionStore: SharedPrefsDeviceMigrationSessionStore(localStore: store),
+      onDeviceIdentityMigrated: (fromKey, toKey) =>
+          sdk.rekeyTagAlertDevice(fromKey, toKey),
+    );
+    final dfuRecoveryController = DfuRecoveryController(
+      firmware: firmwareUpdateCoordinator,
+      bleClient: bleClient,
+      recordStore: SharedPrefsDfuRecoveryRecordStore(localStore: store),
+      config: dfuRecovery,
+      inspectStock: (deviceId, name) => migrationCoordinator.inspect(
+        deviceId: deviceId,
+        advertisedName: name,
+      ),
+      isOtherOperationInProgress: () => migrationCoordinator.ownsBleOperation,
+      isIosPlatform: () =>
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS,
+      phoneBattery: readPlatformPhoneBattery,
+      screenAwake: readPlatformScreenAwake,
+      appForeground: () {
+        final state = WidgetsBinding.instance.lifecycleState;
+        return state == null ? null : state == AppLifecycleState.resumed;
+      },
+      // Plug point for a future restart-capable bootloader (the allowlist is
+      // empty, so this is not called today). UNVERIFIED on hardware.
+      bootloaderVersionReader: (deviceId) async {
+        try {
+          await bleClient.connect(deviceId);
+          return await bleClient.readFirmwareVersion(deviceId);
+        } finally {
+          try {
+            await bleClient.disconnect(deviceId);
+          } catch (_) {}
+        }
+      },
+      knownDeviceBatteryPercent: () async =>
+          (await deviceRepository.getDeviceStatus())
+              .approximateBatteryPercentage,
+      reconnectAfterForget: (scan) async {
+        final name = (scan.advertisedLocalName ?? scan.name).trim();
+        if (!name.toUpperCase().startsWith('EIXAM_')) return false;
+        final status = await sdk.connectDevice(
+          pairingCode: name.substring('EIXAM_'.length),
+        );
+        return status.connected;
+      },
+    );
+    final notificationPlugin = FlutterLocalNotificationsPlugin();
+    final notificationsRepository = LocalNotificationsRepository(
+      plugin: notificationPlugin,
     );
     sdk = EixamConnectSdkImpl(
       sosRepository: sosRepository,
@@ -244,7 +312,22 @@ class ApiSdkFactory {
       ),
       deathManRepository: deathManRepository,
       permissionsRepository: permissionsRepository,
-      notificationsRepository: LocalNotificationsRepository(),
+      notificationsRepository: notificationsRepository,
+      tagAlertNotifier:
+          tagAlertNotifier ??
+          LocalTagAlertNotifier(
+            plugin: notificationPlugin,
+            // The shared plugin has one response callback. Under host-managed
+            // notifications the host owns and initializes it already.
+            ensureInitialized:
+                notificationPolicy == EixamNotificationPolicy.hostAppManaged
+                ? () async {}
+                : () => sdk.initializeNotifications(),
+            textResolver: tagAlertTextResolver,
+          ),
+      tagAlertPermissions: PlatformTagAlertPermissionGateway(
+        plugin: notificationPlugin,
+      ),
       realtimeClient: realtimeClient,
       deviceSosController: deviceRuntimeProvider.deviceSosController,
       bleIncomingEvents: deviceRuntimeProvider.watchIncomingEvents(),
@@ -267,6 +350,7 @@ class ApiSdkFactory {
       provisioningBackendUrl: apiBaseUrl,
       deviceConfigStore: deviceConfigStore,
       firmwareUpdateCoordinator: firmwareUpdateCoordinator,
+      dfuRecoveryController: dfuRecoveryController,
       deviceMigrationCoordinator: migrationCoordinator,
       localStore: store,
       activitySessionStore: SharedPrefsActivitySessionStore(store),
@@ -307,6 +391,9 @@ class ApiSdkFactory {
       deferRuntimeStartup: config.featureFlags['defer_runtime_startup'] == true,
       recoverUnreadablePersistedSession:
           resolved.recoverUnreadablePersistedSession,
+      tagAlertNotifier: config.tagAlertNotifier,
+      tagAlertTextResolver: config.tagAlertTextResolver,
+      dfuRecovery: config.dfuRecovery,
     );
 
     final restoredSession = await sdk.getCurrentSession();

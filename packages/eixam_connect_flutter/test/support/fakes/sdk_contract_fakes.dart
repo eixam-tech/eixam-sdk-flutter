@@ -34,6 +34,10 @@ class FakeSosRepository implements SosRepository {
   OsSosWidgetActivation? lastOsWidgetActivation;
   Object? triggerError;
   Object? cancelError;
+
+  /// Holds [cancelSos] open until completed, so a backend terminal echo can
+  /// arrive while the device-originated cancel request is still in flight.
+  Completer<void>? cancelGate;
   final StreamController<SosState> stateController =
       StreamController<SosState>.broadcast();
 
@@ -89,6 +93,10 @@ class FakeSosRepository implements SosRepository {
   Future<SosIncident> cancelSos() async {
     cancelCallCount++;
     terminalOperations.add('cancel:${currentIncident.id}');
+    final gate = cancelGate;
+    if (gate != null) {
+      await gate.future;
+    }
     final error = cancelError;
     if (error != null) {
       throw error;
@@ -356,6 +364,7 @@ class FakeContactsRepository implements ContactsRepository {
 class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
   final List<BackendRegisteredDevice> devices = <BackendRegisteredDevice>[];
   int upsertCallCount = 0;
+  Object? upsertError;
   String? lastHardwareId;
   String? lastFirmwareVersion;
   String? lastHardwareModel;
@@ -379,6 +388,10 @@ class FakeSdkDeviceRegistryRepository implements SdkDeviceRegistryRepository {
     required DateTime pairedAt,
   }) async {
     upsertCallCount++;
+    final error = upsertError;
+    if (error != null) {
+      throw error;
+    }
     lastHardwareId = hardwareId;
     lastFirmwareVersion = firmwareVersion;
     lastHardwareModel = hardwareModel;
@@ -459,8 +472,14 @@ class FakeDeviceRepository
   @override
   Future<DeviceStatus> refreshDeviceStatus() async {
     refreshCallCount++;
+    final error = refreshError;
+    if (error != null) throw error;
     return _status;
   }
+
+  /// Thrown by [refreshDeviceStatus], e.g. the Android Flutter runtime while
+  /// the native runtime owns BLE (`E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED`).
+  Object? refreshError;
 
   @override
   Future<RuntimeIdentitySnapshot> getRuntimeIdentitySnapshot() async {

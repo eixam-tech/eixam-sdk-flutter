@@ -68,6 +68,7 @@ final class Bridge {
     if eventDepth < 3 { eventDepth += 1; poll(); eventDepth -= 1 }
   }
   func recordWake(reason: String) { event() }
+  func logBle(_ message: String) {}
   func recordEvent(type: String, reason: String?) { event() }
   func recordBleEvent(type: String) { event() }
   func recordRestorationEvent(type: String, reason: String?) { event() }

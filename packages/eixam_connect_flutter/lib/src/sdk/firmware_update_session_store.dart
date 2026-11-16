@@ -77,6 +77,7 @@ final class SharedPrefsFirmwareUpdateSessionStore
       'requiresRecovery': session.requiresRecovery,
       'nextAction': session.nextAction.name,
       'reconciliationOutcome': session.reconciliationOutcome?.name,
+      'preflightWarnings': [for (final w in session.preflightWarnings) w.name],
     });
   }
 
@@ -133,6 +134,11 @@ final class SharedPrefsFirmwareUpdateSessionStore
               FirmwareUpdateReconciliationOutcome.values,
               json['reconciliationOutcome'],
             ),
+      preflightWarnings: [
+        for (final name in (json['preflightWarnings'] as List?) ?? const [])
+          for (final w in DfuPreflightWarning.values)
+            if (w.name == name) w,
+      ],
     );
   }
 

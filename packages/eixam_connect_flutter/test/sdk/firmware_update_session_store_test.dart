@@ -29,6 +29,22 @@ void main() {
     );
   });
 
+  test('pre-flight warnings survive a restart', () async {
+    final store = SharedPrefsFirmwareUpdateSessionStore();
+    await store.save(
+      _session().copyWith(
+        preflightWarnings: [
+          DfuPreflightWarning.deviceBatteryUnknown,
+          DfuPreflightWarning.phoneChargingUnknown,
+        ],
+      ),
+    );
+    expect((await store.load())?.preflightWarnings, [
+      DfuPreflightWarning.deviceBatteryUnknown,
+      DfuPreflightWarning.phoneChargingUnknown,
+    ]);
+  });
+
   test('no active update returns null', () async {
     expect(await SharedPrefsFirmwareUpdateSessionStore().load(), isNull);
   });

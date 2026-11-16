@@ -2,6 +2,7 @@ import CoreBluetooth
 import Flutter
 import UIKit
 import UserNotifications
+import os.log
 
 final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandler {
   private static let methodChannelName = "dev.eixam.connect_flutter/protection_runtime/methods"
@@ -64,6 +65,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     static let notificationProtectionSosActiveBody = "notification_protection_sos_active_body"
     static let notificationProtectionSosResolvedTitle = "notification_protection_sos_resolved_title"
     static let notificationProtectionSosResolvedBody = "notification_protection_sos_resolved_body"
+    static let notificationProtectionSosStaleStoppedTitle = "notification_protection_sos_stale_stopped_title"
+    static let notificationProtectionSosStaleStoppedBody = "notification_protection_sos_stale_stopped_body"
     static let notificationProtectionSosCancelledTitle = "notification_protection_sos_cancelled_title"
     static let notificationProtectionSosCancelledBody = "notification_protection_sos_cancelled_body"
     static let notificationNearbyMessageChannelName = "notification_nearby_message_channel_name"
@@ -71,13 +74,6 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "notification_nearby_message_channel_description"
     static let notificationNearbyMessageFallbackTitle =
       "notification_nearby_message_fallback_title"
-  }
-
-  private enum IosBleSosSnapshotKind: String {
-    case preSos
-    case active
-    case cancelled
-    case resolved
   }
 
   private var eventSink: FlutterEventSink?
@@ -97,6 +93,14 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
   private var protectionWriteQueue: [PendingProtectionWrite] = []
   private var commandQueueHealthy = true
   private var protectionWriteTimeout: Timer?
+  private lazy var sosDelivery = IosNativeSosDeliveryStore(
+    defaults: defaults,
+    now: { Date().millisecondsSince1970 }
+  )
+  private var sosCountdownTimer: Timer?
+  private var staleDecisionTimer: Timer?
+  private var sosBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+  private var sosDeliveryPendingInDart = false
 
   @objc static func register(with registrar: FlutterPluginRegistrar) {
     let instance = ProtectionRuntimeBridge()
@@ -122,6 +126,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       recordWake(reason: "plugin_registered")
       attemptProtectionReconnect(trigger: "plugin_registered")
     }
+    // Relaunched (state restoration) during or after a TAG countdown.
+    resumeNativeSosCycle(trigger: "plugin_registered")
   }
 
   private var defaults: UserDefaults {
@@ -139,6 +145,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
          currentRuntimeState == .recovering || protectedPeripheral?.state != .connected || !subscriptionsActive {
         attemptProtectionReconnect(trigger: "snapshot_refresh")
       }
+      resumeNativeSosCycle(trigger: "snapshot_refresh")
       result(snapshot())
     case "startProtectionRuntime":
       let arguments = call.arguments as? [String: Any]
@@ -158,6 +165,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         return
       }
       defaults.set(true, forKey: Keys.isArmed)
+      sosDelivery.resumeObserving()
       defaults.set(activeDeviceId, forKey: Keys.protectedDeviceId)
       storeNotificationTexts(arguments?["notificationTexts"] as? [String: Any])
       defaults.removeObject(forKey: Keys.lastFailureReason)
@@ -181,7 +189,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         "statusMessage": currentStatusMessage(),
       ])
     case "stopProtectionRuntime":
-      stopProtectionRuntime(reason: "protection_runtime_stopped")
+      stopProtectionRuntime(
+        reason: "protection_runtime_stopped",
+        keepSosCountdown: (call.arguments as? [String: Any])?["keepSosCountdown"] as? Bool == true
+      )
       result(nil)
     case "resumeProtectionRuntime":
       let reason = ((call.arguments as? [String: Any])?["reason"] as? String) ?? "app_foreground_resume"
@@ -189,6 +200,82 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       if isArmed {
         attemptProtectionReconnect(trigger: reason)
       }
+      resumeNativeSosCycle(trigger: reason)
+      result(nil)
+    case "peekPendingNativeSosCreate":
+      result(sosDelivery.peekPendingCreate())
+    case "markPendingNativeSosCreateMqttFlushStarted":
+      sosDelivery.markPendingCreate(signature: signatureArgument(call), state: "mqtt_flush_started")
+      result(nil)
+    case "markPendingNativeSosCreateMqttPublished":
+      sosDelivery.markPendingCreate(
+        signature: signatureArgument(call),
+        state: "mqtt_published_pending_backend_confirm",
+        published: true
+      )
+      result(nil)
+    case "retainPendingNativeSosCreate":
+      sosDelivery.retainPendingCreate(
+        signature: signatureArgument(call),
+        reason: ((call.arguments as? [String: Any])?["reason"] as? String) ?? "unspecified"
+      )
+      result(nil)
+    case "ackPendingNativeSosCreate":
+      let acked = sosDelivery.ackPendingCreate(signature: signatureArgument(call))
+      logSosDelivery("NATIVE_SOS_PENDING_ACKED accepted=\(acked)")
+      updateSosBackgroundHold(reason: "pending_create_acked")
+      result(acked)
+    case "dropPendingNativeSosCreate":
+      let dropped = sosDelivery.dropPendingCreate(signature: signatureArgument(call))
+      logSosDelivery("NATIVE_SOS_PENDING_DROPPED accepted=\(dropped)")
+      updateSosBackgroundHold(reason: "pending_create_dropped")
+      result(dropped)
+    case "ackPendingNativeSosCancel":
+      let acked = sosDelivery.ackPendingCancel()
+      logSosDelivery("NATIVE_SOS_CANCEL_HANDED_TO_SDK_MQTT accepted=\(acked)")
+      updateSosBackgroundHold(reason: "pending_cancel_acked")
+      result(acked)
+    case "closeNativeSosCycle":
+      let arguments = call.arguments as? [String: Any]
+      if arguments?["force"] as? Bool == true, sosDelivery.staleGuardKind != nil {
+        // Session change: an F17b guard never crosses accounts.
+        sosDelivery.disarmStaleGuard()
+        staleDecisionTimer?.invalidate()
+        staleDecisionTimer = nil
+        logSosDelivery("NATIVE_SOS_STALE_GUARD_DISARMED reason=session_changed")
+      }
+      if arguments?["force"] as? Bool == true, sosDelivery.cycleState == .preConfirmSeen {
+        // Session change: a running countdown never survives into the next
+        // account.
+        _ = sosDelivery.resetCycle()
+        sosCountdownTimer?.invalidate()
+        sosCountdownTimer = nil
+        logSosDelivery("NATIVE_SOS_COUNTDOWN_DROPPED_BY_SDK reason=session_changed")
+        updateSosBackgroundHold(reason: "sdk_session_changed")
+      }
+      let terminal = IosSosTerminalKind(rawValue: arguments?["terminal"] as? String ?? "")
+      if sosDelivery.closeDeliveredCycle(
+        nodeId: (arguments?["nodeId"] as? NSNumber)?.intValue,
+        terminal: terminal
+      ) {
+        sosCountdownTimer?.invalidate()
+        sosCountdownTimer = nil
+        logSosDelivery("NATIVE_SOS_CYCLE_CLOSED_BY_SDK")
+        if let kind = sosDelivery.staleGuardKind {
+          // F17b: the TAG never confirmed closing this SOS; Dart's own stop
+          // may not reach it (Dart can see the TAG disconnected while this
+          // runtime holds the link). Stop it from here.
+          logSosDelivery("NATIVE_SOS_STALE_GUARD_ARMED terminal=\(kind.rawValue)")
+          if let now = sosDelivery.staleStopToSendNow {
+            sendStaleStop(now, reason: "sdk_close")
+          }
+        }
+        updateSosBackgroundHold(reason: "sdk_sos_closed")
+      }
+      result(nil)
+    case "setSosDeliveryPending":
+      sosDeliveryPendingInDart = ((call.arguments as? [String: Any])?["pending"] as? Bool) ?? false
+      updateSosBackgroundHold(reason: "sdk_outbox_status")
       result(nil)
     case "sendProtectionCommand":
       let arguments = call.arguments as? [String: Any]
@@ -208,6 +295,14 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     eventSink = events
+    // SOS events recorded while Dart was not listening, oldest first.
+    let queued = sosDelivery.drainEvents()
+    if !queued.isEmpty {
+      logSosDelivery("NATIVE_SOS_EVENTS_REPLAYED count=\(queued.count)")
+    }
+    for event in queued {
+      events(event)
+    }
     drainTelNotify()
     return nil
   }
@@ -238,12 +333,25 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     defaults.set(state.rawValue, forKey: Keys.runtimeState)
   }
 
-  private func stopProtectionRuntime(reason: String) {
+  private func stopProtectionRuntime(reason: String, keepSosCountdown: Bool = false) {
     connectionPreparation.finish()
     failPendingProtectionWrites(
       error: "The iOS Protection runtime stopped before the BLE write completed."
     )
     defaults.set(false, forKey: Keys.isArmed)
+    // Native no longer observes the TAG (Dart's BLE path owns the next
+    // frames). Only the host's signed-in foreground exit keeps a running
+    // countdown, still promoted at its deadline; the SDK closes it if Dart
+    // sees a TAG/app cancel (F11). Every other stop drops it.
+    if keepSosCountdown, let deadline = sosDelivery.stopObserving() {
+      logSosDelivery("NATIVE_SOS_COUNTDOWN_KEPT_ON_STOP reason=\(reason)")
+      scheduleSosCountdown(deadlineAt: deadline)
+    } else {
+      _ = sosDelivery.resetCycle()
+      sosCountdownTimer?.invalidate()
+      sosCountdownTimer = nil
+    }
+    updateSosBackgroundHold(reason: "protection_stopped")
     subscriptionsActive = false
     servicesDiscovered = false
     telCharacteristic = nil
@@ -287,6 +395,14 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     setNotificationText(
       texts["protectionSosResolvedBody"] as? String,
       forKey: Keys.notificationProtectionSosResolvedBody
+    )
+    setNotificationText(
+      texts["protectionSosStaleStoppedTitle"] as? String,
+      forKey: Keys.notificationProtectionSosStaleStoppedTitle
+    )
+    setNotificationText(
+      texts["protectionSosStaleStoppedBody"] as? String,
+      forKey: Keys.notificationProtectionSosStaleStoppedBody
     )
     setNotificationText(
       texts["notificationSosCancelledTitle"] as? String,
@@ -392,7 +508,16 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     guard isArmed,
           let target = defaults.string(forKey: Keys.protectedDeviceId),
           UUID(uuidString: target) == peripheral.identifier else { return }
-    _ = connectionPreparation.begin(peripheral.identifier)
+    guard centralManager?.state == .poweredOn else {
+      // F17a: state restoration arrives before power-on; iOS ignores a
+      // discovery requested now. Keep the peripheral; power-on rediscovers.
+      protectedPeripheral = peripheral
+      peripheral.delegate = self
+      updateRuntimeState(.recovering)
+      logBle("NATIVE_BLE_DISCOVERY_DEFERRED reason=not_powered_on restored=\(restored)")
+      return
+    }
+    connectionPreparation.startDiscovery(peripheral.identifier)
     protectedPeripheral = peripheral
     peripheral.delegate = self
     servicesDiscovered = false
@@ -417,6 +542,32 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     defaults.set(reason, forKey: Keys.lastWakeReason)
     emitEvent(type: "woke", reason: reason)
   }
+
+  /// F17a: a connected protected peripheral without services / a writable
+  /// characteristic (restored link) is discovered again; SOS frames kept
+  /// arriving but nothing could be written to the TAG.
+  private func rediscoverIfNeeded(trigger: String) {
+    guard let peripheral = protectedPeripheral,
+          connectionPreparation.shouldRediscover(
+            armed: isArmed,
+            poweredOn: centralManager?.state == .poweredOn,
+            peripheralConnected: peripheral.state == .connected,
+            servicesDiscovered: servicesDiscovered,
+            subscriptionsActive: subscriptionsActive,
+            hasCommandCharacteristic: cmdCharacteristic != nil || inetCharacteristic != nil
+          ) else {
+      return
+    }
+    logBle("NATIVE_BLE_REDISCOVERY_AFTER_RESTORE trigger=\(trigger)")
+    connectionPreparation.noteRediscovery()
+    connectionPreparation.finish()
+    handleConnectedPeripheral(peripheral, restored: false)
+  }
+
+  private func logBle(_ message: String) {
+    os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default, message)
+  }
+
 
   private func recordEvent(type: String, reason: String?) {
     let timestamp = Date().millisecondsSince1970
@@ -463,7 +614,13 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       }
     }
 
-    eventSink?(event)
+    if let eventSink {
+      eventSink(event)
+    } else {
+      // Dart is not attached (suspended engine, relaunch before listen):
+      // keep SOS events in order instead of losing them.
+      sosDelivery.enqueue(event: event)
+    }
   }
 
   private func currentCoverageLevel() -> String {
@@ -559,7 +716,10 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "nativeCommandIdentityReady": identityReady,
       "nativeCommandQueueHealthy": commandQueueHealthy,
       "nativeCommandReady": commandReady,
-      "pendingSosCount": 0,
+      "pendingSosCount": sosDelivery.pendingCreateCount + sosDelivery.pendingCancelCount,
+      "pendingNativeSosCreateCount": sosDelivery.pendingCreateCount,
+      "pendingNativeSosCancelCount": sosDelivery.pendingCancelCount,
+      "pendingNativeSosCancelCreatedAt": sosDelivery.pendingCancelCreatedAt,
       "pendingTelemetryCount": 0,
       "lastRestorationEvent": defaults.string(forKey: Keys.lastRestorationEvent),
       "lastRestorationEventAt": defaults.object(forKey: Keys.lastRestorationEventAt) as? Int,
@@ -580,17 +740,18 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "lastCommandRoute": defaults.string(forKey: Keys.lastCommandRoute),
       "lastCommandResult": defaults.string(forKey: Keys.lastCommandResult),
       "lastCommandError": defaults.string(forKey: Keys.lastCommandError),
-      "iosBleSosSnapshotKind": defaults.string(forKey: Keys.iosBleSosSnapshotKind),
+      "iosBleSosSnapshotKind": effectiveSnapshotKind(),
       "iosBleSosPayloadHex": defaults.string(forKey: Keys.iosBleSosPayloadHex),
       "iosBleSosSource": defaults.string(forKey: Keys.iosBleSosSource),
       "iosBleSosCharacteristicUuid": defaults.string(forKey: Keys.iosBleSosCharacteristicUuid),
       "iosBleSosReceivedAt": defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
-      "iosBleSosDeadlineAt": defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int,
+      "iosBleSosDeadlineAt": effectiveSnapshotDeadlineAt(),
       "iosBleSosNodeId": defaults.object(forKey: Keys.iosBleSosNodeId) as? Int,
       "iosBleSosPacketId": defaults.object(forKey: Keys.iosBleSosPacketId) as? Int,
       "iosBleSosCycleKey": defaults.string(forKey: Keys.iosBleSosCycleKey),
       "preSosLifecycleState": preSosLifecycleStateFromSnapshot(),
-      "preSosCycleKey": defaults.string(forKey: Keys.iosBleSosCycleKey),
+      "preSosCycleKey": (sosDelivery.peekPendingCreate()?["cycleKey"] as? String)
+        ?? defaults.string(forKey: Keys.iosBleSosCycleKey),
       "preSosOwner": "device",
       "preSosStartedAt": preSosStartedAtFromSnapshot(),
       "preSosExpectedActivationAt": preSosExpectedActivationAtFromSnapshot(),
@@ -600,26 +761,50 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
     ]
   }
 
+  /// While the native countdown runs the snapshot shows a countdown with
+  /// the native deadline: TAG frames carry sosType 3 from the countdown
+  /// start, and the SDK must never show that as a sent SOS.
+  private func effectiveSnapshotKind() -> String? {
+    if sosDelivery.countdownDeadlineAt != nil {
+      return IosBleSosSnapshotKind.preSos.rawValue
+    }
+    return defaults.string(forKey: Keys.iosBleSosSnapshotKind)
+  }
+
+  private func effectiveSnapshotDeadlineAt() -> Int? {
+    sosDelivery.countdownDeadlineAt ?? defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int
+  }
+
   private func preSosLifecycleStateFromSnapshot() -> String? {
-    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue else {
+    if sosDelivery.pendingCancelSupersedesCreate {
+      // Same contract as Android: a TAG cancel not yet handed to the SDK
+      // wins over an SOS created before it; the SDK drops a pending create
+      // it did not publish. A newer SOS is never dropped by an older cancel.
+      return "cancelPending"
+    }
+    if sosDelivery.pendingCreateCount > 0 {
+      // Same contract as Android: the SDK claims the pending create.
+      return "createPending"
+    }
+    guard effectiveSnapshotKind() == IosBleSosSnapshotKind.preSos.rawValue else {
       return nil
     }
     return "preConfirmSeen"
   }
 
   private func preSosStartedAtFromSnapshot() -> Int? {
-    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue,
-          let deadlineAt = defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int else {
+    guard effectiveSnapshotKind() == IosBleSosSnapshotKind.preSos.rawValue,
+          let deadlineAt = effectiveSnapshotDeadlineAt() else {
       return nil
     }
     return deadlineAt - 20_000
   }
 
   private func preSosExpectedActivationAtFromSnapshot() -> Int? {
-    guard defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue else {
+    guard effectiveSnapshotKind() == IosBleSosSnapshotKind.preSos.rawValue else {
       return nil
     }
-    return defaults.object(forKey: Keys.iosBleSosDeadlineAt) as? Int
+    return effectiveSnapshotDeadlineAt()
   }
 
   private func preSosRemainingSecondsFromSnapshot() -> Int? {
@@ -696,6 +881,7 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
 
     let shouldUseCmd = command.forceCmdCharacteristic || command.payload.count > 20
     guard let characteristic = shouldUseCmd ? (cmdCharacteristic ?? inetCharacteristic) : (inetCharacteristic ?? cmdCharacteristic) else {
+      rediscoverIfNeeded(trigger: "command")
       let error = "The iOS Protection runtime does not have a writable command characteristic ready yet."
       defaults.set(error, forKey: Keys.lastCommandError)
       command.result(commandResult(success: false, route: route, result: nil, error: error))
@@ -813,6 +999,8 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
     if central.state != .poweredOn {
       connectionPreparation.finish()
+      // No didDisconnect for Bluetooth off / reset: the F17b guard must know.
+      sosDelivery.noteLinkDropped()
     }
     switch central.state {
     case .poweredOn:
@@ -821,6 +1009,9 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
         if protectedPeripheral?.state == .connected && subscriptionsActive {
           updateRuntimeState(.active)
           defaults.removeObject(forKey: Keys.degradationReason)
+        } else if protectedPeripheral?.state == .connected {
+          // Restored link: discover what restoration could not.
+          rediscoverIfNeeded(trigger: "powered_on")
         } else {
           updateRuntimeState(.recovering)
           attemptProtectionReconnect(trigger: "bluetooth_powered_on")
@@ -866,6 +1057,7 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    sosDelivery.noteLinkUp()
     handleConnectedPeripheral(peripheral, restored: restoredLastLaunch)
     restoredLastLaunch = false
   }
@@ -880,6 +1072,7 @@ extension ProtectionRuntimeBridge: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    sosDelivery.noteLinkDropped()
     connectionPreparation.finish(peripheral.identifier)
     failPendingProtectionWrites(
       error: "The iOS Protection runtime disconnected before the BLE write completed."
@@ -984,10 +1177,23 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
     peripheral.setNotifyValue(true, for: telCharacteristic)
     peripheral.setNotifyValue(true, for: sosCharacteristic)
+    if telCharacteristic.isNotifying && sosCharacteristic.isNotifying {
+      // F17a: a restored link is already notifying; iOS may not call
+      // didUpdateNotificationStateFor again, so become active here.
+      markSubscriptionsActive(peripheral)
+    }
   }
 
   func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
     if let error {
+      if telCharacteristic?.isNotifying == true && sosCharacteristic?.isNotifying == true {
+        // Restored link activated early: both notifications still work.
+        os_log("[EIXAM_BLE] %{public}@", log: .default, type: .default,
+               "NATIVE_BLE_NOTIFY_ERROR_IGNORED reason=both_notifying")
+        return
+      }
+      // Not ready: a frame / command / snapshot rediscovers (rate-limited).
+      subscriptionsActive = false
       updateRuntimeState(.recovering)
       let reason = "The iOS Protection runtime could not enable notifications for \(characteristic.uuid.uuidString.lowercased()): \(error.localizedDescription)"
       defaults.set(reason, forKey: Keys.lastFailureReason)
@@ -999,20 +1205,29 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
     let telReady = telCharacteristic?.isNotifying == true
     let sosReady = sosCharacteristic?.isNotifying == true
-    subscriptionsActive = telReady && sosReady
-
-    if subscriptionsActive {
-      connectionPreparation.finish(peripheral.identifier)
-      updateRuntimeState(.active)
-      defaults.removeObject(forKey: Keys.degradationReason)
-      defaults.removeObject(forKey: Keys.readinessFailureReason)
-      defaults.removeObject(forKey: Keys.lastFailureReason)
-      recordBleEvent(type: "subscriptionsActive")
-      recordEvent(type: "runtimeActive", reason: "notifications_restored")
+    if telReady && sosReady {
+      markSubscriptionsActive(peripheral)
+    } else {
+      subscriptionsActive = false
     }
   }
 
+  private func markSubscriptionsActive(_ peripheral: CBPeripheral) {
+    guard !subscriptionsActive else { return }
+    subscriptionsActive = true
+    connectionPreparation.finish(peripheral.identifier)
+    updateRuntimeState(.active)
+    defaults.removeObject(forKey: Keys.degradationReason)
+    defaults.removeObject(forKey: Keys.readinessFailureReason)
+    defaults.removeObject(forKey: Keys.lastFailureReason)
+    recordBleEvent(type: "subscriptionsActive")
+    recordEvent(type: "runtimeActive", reason: "notifications_restored")
+  }
+
   func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+    if error == nil, peripheral.identifier == protectedPeripheral?.identifier {
+      rediscoverIfNeeded(trigger: "frame")
+    }
     if error != nil {
       let reason = "ios_ble_notify_error"
       defaults.set(reason, forKey: Keys.lastFailureReason)
@@ -1027,7 +1242,11 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
         let bytes = [UInt8](value)
         if TelAggregateFragment.tryParse(bytes) != nil {
           emitTelNotify(bytes, source: "tel")
-        } else if parseIosBleSosSnapshot(bytes: bytes, receivedAt: Date().millisecondsSince1970) != nil {
+        } else if parseIosBleSosSnapshot(
+          bytes: bytes,
+          characteristic: characteristic,
+          receivedAt: Date().millisecondsSince1970
+        ) != nil {
           captureBleSosPayload(value, characteristic: characteristic)
         } else {
           emitTelNotify(bytes, source: "tel")
@@ -1109,13 +1328,30 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     print("IOS_BLE_SOS_PAYLOAD_RECEIVED source=\(source) packet_bytes_present=true byte_count=\(bytes.count)")
 #endif
 
-    guard let parsed = parseIosBleSosSnapshot(bytes: bytes, receivedAt: timestamp) else {
+    guard let parsed = parseIosBleSosSnapshot(
+      bytes: bytes,
+      characteristic: characteristic,
+      receivedAt: timestamp
+    ) else {
       return
     }
     if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
 #if DEBUG
       print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil)")
 #endif
+      // The snapshot/event stay suppressed, but the native cycle sees the
+      // frame: its post-close quiet window decides, and backdates a real new
+      // SOS that started inside it instead of delaying it by the window.
+      applyNativeSosTransition(
+        sosDelivery.observe(
+          kind: parsed.kind,
+          nodeId: parsed.nodeId,
+          cycleKey: parsed.cycleKey,
+          deviceId: defaults.string(forKey: Keys.protectedDeviceId)
+        ),
+        reason: "device_cycle_after_close",
+        notifyActive: true
+      )
       return
     }
     let previousNotificationContext = currentSosNotificationContext()
@@ -1138,10 +1374,15 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 #if DEBUG
     print("IOS_BLE_SOS_SNAPSHOT_PERSISTED kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil) deadline_present=\(parsed.deadlineAt != nil)")
 #endif
-    requestBackgroundSosNotification(
-      for: parsed,
-      previous: previousNotificationContext
-    )
+    if parsed.kind == .cancelled || parsed.kind == .resolved {
+      // Keyed by the SOS it closes (before the cycle is reset below), so the
+      // close of a later SOS is never deduplicated against an earlier one.
+      requestBackgroundSosNotification(
+        for: (parsed.kind, parsed.nodeId, parsed.packetId,
+              sosDelivery.notificationCycleId ?? parsed.cycleKey, parsed.deadlineAt),
+        previous: previousNotificationContext
+      )
+    }
     var eventPayload: [String: Any] = [
       "payloadHex": payloadHex,
       "source": source,
@@ -1157,6 +1398,200 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       timestamp: timestamp,
       payload: eventPayload
     )
+    applyNativeSosTransition(
+      sosDelivery.observe(
+        kind: parsed.kind,
+        nodeId: parsed.nodeId,
+        cycleKey: parsed.cycleKey,
+        deviceId: defaults.string(forKey: Keys.protectedDeviceId)
+      ),
+      reason: parsed.kind == .active ? "device_cycle_active" : "device_cycle_\(parsed.kind.rawValue)",
+      notifyActive: false
+    )
+    // One notification per SOS: keyed by the native cycle (the TAG repeats
+    // its frames with a new packet id), countdown vs active by cycle stage.
+    if let notification = sosDelivery.notification(for: parsed.kind) {
+      requestBackgroundSosNotification(
+        for: (notification.kind, parsed.nodeId, nil, notification.cycleKey, nil),
+        previous: previousNotificationContext
+      )
+    }
+  }
+
+  // MARK: - Background SOS delivery (Android hand-off contract)
+
+  private func signatureArgument(_ call: FlutterMethodCall) -> String {
+    ((call.arguments as? [String: Any])?["signature"] as? String) ?? ""
+  }
+
+  /// Plugin registration, snapshot or resume: a countdown that elapsed while
+  /// the app was suspended becomes the pending create now; a running one gets
+  /// its timer (and background time) back.
+  private func resumeNativeSosCycle(trigger: String) {
+    // A countdown kept across a runtime stop is still promoted (no reconnect).
+    guard isArmed || sosDelivery.cycleState == .preConfirmSeen else {
+      updateSosBackgroundHold(reason: trigger)
+      return
+    }
+    applyNativeSosTransition(
+      sosDelivery.promoteExpiredCountdown(deviceId: defaults.string(forKey: Keys.protectedDeviceId)),
+      reason: "device_cycle_active_after_timeout",
+      notifyActive: true
+    )
+    if sosDelivery.cycleState == .preConfirmSeen,
+       sosCountdownTimer == nil,
+       let deadline = sosDelivery.cycleDeadlineAt {
+      scheduleSosCountdown(deadlineAt: deadline)
+    }
+    updateSosBackgroundHold(reason: trigger)
+  }
+
+  private func applyNativeSosTransition(
+    _ transition: IosNativeSosTransition,
+    reason: String,
+    notifyActive: Bool
+  ) {
+    if transition.countdownStopped {
+      sosCountdownTimer?.invalidate()
+      sosCountdownTimer = nil
+    }
+    if let deadline = transition.countdownDeadlineAt {
+      scheduleSosCountdown(deadlineAt: deadline)
+    }
+    if transition.queuedCreate {
+      if defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.preSos.rawValue {
+        defaults.set(IosBleSosSnapshotKind.active.rawValue, forKey: Keys.iosBleSosSnapshotKind)
+        defaults.removeObject(forKey: Keys.iosBleSosDeadlineAt)
+      }
+      if notifyActive {
+        // The TAG went active while no active frame reached the phone:
+        // the local SOS notification never waits for Dart or the network.
+        requestBackgroundSosNotification(
+          for: (.active, sosDelivery.cycleNodeId, nil, sosDelivery.notificationCycleId, nil),
+          previous: currentSosNotificationContext()
+        )
+      }
+      logSosDelivery("NATIVE_SOS_PENDING_STORED reason=\(reason) dartAttached=\(eventSink != nil)")
+      emitEvent(type: "nativeBackendSyncQueued", reason: "create:\(reason)")
+    }
+    if transition.queuedCancel {
+      logSosDelivery("NATIVE_SOS_CANCEL_PENDING_STORED dartAttached=\(eventSink != nil)")
+      emitEvent(type: "nativeBackendSyncQueued", reason: "cancel:device_cycle_closed")
+    }
+    applyStaleGuardTransition(transition)
+    updateSosBackgroundHold(reason: reason)
+  }
+
+  // MARK: - F17b stale guard
+
+  private func applyStaleGuardTransition(_ transition: IosNativeSosTransition) {
+    if let at = transition.evaluateStaleAt {
+      staleDecisionTimer?.invalidate()
+      let delay = max(0, Double(at - Date().millisecondsSince1970) / 1000.0)
+      staleDecisionTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        guard let self else { return }
+        self.staleDecisionTimer = nil
+        self.applyStaleGuardTransition(self.sosDelivery.evaluateStaleCandidate())
+      }
+    }
+    if let kind = transition.stopTag {
+      sendStaleStop(kind, reason: "stale_frame")
+    }
+    if transition.staleStopNotice {
+      postStaleStopNotification()
+    }
+  }
+
+  /// The SDK's own terminal command: cancel `0x04`, resolve `0x07` (SOS ACK),
+  /// on the CMD characteristic. Only for an SOS the SDK already closed.
+  private func sendStaleStop(_ kind: IosSosTerminalKind, reason: String) {
+    let label = kind == .cancel ? "SOS CANCEL" : "SOS ACK"
+    let bytes = kind == .cancel ? [0x04] : [0x07]
+    enqueueProtectionCommand(label: label, bytes: bytes, forceCmdCharacteristic: true) { [weak self] value in
+      let ok = (value as? [String: Any])?["success"] as? Bool ?? false
+      self?.logSosDelivery("NATIVE_SOS_STALE_STOP_SENT terminal=\(kind.rawValue) reason=\(reason) accepted=\(ok)")
+    }
+  }
+
+  private func postStaleStopNotification() {
+    UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+      guard let self, self.isNotificationAuthorized(settings.authorizationStatus) else { return }
+      let content = UNMutableNotificationContent()
+      content.sound = .default
+      content.categoryIdentifier = "ios_sos_notification"
+      content.userInfo = [
+        "payload": "sos:stale_stopped",
+        "source": "ios_sos_notification",
+        "route": "sos",
+        "kind": "staleStopped",
+      ]
+      content.title = self.notificationText(
+        Keys.notificationProtectionSosStaleStoppedTitle, fallback: "SOS stopped on your TAG")
+      content.body = self.notificationText(
+        Keys.notificationProtectionSosStaleStoppedBody,
+        fallback: "We stopped on your TAG an SOS that had already ended.")
+      let request = UNNotificationRequest(
+        identifier: "ios_sos_stale_stopped",
+        content: content,
+        trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+      )
+      UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
+  }
+
+  private func scheduleSosCountdown(deadlineAt: Int) {
+    sosCountdownTimer?.invalidate()
+    let delay = max(0, Double(deadlineAt - Date().millisecondsSince1970) / 1000.0)
+    sosCountdownTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+      guard let self else { return }
+      self.sosCountdownTimer = nil
+      self.resumeNativeSosCycle(trigger: "countdown_elapsed")
+    }
+  }
+
+  /// Keeps the app running while an SOS is counting down or not yet confirmed
+  /// by the backend (MQTT connect + TLS + publish + PUBACK). Ends when nothing
+  /// is pending, or on expiry: the SDK outbox then retries on the next wake.
+  private func updateSosBackgroundHold(reason: String) {
+    let hold = sosDelivery.cycleState == .preConfirmSeen ||
+      sosDelivery.pendingCreateCount > 0 ||
+      sosDelivery.pendingCancelCount > 0 ||
+      sosDeliveryPendingInDart
+    if hold {
+      guard sosBackgroundTask == .invalid else { return }
+      sosBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "eixam.sos.delivery") { [weak self] in
+        self?.endSosBackgroundTask(reason: "expired")
+      }
+      if sosBackgroundTask != .invalid {
+        logSosDelivery("SOS_BACKGROUND_TIME_BEGIN reason=\(reason) remainingS=\(Int(min(UIApplication.shared.backgroundTimeRemaining, 999)))")
+      }
+      return
+    }
+    guard sosBackgroundTask != .invalid else { return }
+    // Grace: Dart reports its own outbox right after taking the hand-off.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+      guard let self else { return }
+      let stillIdle = self.sosDelivery.cycleState != .preConfirmSeen &&
+        self.sosDelivery.pendingCreateCount == 0 &&
+        self.sosDelivery.pendingCancelCount == 0 &&
+        !self.sosDeliveryPendingInDart
+      if stillIdle {
+        self.endSosBackgroundTask(reason: reason)
+      }
+    }
+  }
+
+  private func endSosBackgroundTask(reason: String) {
+    guard sosBackgroundTask != .invalid else { return }
+    let task = sosBackgroundTask
+    sosBackgroundTask = .invalid
+    logSosDelivery("SOS_BACKGROUND_TIME_END reason=\(reason)")
+    UIApplication.shared.endBackgroundTask(task)
+  }
+
+  /// Release-visible, identifier-free diagnostics (device QA via syslog).
+  private func logSosDelivery(_ message: String) {
+    os_log("[EIXAM_SOS] %{public}@", log: .default, type: .default, message)
   }
 
   private func sourceName(for characteristic: CBCharacteristic) -> String {
@@ -1254,6 +1689,12 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     parsed: (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?),
     receivedAt: Int
   ) -> Bool {
+    // F17b: frames of an SOS the SDK closed go to the native guard only,
+    // never to Dart as a live SOS (the guard admits a countdown burst).
+    if (parsed.kind == .preSos || parsed.kind == .active),
+       sosDelivery.staleGuardKind != nil {
+      return true
+    }
     guard parsed.kind == .preSos || parsed.kind == .active,
           defaults.string(forKey: Keys.iosBleSosSnapshotKind) == IosBleSosSnapshotKind.cancelled.rawValue,
           let cancelledAt = defaults.object(forKey: Keys.iosBleSosReceivedAt) as? Int,
@@ -1291,17 +1732,19 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     guard shouldNotifySosSnapshot(parsed, previous: previous) else {
       return
     }
+    // Claimed here on the caller's (main) thread: checking it inside the
+    // async settings callback let two close frames both pass (duplicate alert).
+    let dedupeKey = sosNotificationDedupeKey(for: parsed)
+    guard rememberSosNotificationKey(dedupeKey) else {
+#if DEBUG
+      print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil)")
+#endif
+      return
+    }
     UNUserNotificationCenter.current().getNotificationSettings { settings in
       guard self.isNotificationAuthorized(settings.authorizationStatus) else {
 #if DEBUG
         print("IOS_SOS_NOTIFICATION_PERMISSION_MISSING kind=\(parsed.kind.rawValue) authorization_category=not_granted")
-#endif
-        return
-      }
-      let dedupeKey = self.sosNotificationDedupeKey(for: parsed)
-      guard self.rememberSosNotificationKey(dedupeKey) else {
-#if DEBUG
-        print("IOS_SOS_NOTIFICATION_DEDUPED kind=\(parsed.kind.rawValue) packet_identity_present=\(parsed.cycleKey != nil)")
 #endif
         return
       }
@@ -1481,59 +1924,28 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     return value?.isEmpty == false ? value! : fallback
   }
 
-  private func parseIosBleSosSnapshot(bytes: [UInt8], receivedAt: Int) -> (kind: IosBleSosSnapshotKind, nodeId: Int?, packetId: Int?, cycleKey: String?, deadlineAt: Int?)? {
-    // Nearby 0xD8 is chunked as 0xD0. Last fragments of 7/12/13/18 bytes match
-    // SOS snapshot sizes; treat real TEL fragments as not-SOS so emitTelNotify
-    // can reassemble and NearbyClosedAppNotifier can fire with the app killed.
-    // Do not reject 0xD8/0xDA/0xDB by first byte: SOS node id is little-endian
-    // at offset 0. 0xDA status is 6 B and 0xD8 text is ≥ 22 B, so they miss
-    // the 7/12-byte parse below and still reach emitTelNotify.
-    if TelAggregateFragment.tryParse(bytes) != nil {
-      return nil
-    }
-    if bytes.count == 6,
-       (bytes[0] == 0xE1 || bytes[0] == 0xE2 || bytes[0] == 0xE3) {
-      let nodeId = readUInt32(bytes, offset: 2)
-      // E3 closes the TAG episode through backend resolution. Persist and
-      // forward its real packet, preserving the distinction from user cancel.
-      let kind: IosBleSosSnapshotKind = bytes[0] == 0xE3 ? .resolved : .cancelled
-      return (kind, nodeId, nil, nodeId.map { "sos:\($0)" }, nil)
-    }
-
-    let packetLength: Int
-    if bytes.count == 18 {
-      packetLength = 12
-    } else if bytes.count == 13 {
-      packetLength = 7
-    } else {
-      packetLength = bytes.count
-    }
-    guard packetLength == 7 || packetLength == 12,
-          let nodeId = readUInt32(bytes, offset: 0) else {
-      return nil
-    }
-    let flagsOffset = packetLength == 12 ? 10 : 4
-    let flagsWord = Int(bytes[flagsOffset]) | (Int(bytes[flagsOffset + 1]) << 8)
-    let sosType = (flagsWord >> 14) & 0x03
-    let packetId = flagsWord & 0x0F
-    let cycleKey = "sos:\(nodeId):\(packetId)"
-    if sosType == 0 {
-      return (.cancelled, nodeId, packetId, cycleKey, nil)
-    }
-    if sosType == 1 {
-      return (.preSos, nodeId, packetId, cycleKey, receivedAt + 20_000)
-    }
-    return (.active, nodeId, packetId, cycleKey, nil)
+  private func parseIosBleSosSnapshot(
+    bytes: [UInt8],
+    characteristic: CBCharacteristic,
+    receivedAt: Int
+  ) -> IosBleSosParsedSnapshot? {
+    IosBleSosFrameClassifier.parse(
+      bytes: bytes,
+      characteristic: iosBleSosCharacteristic(for: characteristic),
+      receivedAt: receivedAt
+    )
   }
 
-  private func readUInt32(_ bytes: [UInt8], offset: Int) -> Int? {
-    guard bytes.count >= offset + 4 else {
-      return nil
+  private func iosBleSosCharacteristic(
+    for characteristic: CBCharacteristic
+  ) -> IosBleSosCharacteristic {
+    if characteristic.uuid == Self.telCharacteristicUuid {
+      return .tel
     }
-    return Int(bytes[offset])
-      | (Int(bytes[offset + 1]) << 8)
-      | (Int(bytes[offset + 2]) << 16)
-      | (Int(bytes[offset + 3]) << 24)
+    if characteristic.uuid == Self.sosCharacteristicUuid {
+      return .sos
+    }
+    return .other
   }
 
   func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {

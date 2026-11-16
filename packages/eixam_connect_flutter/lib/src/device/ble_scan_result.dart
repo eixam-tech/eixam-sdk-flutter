@@ -1,5 +1,5 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart'
-    show EixamBleScanResult;
+    show EixamBleScanResult, classifyEixamPairingDisplay;
 
 import '../public/enums/discovered_device_brand.dart';
 import 'eixam_ble_protocol.dart';
@@ -39,6 +39,11 @@ class BleScanResult {
       isEixamDevice: _isEixamDevice,
       discoveredAt: discoveredAt,
       isDfuBootloader: _isDfuBootloader,
+      pairingDisplayCategory: classifyEixamPairingDisplay(
+        name: name,
+        advertisedServiceUuids: advertisedServiceUuids,
+        dfuServiceAdvertised: _isDfuBootloader,
+      ),
     );
   }
 

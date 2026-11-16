@@ -105,7 +105,7 @@ void main() {
   );
 
   for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
-    test('superseded system retrieval cannot restore an old scan', () async {
+    test('F12: an overlapping scan does not cancel an older scan', () async {
       debugDefaultTargetPlatformOverride = platform;
       final entered = Completer<void>();
       final pending = Completer<List<BluetoothDevice>>();
@@ -124,8 +124,102 @@ void main() {
       await entered.future;
       expect(await client.scan(timeout: Duration.zero), isEmpty);
       pending.complete([_SystemDevice('old', 'Meshtastic_756e')]);
-      expect(await old, isEmpty);
+      expect((await old).single.deviceId, 'old');
     });
+
+    test('F12: the late watcher scan and a discovery scan share one native '
+        'scan and both see the stock TAG', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+      addTearDown(events.close);
+      var starts = 0;
+      var stops = 0;
+      final client = _buildRealBleClient(
+        scanResultsProvider: () => events.stream,
+        startScan: (_) async => starts++,
+        stopScan: () async => stops++,
+      );
+      await client.initialize();
+      // Watcher scan (8 s in production) is running.
+      final watcher = client.scan(timeout: const Duration(milliseconds: 80));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      // The stock TAG is reported once per native session, before the
+      // discovery poll starts (iOS / no continuousUpdates).
+      events.add([_stockTagAdvert()]);
+      final discovery = client.scan(timeout: const Duration(milliseconds: 20));
+      final discovered = await discovery;
+      expect(discovered.single.deviceId, 'stock-tag');
+      expect(
+        discovered.single.toPublic().pairingDisplayCategory,
+        EixamPairingDisplayCategory.legacyOrStock,
+      );
+      expect(stops, 0, reason: 'the watcher still owns the native scan');
+      expect((await watcher).single.deviceId, 'stock-tag');
+      expect(starts, 1);
+      expect(stops, 1);
+    });
+
+    test('F12: a later caller outside the native window extends it', () async {
+      debugDefaultTargetPlatformOverride = platform;
+      const ms = Duration(milliseconds: 1);
+      final windows = <Duration>[];
+      var stops = 0;
+      final client = _buildRealBleClient(
+        minNativeScanWindow: ms * 100,
+        startScan: (window) async => windows.add(window),
+        stopScan: () async => stops++,
+      );
+      await client.initialize();
+      final first = client.scan(timeout: ms * 40);
+      await Future<void>.delayed(ms * 20);
+      // 20 + 40 ms still fits the first 100 ms native window: joined.
+      final second = client.scan(timeout: ms * 40);
+      await first;
+      expect(windows, [ms * 100]);
+      expect(stops, 0, reason: 'the second caller still scans');
+      // Ends after the window: one restart extends the native scan.
+      final third = client.scan(timeout: ms * 150);
+      await Future<void>.delayed(ms * 5);
+      expect(windows, [ms * 100, ms * 150]);
+      await second;
+      expect(stops, 0);
+      await third;
+      expect(stops, 1);
+    });
+
+    test(
+      'F13: adverts received for another caller are kept as sightings',
+      () async {
+        debugDefaultTargetPlatformOverride = platform;
+        final events = StreamController<List<ScanResult>>.broadcast(sync: true);
+        addTearDown(events.close);
+        final client = _buildRealBleClient(
+          scanResultsProvider: () => events.stream,
+        );
+        await client.initialize();
+        final before = DateTime.now().subtract(const Duration(seconds: 1));
+        final scan = client.scan(timeout: const Duration(milliseconds: 20));
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        events.add([
+          _nativeScanResult(
+            deviceId: 'tag',
+            observedAt: DateTime.now(),
+            name: 'AdaDFU',
+            services: [Guid('00001530-1212-efde-1523-785feabcd123')],
+          ),
+        ]);
+        expect((await scan).single.deviceId, 'tag');
+        final seen = client.advertisementsSince(before);
+        expect(seen.single.deviceId, 'tag');
+        expect(seen.single.toPublic().isDfuBootloader, isTrue);
+        expect(
+          client.advertisementsSince(
+            DateTime.now().add(const Duration(seconds: 1)),
+          ),
+          isEmpty,
+        );
+      },
+    );
 
     test('fresh advertisement wins over a conflicting system name', () async {
       debugDefaultTargetPlatformOverride = platform;
@@ -497,6 +591,91 @@ void main() {
 
     expect(mapped, isNull);
   });
+
+  group('iOS stale bond detection is language independent', () {
+    String? codeOf(Object error) =>
+        RealBleClient.mapConnectionFailureForTesting(error)?.code;
+    const staleBond = DeviceException.bleIosPairingInformationRemovedCode;
+
+    for (final description in <String?>[
+      'El periférico ha eliminado la información de emparejamiento',
+      "El perifèric ha eliminat la informació d'aparellament",
+      null,
+    ]) {
+      test('connect code 14 maps with description "$description"', () {
+        expect(
+          codeOf(
+            FlutterBluePlusException(
+              ErrorPlatform.apple,
+              'connect',
+              14,
+              description,
+            ),
+          ),
+          staleBond,
+        );
+      });
+    }
+
+    test('wrapped connect error with localized text maps by code', () {
+      final wrapped = StateError(
+        FlutterBluePlusException(
+          ErrorPlatform.apple,
+          'connect',
+          14,
+          'El periférico ha eliminado la información de emparejamiento',
+        ).toString(),
+      );
+      expect(codeOf(wrapped), staleBond);
+    });
+
+    test('English description fallback still maps other operations', () {
+      expect(
+        codeOf(
+          FlutterBluePlusException(
+            ErrorPlatform.apple,
+            'discoverServices',
+            14,
+            'Peer removed pairing information.',
+          ),
+        ),
+        staleBond,
+      );
+      expect(
+        codeOf(StateError('apple-code: 14 Peer removed pairing information')),
+        staleBond,
+      );
+    });
+
+    test('unrelated errors are not matched', () {
+      final unrelated = <Object>[
+        // CBATTError code 14 ("unlikely error") outside connect.
+        FlutterBluePlusException(
+          ErrorPlatform.apple,
+          'setNotifyValue',
+          14,
+          'Error poco probable',
+        ),
+        FlutterBluePlusException(
+          ErrorPlatform.apple,
+          'readCharacteristic',
+          14,
+          'Unlikely error',
+        ),
+        // Same code on other platforms.
+        FlutterBluePlusException(ErrorPlatform.android, 'connect', 14, null),
+        FlutterBluePlusException(ErrorPlatform.fbp, 'connect', 14, null),
+        // Other apple connect codes.
+        FlutterBluePlusException(ErrorPlatform.apple, 'connect', 6, null),
+        FlutterBluePlusException(ErrorPlatform.apple, 'connect', 15, null),
+        StateError('apple-code: 14 something else'),
+        StateError('connect failed'),
+      ];
+      for (final error in unrelated) {
+        expect(codeOf(error), isNull, reason: '$error');
+      }
+    });
+  });
 }
 
 RealBleClient _buildRealBleClient({
@@ -506,9 +685,12 @@ RealBleClient _buildRealBleClient({
   bool isScanning = false,
   Stream<List<ScanResult>> Function()? scanResultsProvider,
   NativeBleStartScan? startScan,
+  NativeBleStopScan? stopScan,
+  Duration minNativeScanWindow = const Duration(seconds: 20),
   Future<List<BluetoothDevice>> Function(List<Guid>)? systemDevicesProvider,
 }) {
   return RealBleClient(
+    minNativeScanWindow: minNativeScanWindow,
     isSupportedProvider: () async => supportedProvider?.call() ?? supported,
     adapterStateProvider: () => adapterState,
     isScanningProvider: () => isScanning,
@@ -517,7 +699,7 @@ RealBleClient _buildRealBleClient({
     scanResultsProvider:
         scanResultsProvider ?? () => const Stream<List<ScanResult>>.empty(),
     startScan: startScan ?? (_) async {},
-    stopScan: () async {},
+    stopScan: stopScan ?? () async {},
     systemDevicesProvider: systemDevicesProvider ?? (_) async => [],
   );
 }
@@ -528,6 +710,13 @@ final class _SystemDevice extends BluetoothDevice {
   @override
   String get platformName => savedName;
 }
+
+ScanResult _stockTagAdvert() => _nativeScanResult(
+  deviceId: 'stock-tag',
+  observedAt: DateTime.now(),
+  name: '756E_756e',
+  services: [Guid('6ba1b218-15a8-461f-9fa8-5dcae273eafd')],
+);
 
 ScanResult _nativeScanResult({
   required String deviceId,

@@ -270,7 +270,9 @@ class ProtectionModeController {
     );
   }
 
-  Future<ProtectionStatus> exit() async {
+  /// [keepNativeSosCountdown]: see
+  /// [ProtectionPlatformAdapter.stopProtectionRuntime].
+  Future<ProtectionStatus> exit({bool keepNativeSosCountdown = false}) async {
     _nativeConnectivitySuppressed = true;
     _status = _status.copyWith(
       modeState: ProtectionModeState.stopping,
@@ -278,7 +280,9 @@ class ProtectionModeController {
       updatedAt: DateTime.now().toUtc(),
     );
     _emitStatus();
-    await platformAdapter.stopProtectionRuntime();
+    await platformAdapter.stopProtectionRuntime(
+      keepSosCountdown: keepNativeSosCountdown,
+    );
     _activeOptions = null;
     final snapshot = await _buildSnapshot(
       targetModeState: ProtectionModeState.off,
@@ -541,6 +545,7 @@ class ProtectionModeController {
       pendingTelemetryCount: pendingTelemetryCount,
       pendingNativeSosCreateCount: platformSnapshot.pendingNativeSosCreateCount,
       pendingNativeSosCancelCount: platformSnapshot.pendingNativeSosCancelCount,
+      nativeSosCycleInFlight: _isNativeSosCycleInFlight(platformSnapshot),
       platformRuntimeConfigured: platformSnapshot.platformRuntimeConfigured,
       foregroundServiceRunning: platformSnapshot.serviceRunning,
       protectionRuntimeActive: platformSnapshot.runtimeActive,
@@ -658,6 +663,27 @@ class ProtectionModeController {
       ),
     );
   }
+
+  /// Whether the native protection runtime is running a TAG countdown it
+  /// has not promoted yet. Stopping the native runtime in this window would
+  /// drop the countdown (F11). Durable native create/cancel records do not
+  /// count: they survive a stop and are delivered by the SDK outbox. A
+  /// countdown well past its deadline is stale (native promotes on time), so
+  /// it never blocks the host forever.
+  static bool _isNativeSosCycleInFlight(ProtectionPlatformSnapshot snapshot) {
+    if (snapshot.preSosLifecycleState != 'preConfirmSeen') {
+      return false;
+    }
+    final deadline =
+        snapshot.preSosExpectedActivationAt ??
+        snapshot.preSosStartedAt?.add(EixamConnectSdk.defaultPreSosCountdown);
+    return deadline != null &&
+        DateTime.now().toUtc().isBefore(
+          deadline.toUtc().add(_nativeSosCountdownStaleGrace),
+        );
+  }
+
+  static const Duration _nativeSosCountdownStaleGrace = Duration(seconds: 30);
 
   bool _shouldRunDegraded(
     ProtectionStatus status, {

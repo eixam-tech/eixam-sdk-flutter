@@ -208,8 +208,14 @@ abstract class EixamConnectSdk {
   });
 
   /// Revalidates and migrates a previously compatible candidate to Eixam.
+  ///
+  /// [interruptionWarningAcknowledged] must be true: the host has shown the user
+  /// that an interrupted update can leave the TAG needing a computer to recover.
+  /// Without it the result is `blocked` with failureCode
+  /// `interruptionWarningNotAcknowledged` and nothing is started.
   Future<DeviceMigrationResult> migrateDeviceToEixam({
     required DeviceMigrationCandidate candidate,
+    bool interruptionWarningAcknowledged = false,
   });
 
   /// Returns durable recovery or a completed migration awaiting host handoff.

@@ -41,6 +41,16 @@ class InMemoryDeviceRepository
         );
         return;
       }
+      if (!_hasEffectiveStatusChange(_status, status)) {
+        // The runtime echo of a state this repository already holds (e.g. a
+        // reconnect result when the hydration 0x23 got no reply). A new
+        // generation here would cancel that in-flight mutation's emit, and
+        // nothing would ever publish the reconnected TAG. Still persisted in
+        // mutation order so non-effective fields (lastSeen) are not lost.
+        _status = status;
+        await _persistStatusInMutationOrder(status);
+        return;
+      }
       final generation = ++_deviceStateGeneration;
       final previous = _status;
       _status = status;
@@ -441,6 +451,45 @@ class InMemoryDeviceRepository
     return runtimeProvider.requestDeviceRuntimeStatus(
       commandSender: commandSender,
     );
+  }
+
+  /// One `0x23` on the Flutter command path with a caller-chosen reply
+  /// timeout (TAG notification liveness). Never reconnects or rebinds.
+  Future<DeviceRuntimeStatus> requestRuntimeStatusForLiveness({
+    required Duration timeout,
+  }) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'E_DEVICE_COMMAND_NOT_READY',
+      );
+    }
+    return runtimeProvider.requestDeviceRuntimeStatus(timeout: timeout);
+  }
+
+  DateTime? get lastSosFrameAt {
+    final runtimeProvider = _runtimeProvider;
+    return runtimeProvider is BleDeviceRuntimeProvider
+        ? runtimeProvider.lastSosFrameAt
+        : null;
+  }
+
+  bool get hasPendingRuntimeStatusRequest {
+    final runtimeProvider = _runtimeProvider;
+    return runtimeProvider is BleDeviceRuntimeProvider &&
+        runtimeProvider.hasPendingRuntimeStatusRequest;
+  }
+
+  /// Drops the Flutter-owned TAG link so the existing unexpected-disconnect
+  /// reconnect path re-establishes it (fresh GATT, fresh notification
+  /// registrations). Returns false when Flutter does not own a connected link.
+  Future<bool> dropBleLinkForRecovery({required String reason}) async {
+    final runtimeProvider = _runtimeProvider;
+    if (runtimeProvider is! BleDeviceRuntimeProvider) {
+      return false;
+    }
+    return runtimeProvider.dropLinkForRecovery(reason: reason);
   }
 
   Future<void> rebootDevice() async {

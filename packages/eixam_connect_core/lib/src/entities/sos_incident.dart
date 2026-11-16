@@ -32,6 +32,8 @@ class SosIncident {
     this.isUsingCachedData = false,
     this.provisionalIncidentId,
     this.preservedLocalOwnership = false,
+    this.isDeliveryRetrying = false,
+    this.deliveryIssue,
   });
   final String id;
   final SosState state;
@@ -58,6 +60,19 @@ class SosIncident {
   final String? provisionalIncidentId;
   final bool preservedLocalOwnership;
 
+  /// The SOS is not confirmed by the backend yet and delivery is being
+  /// retried ("Not sent yet, retrying"). Hosts must not present it as sent.
+  final bool isDeliveryRetrying;
+
+  /// Why delivery keeps failing while [isDeliveryRetrying], when the SDK
+  /// knows it (for example [deliveryIssueDeviceNotRegistered]). Null when
+  /// unknown or delivered.
+  final String? deliveryIssue;
+
+  /// The backend rejects the SOS because the paired TAG is not registered to
+  /// this account and the SDK could not register it again.
+  static const String deliveryIssueDeviceNotRegistered = 'device_not_registered';
+
   SosIncidentProgress get progress => SosIncidentProgress.fromEvidence(
         incidentId: id,
         incidentState: state,
@@ -72,6 +87,8 @@ class SosIncident {
         originKind: originKind,
         actionability: actionability,
         displaySurface: displaySurface,
+        deliveryRetrying: isDeliveryRetrying,
+        deliveryIssue: deliveryIssue,
       );
 
   SosIncident copyWith({
@@ -98,6 +115,8 @@ class SosIncident {
     bool? isUsingCachedData,
     String? provisionalIncidentId,
     bool? preservedLocalOwnership,
+    bool? isDeliveryRetrying,
+    Object? deliveryIssue = _unset,
   }) {
     return SosIncident(
       id: id,
@@ -132,6 +151,10 @@ class SosIncident {
           provisionalIncidentId ?? this.provisionalIncidentId,
       preservedLocalOwnership:
           preservedLocalOwnership ?? this.preservedLocalOwnership,
+      isDeliveryRetrying: isDeliveryRetrying ?? this.isDeliveryRetrying,
+      deliveryIssue: identical(deliveryIssue, _unset)
+          ? this.deliveryIssue
+          : deliveryIssue as String?,
     );
   }
 

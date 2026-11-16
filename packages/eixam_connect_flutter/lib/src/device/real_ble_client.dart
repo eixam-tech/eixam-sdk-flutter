@@ -40,7 +40,11 @@ final class _SdkDiscoveryPrecheck {
   final String reason;
 }
 
-class RealBleClient implements BleClient, BleTransportObservationSource {
+class RealBleClient
+    implements
+        BleClient,
+        BleTransportObservationSource,
+        BleAdvertisementSightingSource {
   RealBleClient({
     int? Function(EixamBleChannel channel, List<int> payload)? meshPortResolver,
     @visibleForTesting Future<bool> Function()? isSupportedProvider,
@@ -52,6 +56,8 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     @visibleForTesting NativeBleStartScan? startScan,
     @visibleForTesting NativeBleStopScan? stopScan,
     @visibleForTesting
+    Duration minNativeScanWindow = const Duration(seconds: 20),
+    @visibleForTesting
     Future<List<BluetoothDevice>> Function(List<Guid>)? systemDevicesProvider,
     @visibleForTesting
     Future<List<BluetoothService>> Function(BluetoothDevice)? serviceDiscoverer,
@@ -60,6 +66,7 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     @visibleForTesting
     Future<void> Function(BluetoothDevice device)? androidGattCacheClearer,
   }) : _meshPortResolver = meshPortResolver,
+       _minNativeScanWindow = minNativeScanWindow,
        _isSupportedProvider =
            isSupportedProvider ?? (() => FlutterBluePlus.isSupported),
        _adapterStateProvider =
@@ -190,7 +197,69 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
 
   bool _initialized = false;
   bool _reportedAmbiguousTelMeshPort = false;
-  int _scanGeneration = 0;
+  int _scanSequence = 0;
+
+  /// Concurrent [scan] calls share one native scan session (F12). Superseding
+  /// an in-flight scan made the late-availability watcher and a foreground
+  /// discovery cancel each other, so both saw nothing for minutes.
+  int _activeScanCount = 0;
+
+  /// Start of the running native scan session; adverts received since then
+  /// belong to every caller that joined it. Null when no native scan runs.
+  DateTime? _nativeScanStartedAt;
+
+  /// When the running native scan stops by its own timeout.
+  DateTime? _nativeScanUntil;
+
+  /// A native scan runs at least this long, so overlapping callers (watcher
+  /// every ~10 s, discovery polls) rarely restart it. Android throttles apps
+  /// that start more than 5 scans in 30 s. The last caller stops it early.
+  final Duration _minNativeScanWindow;
+
+  /// Latest advert per device, received by any scan of this client.
+  final Map<String, BleScanResult> _sightings = <String, BleScanResult>{};
+  static const Duration _sightingRetention = Duration(minutes: 5);
+
+  @override
+  List<BleScanResult> advertisementsSince(DateTime since) {
+    final cutoff = DateTime.now().subtract(_sightingRetention);
+    _sightings.removeWhere((_, scan) => scan.discoveredAt.isBefore(cutoff));
+    return _sightings.values
+        .where((scan) => !scan.discoveredAt.isBefore(since))
+        .toList(growable: false);
+  }
+
+  /// The current scan generation's listener records every advert, so an advert
+  /// received for another caller's scan still counts (F13).
+  void _recordSighting(ScanResult r) {
+    final id = r.device.remoteId.str;
+    final services = r.advertisementData.serviceUuids
+        .map((uuid) => uuid.str)
+        .toList(growable: false);
+    final name = r.advertisementData.advName.isNotEmpty
+        ? r.advertisementData.advName
+        : (r.device.platformName.isNotEmpty
+              ? r.device.platformName
+              : 'Unknown');
+    final previous = _sightings[id];
+    if (previous != null && r.timeStamp.isBefore(previous.discoveredAt)) {
+      return;
+    }
+    _sightings[id] = BleScanResult(
+      deviceId: id,
+      canonicalHardwareId: normalizeCanonicalHardwareId(id),
+      name: name,
+      advertisedLocalName: r.advertisementData.advName,
+      rssi: r.rssi,
+      connectable: r.advertisementData.connectable,
+      advertisedServiceUuids: services,
+      brandClassification: classifyBleDiscoveredDeviceBrand(
+        name: name,
+        advertisedServiceUuids: services,
+      ),
+      discoveredAt: r.timeStamp,
+    );
+  }
 
   @override
   Future<void> initialize() async {
@@ -257,7 +326,7 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     _ensureInitialized();
-    final generation = ++_scanGeneration;
+    final generation = ++_scanSequence;
     final isIos = defaultTargetPlatform == TargetPlatform.iOS;
     safeSdkDebugPrint(
       'SDK_DISCOVERY_START_ENTRY '
@@ -289,14 +358,29 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     }
 
     final Map<String, BleScanResult> deduped = {};
-    final scanStartedAt = DateTime.now();
-    BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
+    final joinedSessionStart = _activeScanCount > 0
+        ? _nativeScanStartedAt
+        : null;
+    // A caller joining a running native scan also owns the adverts that
+    // session already received: the native layer reports a device once per
+    // session (iOS, and FlutterBluePlus without continuousUpdates), so they
+    // are not delivered again.
+    final scanStartedAt = joinedSessionStart ?? DateTime.now();
+    final until = DateTime.now().add(timeout);
+    _activeScanCount++;
+    if (joinedSessionStart != null) {
+      for (final sighting in advertisementsSince(joinedSessionStart)) {
+        if (_devices.containsKey(sighting.deviceId)) {
+          deduped[sighting.deviceId] = sighting;
+        }
+      }
+    } else {
+      BleDebugRegistry.instance.update(isScanning: true, scanResults: const []);
+    }
 
     final sub = _scanResultsProvider().listen((scanResults) {
-      if (generation != _scanGeneration) {
-        return;
-      }
       for (final r in scanResults) {
+        _recordSighting(r);
         if (r.timeStamp.isBefore(scanStartedAt)) {
           BleDebugRegistry.instance.recordEvent(
             'BLE_SCAN_RESULT_REJECTED reason=stale_generation '
@@ -342,9 +426,28 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     });
 
     try {
-      safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
-      await _startScan(timeout);
-      safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
+      final nativeUntil = _nativeScanUntil;
+      if (nativeUntil == null || until.isAfter(nativeUntil)) {
+        final window = timeout > _minNativeScanWindow
+            ? timeout
+            : _minNativeScanWindow;
+        _nativeScanStartedAt = DateTime.now();
+        _nativeScanUntil = _nativeScanStartedAt!.add(window);
+        if (nativeUntil != null) {
+          safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_SCAN_EXTENDED');
+        }
+        safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_BEGIN');
+        try {
+          await _startScan(window);
+        } catch (_) {
+          _nativeScanStartedAt = null;
+          _nativeScanUntil = null;
+          rethrow;
+        }
+        safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_START_SCAN_CALL_DONE');
+      } else {
+        safeSdkDebugPrint('SDK_DISCOVERY_NATIVE_SCAN_JOINED');
+      }
       await Future.delayed(timeout);
     } catch (error) {
       safeSdkDebugPrint(
@@ -354,21 +457,20 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
         'SDK_DISCOVERY_ERROR_ORIGIN '
         'origin=flutter_blue_plus_native error=$error',
       );
-      BleDebugRegistry.instance.update(isScanning: false);
+      BleDebugRegistry.instance.update(isScanning: _activeScanCount > 1);
       final sdkError = _mapNativeStateError(error);
       if (sdkError != null) {
         throw sdkError;
       }
       rethrow;
     } finally {
-      if (generation == _scanGeneration) {
+      _activeScanCount--;
+      if (_activeScanCount == 0) {
+        _nativeScanStartedAt = null;
+        _nativeScanUntil = null;
         await _stopScan();
       }
       await sub.cancel();
-    }
-
-    if (generation != _scanGeneration) {
-      return const <BleScanResult>[];
     }
 
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
@@ -380,7 +482,6 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
           Guid(MeshtasticBleProtocol.serviceUuid),
         ]);
         final current = await _systemDevicesProvider([eixamServiceUuid]);
-        if (generation != _scanGeneration) return const <BleScanResult>[];
         final currentIds = current.map((d) => d.remoteId.str).toSet();
         for (final device in stock) {
           final id = device.remoteId.str;
@@ -422,7 +523,6 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
         final connected = await _systemDevicesProvider([
           Guid(MeshtasticBleProtocol.serviceUuid),
         ]);
-        if (generation != _scanGeneration) return const <BleScanResult>[];
         for (final device in connected) {
           final id = device.remoteId.str;
           final name = device.platformName.trim();
@@ -459,13 +559,15 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
         );
       }
     }
-    if (generation != _scanGeneration) return const <BleScanResult>[];
     final results = deduped.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
     BleDebugRegistry.instance.recordEvent(
       'BLE scan completed with ${results.length} discovered device(s)',
     );
-    BleDebugRegistry.instance.update(isScanning: false, scanResults: results);
+    BleDebugRegistry.instance.update(
+      isScanning: _activeScanCount > 0,
+      scanResults: results,
+    );
 
     return results;
   }
@@ -1622,15 +1724,37 @@ class RealBleClient implements BleClient, BleTransportObservationSource {
     return null;
   }
 
+  /// `CBError.peerRemovedPairingInformation` (CBErrorDomain code 14).
+  static const int _cbErrorPeerRemovedPairingInformation = 14;
+
+  /// English `localizedDescription`; iOS localizes it, so fallback only.
+  static const String _peerRemovedPairingInformationText =
+      'peer removed pairing information';
+
   static bool _isIosPairingInformationRemoved(Object error) {
     if (error is FlutterBluePlusException) {
+      if (error.platform != ErrorPlatform.apple ||
+          error.code != _cbErrorPeerRemovedPairingInformation) {
+        return false;
+      }
+      // FlutterBluePlus drops the NSError domain. Its apple "connect" errors
+      // only come from CBCentralManagerDelegate didFailToConnect/didDisconnect,
+      // which always report CBErrorDomain, so code 14 is unambiguous there
+      // and must not depend on the device language.
+      if (error.function == 'connect') return true;
+      // Other operations may report CBATTErrorDomain, where 14 means
+      // "unlikely error": keep the English description as the only signal.
       final description = error.description?.toLowerCase() ?? '';
-      return error.platform == ErrorPlatform.apple &&
-          error.code == 14 &&
-          description.contains('peer removed pairing information');
+      return description.contains(_peerRemovedPairingInformationText);
     }
     final text = error.toString().toLowerCase();
-    return text.contains('apple-code: 14') &&
-        text.contains('peer removed pairing information');
+    if (!text.contains('apple-code: $_cbErrorPeerRemovedPairingInformation')) {
+      return false;
+    }
+    // A wrapped FlutterBluePlus connect error keeps its "| connect |" marker.
+    return text.contains(
+          '| connect | apple-code: $_cbErrorPeerRemovedPairingInformation |',
+        ) ||
+        text.contains(_peerRemovedPairingInformationText);
   }
 }

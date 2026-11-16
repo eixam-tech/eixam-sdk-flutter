@@ -1,5 +1,176 @@
 # Changelog
 
+## Unreleased — restart required after an in-app TAG re-pair (F12/F16 mitigation)
+
+- After a TAG is unpaired through `unpairDevice()`/`disconnectDevice()` and a TAG pairing then completes (paired and connected) in the same app process, `DeviceStatus.linkHealth` is the new `DeviceLinkHealth.restartRequiredAfterRepair` (hosts: "Restart EIXAM to finish pairing your TAG"). TAG SOS notifications can stop reaching the app/backend in that case until the app restarts (root cause unknown). It wins over `ok`/`restartRequired`, is reported while a TAG is paired (also while the native runtime owns BLE), and is never cleared by a later liveness check; only a process restart clears it (not persisted). The first pairing of an app session, and a pairing after an unpair with no TAG known, stay `ok`. An unpair outside the SDK (system Bluetooth settings) is not detected.
+- Only a user-initiated unpair arms it. `disconnectDevice()`/`unpairDevice()` take a new optional `userInitiated` (default `true`, so existing callers keep today's behaviour); hosts pass `userInitiated: false` for automatic cleanup (e.g. the commercial app's iOS reconnect-timeout settle), which unpairs exactly as before but never arms the restart state. The parameter is on the implementation only (the core interface is unchanged), so existing fakes and implementations still compile; call it dynamically or on `EixamConnectSdkImpl`.
+- Additive enum value: consumers that compare against `restartRequired` (or read the value by name) see "no restart required"; exhaustive `switch`es over `DeviceLinkHealth` need a new case. No SOS, MQTT/REST or liveness behaviour change.
+- Release log `TAG_REPAIR_RESTART_REQUIRED reason=repaired_without_restart` (once per process, no identifiers).
+
+## Unreleased — app SOS countdown reaches the TAG while the native runtime owns BLE (F15)
+
+- With the native Protection runtime owning the TAG link (Android: the Flutter runtime refuses refreshes, `E_FLUTTER_BLE_OWNERSHIP_SUPPRESSED`), an app SOS hold now sends the countdown to the TAG through the native command channel (`SOS_DEVICE_MIRROR_DECISION reason=native_owner_command_ready`) instead of skipping it (`command_channel_not_ready`). The TAG confirmation marks it mirrored as before, so a TAG cancel of that cycle cancels it. A failed native write never blocks the backend SOS (`SOS_DEVICE_MIRROR_NATIVE result=failed reason=<code>`; success `result=sent`). Flutter-owned links unchanged; no ownership change.
+- The native mirror write is bounded to 2.5 s (`SOS_DEVICE_MIRROR_NATIVE result=failed reason=timeout`), so a slow or failing TAG write never delays the backend SOS: when the write fails or times out, the app countdown deadline is anchored to the user's hold. A successful write keeps the existing anchoring (the TAG-reported countdown start, else the write completion), so the app never expires before the TAG's own countdown and a TAG cancel stays possible until the end.
+- A mirror write that timed out may still land on the TAG (it keeps running natively; Android's native queue is not strictly FIFO). Its generation counts as mirrored, and an app cancel waits for that write (bounded, 11 s) before sending the TAG cancel, so the cancel never overtakes the countdown write (`SOS_DEVICE_MIRROR_NATIVE write_in_flight` / `cancel_waits_for_write`). While the native runtime owns BLE, that cancel is sent even if the command path looks unavailable (best effort; a failure there keeps the previous local-only cancel).
+- `cancelPreSos()` holds the app countdown as soon as it is called, before any TAG command wait: the countdown cannot dispatch the SOS while the TAG cancel is pending, even if its deadline passes meanwhile. A TAG cancel that fails is still rethrown and the countdown then resumes (unchanged known risk). The TAG cancel is never sent if a newer cycle started during the wait.
+- A native pending create queued by the TAG's own timer (which can expire up to ~2 s before the app countdown it mirrors) is no longer published while the app countdown runs: the app dispatch at its deadline sends the SOS and the native create is acked as the same SOS; an app cancel drops it (`SOS_OUTBOX_NATIVE_CREATE_DEFERRED` / `SOS_OUTBOX_NATIVE_CREATE_SETTLED_BY_APP_COUNTDOWN`).
+
+## Unreleased — a native TAG cancel never wipes an app countdown (F9)
+
+- A native Protection snapshot in `cancelPending` (a TAG cancel seen by the native runtime) always cancels a TAG-owned or TAG-mirrored countdown (and settles the countdown cached by the Flutter controller, so it is never resurrected and never sent), and never clears an app countdown that was never mirrored to the TAG. Before, it also cleared a new app countdown: `getPreSosStatus()` right after `startPreSos()` synced the stale snapshot and returned null, so nothing was sent. No timestamps are compared. Before, `getPreSosStatus()` right after `startPreSos()` synced that stale snapshot, cleared the new app countdown and returned null, so nothing was sent.
+- Device rehydration (`getPreSosStatus`, resume, …) no longer clears an app-owned, unmirrored pre-SOS countdown with a closed (inactive/resolved) TAG status cached before that countdown started (e.g. the inactive state left by a background TAG cancel while the native runtime owns BLE). A TAG status observed after the start still clears it as before.
+
+## Unreleased — backend SOS confirmation always reaches watchers (F13)
+
+- `MqttOperationalSosRepository`: an outbox backend confirmation (`_applyOutboxTriggerConfirmation`) while the repository is already `sent` re-publishes the state, so `watchCurrentIncident` / `currentSosIncidentProgressStream` and the SOS lifecycle see the confirmed incident ("SOS received by Eixam") at once instead of on a later state change. Same-state listeners were already exercised by actuator-only updates.
+
+## Unreleased — TAG notification liveness safety net (F12)
+
+- While the Flutter BLE path owns a connected TAG (never while the native Protection runtime owns BLE), the SDK checks that notifications still arrive: one `0x23 GET_DEVICE_STATUS`, whose reply only arrives as a notification, expected within 8 s. Checks run +5 s, +60 s and +3 min after every connect/pair/reconnect, on app resume and every 10 min. Skipped in background; deferred (no BLE traffic, no reconnect) while a pre-SOS/SOS is open or the SOS outbox has pending work, and during firmware update, migration, provisioning or a running reconnect.
+- Two consecutive missing replies with successful writes drop the TAG link once through the existing unexpected-disconnect reconnect path. If replies are still missing after that reconnect, new `DeviceStatus.linkHealth` is `DeviceLinkHealth.restartRequired` (hosts: "Restart EIXAM to finish connecting your TAG"); a later successful check returns it to `ok`. A failed write is never a missed reply. Additive, default `ok`, not persisted.
+- Release logs `TAG_NOTIFY_LIVENESS result=ok|missed|recovered|failed|skipped reason=… trigger=…` (no identifiers).
+- Guards: the restart state is never raised during an SOS (re-evaluated when it ends) and is never shown while the native runtime owns BLE (hand-back to Flutter reschedules the checks); no check (so no drop) within 10 s of a TAG SOS frame or while another `0x23` is pending; the drop itself never starts during an SOS (re-checked right before it); the follow-up reconnect is not held back. The drop and the restart state need a `0x23` reply from that TAG (same transport id and, when known, node id) earlier in the app session (proven firmware support); a TAG in its DFU bootloader is never probed.
+- `InMemoryDeviceRepository`: a runtime status with no effective change no longer starts a new state generation (it is still persisted). Before, the runtime echo of a reconnect result cancelled the reconnect's own emit when the reconnect-time `0x23` got no reply, so a reconnected TAG stayed "disconnected".
+
+## Unreleased — background TAG SOS is always delivered over MQTT (F4/F5)
+
+- SOS trigger and cancel go through a durable, ordered MQTT outbox (`SosDeliveryOutbox`): persisted before the first attempt (survives process death), retried with bounded backoff (1, 2, 4, 8, 15, then every 30 s) until the backend confirms (`processed`/`cancelled` event, or the read-only active-SOS endpoint), same incident identity on every attempt, a cancel supersedes older queued triggers and never precedes or closes a newer SOS. No REST trigger or cancel (`trigger_must_use_mqtt` unchanged; resolve still uses REST, no MQTT resolve exists in the backend).
+- QoS 1 publishes now complete only on the broker PUBACK; SOS publishes reconnect first when the link was not proven alive in the last 4 min (broker ACL session expiry) and retry once on a fresh connection.
+- Cancel is MQTT `cancel: true` (user-scoped). An app cancel stays `cancelRequested` until the backend confirms; it settles locally only if the trigger never reached the broker.
+- A trigger stays `sending` until backend confirmation (no `sent` on publish). New `SosIncident.isDeliveryRetrying` and progress `detailCode: delivery_not_confirmed_retrying` ("not sent yet, retrying"). Additive.
+- Android background: a terminal state left by the previous SOS no longer drops the next native TAG SOS; a new native cycle after a terminal is admitted; the native pending create is pumped until accepted; the SOS notification intent is emitted before any network; the native TAG cancel is handed to the MQTT outbox (`ackPendingNativeSosCancel`), never REST; the native SOS notification shows when Dart is not listening.
+- Release builds log `SOS_OUTBOX_*` delivery lines (codes and counters only).
+- iOS background: the native runtime tracks the TAG cycle itself (the first SOS frame of any sosType starts the 20 s countdown, as on Android; the SOS is handed over only once it elapsed without a cancel) and stores a durable pending create / pending cancel with the same channel contract as Android (`peek/mark/retain/ack/dropPendingNativeSosCreate`, `ackPendingNativeSosCancel`); the SDK hands them to the MQTT outbox. SOS events emitted while Dart is not listening are persisted in order and replayed on attach (15 min max age). `beginBackgroundTask` keeps the app running while a countdown runs or an SOS/cancel is not yet backend-confirmed (`setSosDeliveryPending`, no-op on Android). An active SOS found on resume/restoration with a pending create goes through the outbox (no device-only incident). A cancel during the countdown or `0xE3` never queues a backend cancel. Native SOS notification unchanged (works without Dart). Logs `[EIXAM_SOS] …` (no identifiers).
+- Account change/logout drops native pending SOS records of the previous account.
+- Android and iOS: the native SOS hand-off identity is `<frame cycle key>@<cycle start>`. The frame key (node + 4-bit packet id) repeats across SOS, and the SDK fenced a new SOS whose key matched the SOS it had just closed (device QA: delivered 18 s late on iOS; on Android in background it would not be delivered).
+- iOS: the SDK closes a native TAG cycle that was already handed over once the SOS is over (`closeNativeSosCycle`, no-op on Android), so a missed TAG close frame never blocks the next SOS. After any close, 30 s of TAG frames are ignored (close burst); a real SOS inside that window is backdated to its first frame ≥5 s after the close. The snapshot shows the native countdown as a countdown, never as a sent SOS. A pending TAG cancel only cancels a pending SOS created before it.
+- A backend event confirms a queued SOS trigger or cancel only when it can be that action's own effect: the action already got its PUBACK and the event's incident was not already seen closed by this phone (closed via an event or a confirmed cancel). A late or redelivered event of an earlier incident never confirms, retires or updates a newer SOS; it is left to retry + backend read.
+
+## Unreleased — a healthy running update is never an interrupted one (F1)
+
+- `DfuRecoveryControl` no longer treats the session an ordinary update or migration in this process is transferring as an interrupted update. While it runs (also while the TAG reboots into its DFU bootloader) the status is `unknown` / `updateInProgress` with no `deviceId` and `forwardActions == [checkAgain]`: no cable action, no interruption marker. Before, every OTA/migration published `forwardActions` starting with `openCableRecoveryGuide`, which hosts render as "The update was interrupted".
+- A session that reaches a terminal state re-derives the status at once instead of on the next observe tick (up to `observeInterval` later, longer while the post-DFU verification held the lock). A verified install clears the recovery bookkeeping of that TAG (still `recovered` when an interruption was recorded for it); a failed or aborted transfer that leaves the TAG in its bootloader is classified (E1 + cable) right away.
+- Unchanged: an interrupted update recorded for a device (persisted session from a run that ended without success, or a failure in this run) keeps every existing state and action, including the cable page while another owner holds it (F19). Internal: `FirmwareUpdateCoordinator.liveUpdateSessionId` / `liveUpdateEnded`. No public API change.
+
+## Unreleased — never a recovery state without a way forward (F19)
+
+- `DfuRecoveryAction` gains two host-side values that never touch the TAG: `openCableRecoveryGuide` (show the cable recovery page, E2) and `checkAgain` (re-read the status). `availableAction` still only carries SDK-run actions. BREAKING for exhaustive `switch`es over `DfuRecoveryAction` in hosts.
+- New `DfuRecoveryStatus.forwardActions`: every way forward for the status, most useful first, never empty. The SDK action comes first; the cable page is offered whenever an interrupted update may still need a cable, also when the TAG was not seen recently (E1 without a fresh sighting, waiting for evidence, E2) and when another owner holds an interrupted update (state `unknown`, reason `updateInProgress`, no progress of the SDK's own run, device known) — the 2026-11-06 iPhone dead end.
+- "Not now" (`dismissDfuRecovery`) hides the recovery card for the current app run only. A dismissal persisted by an earlier run no longer hides an interrupted TAG (a retry reuses the session id, so the old persisted dismissal hid the next interruption too, with the TAG waiting as AdaDFU).
+- Diagnostics: `DFU_RECOVERY_STATUS` on every published status change and `DFU_RECOVERY_IN_PROGRESS` with the owner flags (no identifiers).
+
+## Unreleased — bootloader revision is never a firmware version (F11)
+
+- New `DeviceStatus.inDfuBootloader` (default `false`; `copyWith(inDfuBootloader:, clearFirmwareVersion:)`). When a connection reaches the TAG while it runs its DFU bootloader, the Device Information revision it reads (`0.4.3 s140 6.1.1`) no longer becomes `DeviceStatus.firmwareVersion`: the version is cleared and `inDfuBootloader` is set, so hosts show a recovery state instead of a version and an update never uses it as `fromVersion`. The next application version read clears the flag. Persisted statuses keep the flag; a bootloader revision cached by an older build is dropped on load. Additive.
+
+## Unreleased — overlapping BLE scans share one native scan (F12)
+
+- `RealBleClient.scan()` callers that overlap now join the running native scan instead of superseding it. Before, every new scan cancelled the one in flight and the cancelled caller got `[]`; the late-availability watcher (8 s scan every ~10 s after an exhausted reconnect campaign) and the pairing list's discovery polls cancelled each other, so "Connect a TAG" -> search nearby showed "No TAG found" for minutes while "Set up another EIXAM" (which suspends the watcher) found the TAG in seconds. A joining caller also receives the adverts the session already reported (iOS reports a device once per scan). A native scan runs at least 20 s and is stopped when the last caller finishes; a caller that ends later extends it with one restart. No API change.
+
+## Unreleased — interrupted DFU recovery and DFU pre-flight
+
+- Optional `DfuRecoveryControl` (status, `watchDfuRecovery`, `prepareCableRecovery`, `restartDfuFromScratch`, `confirmDeviceForgotten`, `dismissDfuRecovery`) with `DfuRecoveryState`, `DfuRecoveryReason`, `DfuRecoveryAction`, `E1RecoveryStrategy` and `resolveE1RecoveryStrategy` (bootloader 0.4.3 and unknown -> cable). BLE resume is not possible with bootloader 0.4.3; recovery is by cable (E1 default: `prepareCableRecovery`).
+- Cable recovery installs the EIXAM firmware UF2 directly. Once a cable recovery is in progress (`prepareCableRecovery` done or `physicalRecoveryRequired`), a TAG that comes back running EIXAM firmware ends the interruption: a connected TAG whose application version can be read (any version) is reported as `recovered`; an advertising EIXAM TAG that is not connected yet (unpaired or erased flash) clears the record with `physicalRecoveryCompleted`. Never a version-mismatch card and never an update offer; an older version only shows the normal update card. New read-only `FirmwareUpdateCoordinator.readConnectedApplicationVersion`.
+- M3: after an app restart a confirmed but not yet started migration or OTA never starts by itself. `DeviceMigrationCoordinator.reconcile` (also with `attemptRecovery`) only observes and returns `continueMigration`; the transfer starts only through a new `migrateDeviceToEixam(..., interruptionWarningAcknowledged: true)` / `startFirmwareUpdate` call, which re-runs the pre-flight checks. The acknowledgement is no longer hard-coded inside the migration.
+- No automatic DFU: Android `setNumberOfRetries(0)`, watchdogs and plugin detach no longer abort an engaged transfer (abort makes Nordic send Reset and strands the TAG in USB/UF2-only mode), `attemptRecovery` and the old forceDfu recovery are gone (`recoverFirmwareUpdate` throws `remoteRecoveryUnsupported`), iOS connection timeout 30 s.
+- Pre-flight before every OTA/migration/recovery start (Bluetooth, foreground, screen, phone battery level and charging); unreadable values are `DfuPreflightWarning`s and never block. BREAKING for hosts: starting needs `FirmwareUpdatePolicy.interruptionWarningAcknowledged` / `migrateDeviceToEixam(interruptionWarningAcknowledged: true)`, otherwise `interruptionWarningNotAcknowledged`.
+- `EixamBootstrapConfig.dfuRecovery` (`silenceWindow`, `observeInterval`). `DeviceMigrationFirmwareService.recoverMigrationFirmwareUpdate` removed.
+- Stock migration supersedes a stale interrupted firmware record when the TAG reappears as verified stock (hardware model 105, same identity) instead of failing `firmwareUpdateResumeRequired`.
+- Native probes `phoneBattery` and `screenAwake`. iOS stale-link detection and the Android task-removal behaviour are unverified on hardware.
+
+## Unreleased — iOS stale-bond detection independent of language
+
+- `E_BLE_IOS_PAIRING_INFORMATION_REMOVED` is now raised from the CoreBluetooth error code (`CBError.peerRemovedPairingInformation`, 14) on FlutterBluePlus apple `connect` failures, which only carry CBErrorDomain. Before, it matched the English `localizedDescription`, which iOS localizes, so Catalan and Spanish iPhones got a generic connection error. Other operations, where 14 can be `CBATTError.unlikelyError`, keep the English text match as a fallback. No API change.
+
+## Unreleased — pairing list display classifier
+
+- `EixamBleScanResult.pairingDisplayCategory` (`eixam`, `legacyOrStock`, `dfuRecovery`, `hidden`; `null` = not classified) computed from the fresh advertisement by the pure-Dart `classifyEixamPairingDisplay`. Shows the Eixam or stock service, names `EIXAM_*`, `N6*`, `Meshtastic_*`, `AdaDFU` and the DFU service; hides `EIXAM_GW_*` and everything else.
+- `EixamPairingDisplayFilter` keeps a device that was already shown visible when a later result lacks the name (iOS scan response), but still hides an explicit gateway name.
+- Display-only and additive: scanning, brand classification, `isDfuBootloader`, identity, migration and connection paths are unchanged. The category never authorizes a connection.
+
+## Unreleased — TAG disconnect alerts
+
+- Dart-side "TAG forgotten or dropped" alert: a dead-man local notification armed while the link is up (pushed at most every clamp(X/4, 60 s, 10 min), firing X to 1.25 X after the last contact), rescheduled to exactly drop + X when an unexpected drop is observed, and removed on reconnect. Bluetooth off raises the `bluetoothOff` kind.
+- Suppressed for manual disconnects/unpair, firmware updates, device migration, the provisioning reboot window, SOS and a missing notification permission. The lease (the periodic push) is dropped while backgrounded on iOS and Android; arm-at-disconnect still schedules `drop + X` when Dart observes a drop in the background. Drops seen by the native owner use the native timestamp. A background drop is scheduled using the last known permission state (no permission round-trip, cleanup retry deferred) to fit the iOS wake window. Debug `[TAG_LEASE]` log lines (no identifiers, with `dropToScheduleMs`) help device tests. No new public API; the liveness signal is the passive OS connection state (no extra BLE traffic).
+- The notifier caches the slot id, so a lease push costs one platform call instead of three.
+- Background (suspended app, killed process) still depends on a future native arm-at-disconnect.
+- Physically validated (QA 03/11). iOS (iPhone 15): background disconnect alert after 5 min, 30 min with TAG nearby -> no false alerts, Bluetooth off >5 min alert. Android (Xiaomi, Android 13): disconnect alert arrives between 5:00 and 8:44 (inexact alarm / Doze), accepted for v1; Android 30-min and Bluetooth-off tests not run. App killed or swiped from recents: no alert (documented limitation).
+
+## Unreleased — TAG low-battery alerts
+
+- Low-battery alerts at < 30 % and < 10 % from live TAG data only, with two-reading
+  confirmation for firing and rearming, phone-like rearm on each downward crossing,
+  and a persisted per-device cycle (`TagBatteryAlertPolicy`, `TagBatteryCycle`).
+  Sources: `0xD3` live batches (fresh timestamped sample), own classic TEL and
+  `0x23`; backlog, relays, SOS packets and stored status are never readings.
+- One `0x23` on a real foreground return (at most every 10 min per device, skipped
+  during SOS, firmware update, provisioning and migration). No polling, no new
+  BLE command, no native change. Alerts need live TAG data: a stationary TAG or a
+  backgrounded app produces none.
+- Review fixes: the resume probe now waits for SOS rehydration, re-checks its gate right before the send and sends only when the command path is already ready (it can no longer start a reconnect or rebind); delivery is at-least-once (show first, mark afterwards) and is not consumed while notification permission is blocked; device-scoped readings must match the current device id; the freshness window scales with the TEL interval (`max(3 min, 1.5 x interval)`, cap 30 min).
+- Known pre-existing issue, not changed: a newly paired TAG can keep the previous TAG's `nodeId` when the pair-time `0x23` misses (`ble_device_runtime_provider.dart:449,644,1303`).
+- Battery alerts continue during an SOS (own channel, no SOS interaction).
+- Not physically validated: no discharge test below 30 % / 10 % was run. Covered by unit/integration tests only. Pending physical QA.
+
+
+## Unreleased — TAG alerts foundation
+
+- Add optional `TagAlertsControl` (per-TAG `TagAlertSettings`, permission state and
+  request), the `TagAlertNotifier` port, `TagAlert`/`TagAlertText` contracts and a
+  default local-notification adapter (channel `eixam_tag_alerts`, `tag_alert:`
+  payloads, reserved id range `1000000000..1000099999`, inexact scheduling).
+  Optional `tagAlertNotifier` / `tagAlertTextResolver` on `EixamBootstrapConfig`.
+  No battery source and no disconnect policy yet: the SDK emits no TAG alert.
+- Settings persist under `eixam.tag_alerts.v1` and are wiped with their alerts on
+  `clearSession`, `clearLocalUserData`, identity/app change and unpair.
+- A cold-start session restore that throws (locked keychain, transient storage error) no longer wipes TAG alert settings or scheduled alerts; only a completed restore with no session or an explicit logout does.
+- The SDK ignores `tag_alert:` notification taps in SOS/BLE navigation (an
+  unrecognized payload used to reach a JSON parser there).
+- SDK manifest now declares the `flutter_local_notifications` scheduled and boot
+  receivers and `RECEIVE_BOOT_COMPLETED`; new dependency `timezone ^0.11.0`.
+  Hosts need core-library desugaring. SOS flows, channels and payloads are unchanged;
+  the generic notification id generator now avoids the reserved range.
+- The TAG alert key is the canonical hardware id, else the transport device id, and never the firmware node id (on iOS the node id arrives after the pair-time `0x23` timeout and would change the key). Device country config keeps its own key. A completed device migration re-keys settings and removes the old key's alerts (`DeviceMigrationCoordinator.onDeviceIdentityMigrated`).
+- Cleanup that the notifier could not complete (error or 5 s timeout) is retried before every operation and surfaced to watchers; notifier calls inside the serialized tail are bounded.
+- Not a guaranteed safety feature; local notifications can be delayed or dropped.
+- Validated indirectly in QA 03/11 (iOS: TAG settings section, notification permission flow and settings persistence PASS).
+
+## Unreleased — post-cancel SOS convergence
+
+- A TAG that the user already cancelled (`0xE1`) is now clear proof for the
+  redundant remote-terminal clear that the backend echo dispatches, so the
+  device mirror converges at once instead of waiting for an `0xE2` that never
+  comes. Before this, a second TAG SOS was suppressed for minutes on Android.
+- A dispatched remote-terminal clear without a matching `0xE2`/`0xE3` now moves
+  the device mirror to `failed` after 10 s, which ends post-terminal
+  suppression. A late matching ack still converges it to `synchronized`.
+- Replays are still rejected: a new physical start after a terminal needs a
+  receive newer than the observed TAG closure. No change to commands, backend
+  calls, notifications or native code.
+- Physically validated on iPhone 15 and Xiaomi Android 13 (QA 03/11): no ghost SOS
+  2 min after cancel; second TAG SOS accepted (iOS 18/68 s, Android 39/99 s); TAG SOS
+  after a prior cancel with app backgrounded and locked; app SOS + cancel. Firmware
+  dependency open: the TAG must never resend a cancelled-cycle SOS packet after `E1`.
+
+## Unreleased — iOS false "SOS active" from TEL frames
+
+- Fix iOS native SOS parsing (introduced in 340c548b, present in `main` and `develop`):
+  a `0xD3` live batch with one record is exactly 18 B and arrives about every 120 s. The
+  parser mapped 18 B to a 12 B SOS and 13 B to a 7 B SOS, so random record bytes produced
+  a false `.active` (an "SOS active" notification and an SDK `sent` snapshot), a false
+  `.preSos`, or a `.cancelled` that could locally cancel a real SOS.
+- Remove the 13/18 B mapping. Known TEL frames (`0xD3`, `0xD1`, `0xD2`, `0xD8`, `0xDA`,
+  `0xDB`, the `0x23` reply and CMD results) are matched by opcode and structure and are
+  not SOS. A 12 B frame on TEL is SOS only if `bit5(flags) == 0 && sosType == 3` and is
+  never a cancellation otherwise (Android parity). The SOS characteristic, `0xE1`/`0xE2`/
+  `0xE3` and notification ids, texts and payloads are unchanged.
+- INET (`ea03`) and CMD (`ea04`) notifications are never SOS candidates on iOS; SOS
+  arrives on the SOS and TEL characteristics only.
+- `EixamBleProtocol.isReservedSosOrTelNotifyLength` and the Dart "+6" wrapped-SOS lengths
+  are legacy and unused by the iOS parser; they are left untouched.
+- Physically validated on iPhone 15 (QA 03/11): 30 min background with a TAG nearby
+  produced no false SOS; real TAG SOS, cancel and app SOS unchanged; INET/CMD non-SOS.
+
 ## Unreleased — robust activity recording finalization (AR2C-B)
 
 - Persist immutable finish cutoffs and five-second final catch-up deadlines; resume

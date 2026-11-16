@@ -2,6 +2,8 @@ import 'eixam_custom_endpoints.dart';
 import 'eixam_environment.dart';
 import 'eixam_session.dart';
 import '../entities/permission_disclosure.dart';
+import '../tag_alerts/tag_alert_notifier.dart';
+import '../tag_alerts/tag_alert_text.dart';
 
 enum EixamNotificationPolicy { sdkManaged, hostAppManaged }
 
@@ -17,6 +19,9 @@ class EixamBootstrapConfig {
     this.featureFlags = const <String, bool>{},
     this.enableLogging = false,
     this.allowInsecureLocalEndpoints = false,
+    this.tagAlertNotifier,
+    this.tagAlertTextResolver,
+    this.dfuRecovery = const EixamDfuRecoveryConfig(),
   });
 
   final String appId;
@@ -29,6 +34,33 @@ class EixamBootstrapConfig {
   final Map<String, bool> featureFlags;
   final bool enableLogging;
   final bool allowInsecureLocalEndpoints;
+
+  /// Optional host delivery for TAG alerts. Null uses the SDK's default local
+  /// notification adapter.
+  final TagAlertNotifier? tagAlertNotifier;
+
+  /// Optional localized wording for the default TAG alert adapter. Null uses
+  /// neutral English text. Ignored when [tagAlertNotifier] is supplied.
+  final TagAlertTextResolver? tagAlertTextResolver;
+
+  /// Interrupted-DFU recovery behaviour (see `DfuRecoveryControl`).
+  final EixamDfuRecoveryConfig dfuRecovery;
+}
+
+/// Options of the interrupted-DFU recovery capability.
+class EixamDfuRecoveryConfig {
+  const EixamDfuRecoveryConfig({
+    this.silenceWindow = const Duration(minutes: 2),
+    this.observeInterval = const Duration(seconds: 30),
+  });
+
+  /// How long an interrupted TAG must stay unseen before it is reported as
+  /// `silentNeedsCable`.
+  final Duration silenceWindow;
+
+  /// Minimum spacing between BLE scans made on behalf of `watchDfuRecovery()`
+  /// (Android throttles scan starts).
+  final Duration observeInterval;
 }
 
 class EixamNotificationTexts {
@@ -50,6 +82,9 @@ class EixamNotificationTexts {
     this.nearbyMessageChannelName = 'Nearby',
     this.nearbyMessageChannelDescription = 'Incoming nearby messages',
     this.nearbyMessageFallbackTitle = 'Nearby',
+    this.protectionSosStaleStoppedTitle = 'SOS stopped on your TAG',
+    this.protectionSosStaleStoppedBody =
+        'We stopped on your TAG an SOS that had already ended.',
   });
 
   final String protectionActiveTitle;
@@ -69,4 +104,9 @@ class EixamNotificationTexts {
   final String nearbyMessageChannelName;
   final String nearbyMessageChannelDescription;
   final String nearbyMessageFallbackTitle;
+
+  /// Local notice when the app stops on the TAG an SOS that was already
+  /// cancelled / resolved but the TAG kept running (F17b). Optional.
+  final String protectionSosStaleStoppedTitle;
+  final String protectionSosStaleStoppedBody;
 }

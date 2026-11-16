@@ -1,5 +1,7 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../firmware_version.dart';
+
 /// Helper serializers used by the starter SDK local persistence layer.
 ///
 /// Domain models remain framework-agnostic in `eixam_connect_core`, so JSON
@@ -38,7 +40,8 @@ class LocalStateSerializers {
   }
 
   static List<Map<String, dynamic>> emergencyContactsToJson(
-      List<EmergencyContact> contacts) {
+    List<EmergencyContact> contacts,
+  ) {
     return contacts.map(emergencyContactToJson).toList(growable: false);
   }
 
@@ -46,12 +49,14 @@ class LocalStateSerializers {
     return items
         .whereType<Map>()
         .map(
-            (item) => emergencyContactFromJson(Map<String, dynamic>.from(item)))
+          (item) => emergencyContactFromJson(Map<String, dynamic>.from(item)),
+        )
         .toList(growable: false);
   }
 
   static Map<String, dynamic> trackingPositionToJson(
-      TrackingPosition position) {
+    TrackingPosition position,
+  ) {
     return {
       'latitude': position.latitude,
       'longitude': position.longitude,
@@ -161,9 +166,7 @@ class LocalStateSerializers {
         SosDisplaySurface.unknown,
       ),
       actuators: actuators is Map
-          ? SosActuatorSnapshot.fromJson(
-              Map<String, dynamic>.from(actuators),
-            )
+          ? SosActuatorSnapshot.fromJson(Map<String, dynamic>.from(actuators))
           : null,
       isBackendConfirmed: json['isBackendConfirmed'] as bool? ?? false,
       isUsingCachedData: json['isUsingCachedData'] as bool? ?? false,
@@ -262,6 +265,7 @@ class LocalStateSerializers {
       'signalQuality': status.signalQuality,
       'lifecycleState': status.lifecycleState.name,
       'provisioningError': status.provisioningError,
+      'inDfuBootloader': status.inDfuBootloader,
     };
   }
 
@@ -288,32 +292,35 @@ class LocalStateSerializers {
       }
     }
 
-    return DeviceStatus(
-      deviceId: json['deviceId'] as String,
-      nodeId: json['nodeId'] as int?,
-      canonicalHardwareId: json['canonicalHardwareId'] as String?,
-      deviceAlias: json['deviceAlias'] as String?,
-      model: json['model'] as String?,
-      paired: json['paired'] as bool? ?? false,
-      activated: json['activated'] as bool? ?? false,
-      connected: json['connected'] as bool? ?? false,
-      batteryPercent: batteryPercent,
-      batteryLevel: rawBatteryLevel,
-      batteryState: batteryState,
-      batterySource: batterySource,
-      firmwareVersion: json['firmwareVersion'] as String?,
-      lastSeen: json['lastSeen'] == null
-          ? null
-          : DateTime.parse(json['lastSeen'] as String),
-      lastSyncedAt: json['lastSyncedAt'] == null
-          ? null
-          : DateTime.parse(json['lastSyncedAt'] as String),
-      signalQuality: json['signalQuality'] as int?,
-      lifecycleState: DeviceLifecycleState.values.firstWhere(
-        (value) => value.name == json['lifecycleState'],
-        orElse: () => DeviceLifecycleState.unpaired,
+    return normalizeDfuBootloaderFirmware(
+      DeviceStatus(
+        deviceId: json['deviceId'] as String,
+        nodeId: json['nodeId'] as int?,
+        canonicalHardwareId: json['canonicalHardwareId'] as String?,
+        deviceAlias: json['deviceAlias'] as String?,
+        model: json['model'] as String?,
+        paired: json['paired'] as bool? ?? false,
+        activated: json['activated'] as bool? ?? false,
+        connected: json['connected'] as bool? ?? false,
+        batteryPercent: batteryPercent,
+        batteryLevel: rawBatteryLevel,
+        batteryState: batteryState,
+        batterySource: batterySource,
+        firmwareVersion: json['firmwareVersion'] as String?,
+        lastSeen: json['lastSeen'] == null
+            ? null
+            : DateTime.parse(json['lastSeen'] as String),
+        lastSyncedAt: json['lastSyncedAt'] == null
+            ? null
+            : DateTime.parse(json['lastSyncedAt'] as String),
+        signalQuality: json['signalQuality'] as int?,
+        lifecycleState: DeviceLifecycleState.values.firstWhere(
+          (value) => value.name == json['lifecycleState'],
+          orElse: () => DeviceLifecycleState.unpaired,
+        ),
+        provisioningError: json['provisioningError'] as String?,
+        inDfuBootloader: json['inDfuBootloader'] as bool? ?? false,
       ),
-      provisioningError: json['provisioningError'] as String?,
     );
   }
 

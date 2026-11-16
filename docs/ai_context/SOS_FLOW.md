@@ -78,6 +78,39 @@ generation. Android B3 reproduced the failure after WEB CANCEL, explicit rearm,
 APP countdown cancellation, and a second rearm: the old clear proof previously
 swallowed the new physical cancel and left countdown/backend handoff alive.
 
+### Post-terminal device convergence
+
+A correlated backend terminal sets the device mirror to `pendingCancel` or
+`pendingResolve`, arms the terminal-convergence fence and dispatches a clear to
+the TAG. While the mirror is pending, physical starts are suppressed
+(`SOS_POST_TERMINAL_INFLIGHT_START_SUPPRESSED`). The mirror leaves pending as
+follows:
+
+- **TAG already inactive.** When the user cancels on the TAG (`0xE1`) and the
+  backend echoes that cancellation, the clear reaches a TAG that already
+  stopped and that sends no `0xE2`. If the dispatch result is a BLE-observed
+  closure that matches the captured target (node, packet, cycle key, observed
+  after the active packet, same connection), it is the clear proof: the mirror
+  becomes `synchronized` at once
+  (`source=remote_terminal_device_clear_inactive_observed`). Resolve still
+  requires `0xE3`.
+- **Matching `0xE2`/`0xE3`.** The device-status listener converges the mirror
+  to `synchronized` (`source=device_terminal_ack:E2|E3`).
+- **No matching ack.** A 10 s timer started at dispatch moves the mirror to
+  `failed` (`SOS_REMOTE_TERMINAL_DEVICE_CLEAR_ACK_TIMEOUT`), which ends
+  suppression. The proof is kept, so a late matching ack still reaches
+  `synchronized`. Before this bound, an Android field run kept a real second TAG
+  SOS suppressed for 144–187 s, until the user cancelled on the TAG again.
+
+Leaving pending does not admit a replay. A new physical start after a terminal
+is accepted only with `freshReceiveAfterTerminal`: a receive sequence newer than
+the observed physical closure (`0xE1`/`0xE2`) in the same receive domain. The
+packet fingerprint cannot be the guard, because a new press on current firmware
+reuses the cycle's packet identity: its packets are byte-identical to the
+cancelled cycle's. This relies on the firmware never resending a cancelled
+cycle's SOS packet after `0xE1`. That assumption is being confirmed with the
+firmware owner (Needs verification).
+
 ## Resolve Flow
 
 - Public `resolveSos()` mirrors cancel orchestration.

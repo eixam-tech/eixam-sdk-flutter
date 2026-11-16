@@ -225,6 +225,15 @@ class _ObservedSosRepository extends FakeSosRepository {
 
 class _ObservedRealtime extends FakeRealtimeClient
     implements OperationalRealtimeClient {
+  final List<DateTime> publishedSosCancels = <DateTime>[];
+  Future<void> Function(DateTime timestamp)? publishSosCancelHook;
+
+  @override
+  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+    publishedSosCancels.add(timestamp);
+    await publishSosCancelHook?.call(timestamp);
+  }
+
   int telemetryPublishes = 0;
   @override
   Future<void> publishOperationalSos(MqttOperationalSosRequest request) async {

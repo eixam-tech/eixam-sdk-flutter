@@ -110,6 +110,7 @@ class ProtectionPlatformSnapshot {
     this.pendingTelemetryCount = 0,
     this.pendingNativeSosCreateCount = 0,
     this.pendingNativeSosCancelCount = 0,
+    this.pendingNativeSosCancelCreatedAt,
     this.lastRestorationEvent,
     this.lastRestorationEventAt,
     this.lastBleServiceEvent,
@@ -182,6 +183,9 @@ class ProtectionPlatformSnapshot {
   final int pendingTelemetryCount;
   final int pendingNativeSosCreateCount;
   final int pendingNativeSosCancelCount;
+
+  /// When the TAG cancel still waiting for SDK hand-off was observed.
+  final DateTime? pendingNativeSosCancelCreatedAt;
   final String? lastRestorationEvent;
   final DateTime? lastRestorationEventAt;
   final String? lastBleServiceEvent;
@@ -391,7 +395,12 @@ abstract class ProtectionPlatformAdapter {
   Future<ProtectionPlatformStartResult> startProtectionRuntime({
     required ProtectionPlatformStartRequest request,
   });
-  Future<void> stopProtectionRuntime();
+
+  /// [keepSosCountdown]: iOS keeps a running native TAG countdown across the
+  /// stop (promoted at its deadline unless the SDK closes it). Only for the
+  /// host's foreground exit with a signed-in session (F11). Android ignores
+  /// it.
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false});
   Future<void> ensureProtectionRuntimeActive({
     String reason = 'app_foreground_resume',
   });
@@ -413,6 +422,29 @@ abstract class ProtectionPlatformAdapter {
   Future<bool> dropPendingNativeSosCreate(
     String signature, {
     required String reason,
+  });
+
+  /// Retires the native pending TAG cancel once the SDK durably queued it for
+  /// MQTT delivery. Returns false when the platform keeps no such record.
+  Future<bool> ackPendingNativeSosCancel();
+
+  /// Tells the platform whether the SDK SOS outbox still holds an action the
+  /// backend has not confirmed. iOS keeps background execution time while it
+  /// does; Android needs nothing (foreground service).
+  Future<void> setSosDeliveryPending(bool pending);
+
+  /// The SOS is over for the SDK (cancelled, resolved or idle). iOS closes a
+  /// native TAG cycle that was already handed over, in case its close frame
+  /// never reached the phone, and a countdown kept across a stop when
+  /// [nodeId] is unknown or matches its TAG. [force] (session change) also
+  /// drops a running native countdown. [terminal] (`cancel` / `resolve`,
+  /// F17b): the SDK's terminal of a handed-over SOS; when the TAG never
+  /// confirmed closing it, native writes the matching TAG command itself and
+  /// stops (never re-opens) the SOS if the TAG keeps sending it.
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
   });
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
@@ -447,7 +479,7 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() async {}
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) async {}
 
   @override
   Future<void> ensureProtectionRuntimeActive({
@@ -496,6 +528,19 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     return true;
   }
+
+  @override
+  Future<bool> ackPendingNativeSosCancel() async => false;
+
+  @override
+  Future<void> setSosDeliveryPending(bool pending) async {}
+
+  @override
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) async {}
 
   @override
   Future<bool> dropPendingNativeSosCreate(

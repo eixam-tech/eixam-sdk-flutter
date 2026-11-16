@@ -68,6 +68,9 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosActiveBody': texts.protectionSosActiveBody,
             'protectionSosResolvedTitle': texts.protectionSosResolvedTitle,
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
+            'protectionSosStaleStoppedTitle':
+                texts.protectionSosStaleStoppedTitle,
+            'protectionSosStaleStoppedBody': texts.protectionSosStaleStoppedBody,
             'nearbyMessageChannelName': texts.nearbyMessageChannelName,
             'nearbyMessageChannelDescription':
                 texts.nearbyMessageChannelDescription,
@@ -81,8 +84,11 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
-  Future<void> stopProtectionRuntime() {
-    return _methodChannel.invokeMethod<void>('stopProtectionRuntime');
+  Future<void> stopProtectionRuntime({bool keepSosCountdown = false}) {
+    return _methodChannel.invokeMethod<void>(
+      'stopProtectionRuntime',
+      keepSosCountdown ? <String, dynamic>{'keepSosCountdown': true} : null,
+    );
   }
 
   @override
@@ -109,33 +115,91 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   @override
   Future<bool> ackPendingExternalRelayCancel(String signature) async => true;
 
+  // Same pending create/cancel contract as Android: the native runtime keeps
+  // a TAG SOS durable while Dart is suspended; the SDK claims it and hands it
+  // to the MQTT outbox.
   @override
   Future<ProtectionPendingNativeSosCreate?> peekPendingNativeSosCreate() async {
-    return null;
+    final raw = await _methodChannel.invokeMapMethod<String, dynamic>(
+      'peekPendingNativeSosCreate',
+    );
+    return raw == null ? null : mapProtectionPendingNativeSosCreate(raw);
   }
 
   @override
-  Future<void> markPendingNativeSosCreateMqttFlushStarted(
-    String signature,
-  ) async {}
+  Future<void> markPendingNativeSosCreateMqttFlushStarted(String signature) {
+    return _methodChannel.invokeMethod<void>(
+      'markPendingNativeSosCreateMqttFlushStarted',
+      <String, dynamic>{'signature': signature},
+    );
+  }
 
   @override
-  Future<void> markPendingNativeSosCreateMqttPublished(
-    String signature,
-  ) async {}
+  Future<void> markPendingNativeSosCreateMqttPublished(String signature) {
+    return _methodChannel.invokeMethod<void>(
+      'markPendingNativeSosCreateMqttPublished',
+      <String, dynamic>{'signature': signature},
+    );
+  }
 
   @override
   Future<void> retainPendingNativeSosCreate(
     String signature, {
     required String reason,
-  }) async {}
+  }) {
+    return _methodChannel.invokeMethod<void>(
+      'retainPendingNativeSosCreate',
+      <String, dynamic>{'signature': signature, 'reason': reason},
+    );
+  }
 
   @override
   Future<bool> ackPendingNativeSosCreate(
     String signature, {
     String? backendIncidentId,
   }) async {
-    return false;
+    final acknowledged = await _methodChannel.invokeMethod<bool>(
+      'ackPendingNativeSosCreate',
+      <String, dynamic>{
+        'signature': signature,
+        'backendIncidentId': backendIncidentId,
+      },
+    );
+    return acknowledged == true;
+  }
+
+  @override
+  Future<bool> ackPendingNativeSosCancel() async {
+    final acknowledged = await _methodChannel.invokeMethod<bool>(
+      'ackPendingNativeSosCancel',
+    );
+    return acknowledged == true;
+  }
+
+  @override
+  Future<void> setSosDeliveryPending(bool pending) {
+    return _methodChannel.invokeMethod<void>(
+      'setSosDeliveryPending',
+      <String, dynamic>{'pending': pending},
+    );
+  }
+
+  @override
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) {
+    return _methodChannel.invokeMethod<void>(
+      'closeNativeSosCycle',
+      nodeId == null && !force && terminal == null
+          ? null
+          : <String, dynamic>{
+              if (nodeId != null) 'nodeId': nodeId,
+              if (force) 'force': true,
+              if (terminal != null) 'terminal': terminal,
+            },
+    );
   }
 
   @override
@@ -143,7 +207,11 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     String signature, {
     required String reason,
   }) async {
-    return false;
+    final dropped = await _methodChannel.invokeMethod<bool>(
+      'dropPendingNativeSosCreate',
+      <String, dynamic>{'signature': signature, 'reason': reason},
+    );
+    return dropped == true;
   }
 
   @override

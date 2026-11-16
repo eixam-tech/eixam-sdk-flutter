@@ -41,3 +41,15 @@ abstract class BleClient {
 
   Future<bool> isEixamCompatible(String deviceId);
 }
+
+/// Optional capability of a [BleClient]: the latest advertisement per device
+/// that any scan of the client received, whichever caller's scan it was.
+///
+/// [BleClient.scan] returns an empty list when a newer scan supersedes it (one
+/// native scan at a time), even though the phone kept receiving adverts. A
+/// caller whose verdict must not depend on another subsystem's scan timing
+/// (the DFU recovery observation) reads recent sightings instead (F13).
+abstract interface class BleAdvertisementSightingSource {
+  /// Latest advert per device received at or after [since].
+  List<BleScanResult> advertisementsSince(DateTime since);
+}

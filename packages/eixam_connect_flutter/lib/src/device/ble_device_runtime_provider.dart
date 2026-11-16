@@ -14,6 +14,7 @@ import 'ble_incoming_event.dart';
 import 'ble_incoming_payload_classifier.dart';
 import 'ble_scan_result.dart';
 import 'device_runtime_provider.dart';
+import '../firmware_version.dart';
 import 'device_sos_controller.dart';
 import 'eixam_ble_command.dart';
 import 'eixam_ble_notification.dart';
@@ -166,7 +167,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       currentStatus.canonicalHardwareId,
     ]);
     return scans.any((scan) {
-      if (!scan.connectable) {
+      if (!scan.connectable || _isPositivelyNotEixamAppMode(scan)) {
         return false;
       }
       final scanKeys = _normalizedReconnectKeys(<String?>[
@@ -176,6 +177,23 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       return scanKeys.any(knownKeys.contains);
     });
   }
+
+  /// The saved TAG's address advertising as the DFU bootloader (AdaDFU) or as
+  /// stock Meshtastic after a cable recovery cannot be reconnected as an EIXAM
+  /// TAG. Counting it as "available" restarted a 10-attempt reconnect campaign
+  /// about every minute against the stock TAG (P5 F4) and connected to the
+  /// bootloader (P5 F5). An advert without service information still counts.
+  static bool _isPositivelyNotEixamAppMode(BleScanResult scan) {
+    final public = scan.toPublic();
+    if (public.isDfuBootloader) return true;
+    if (public.isEixamDevice) return false;
+    return scan.advertisedServiceUuids.any(
+      (uuid) => uuid.trim().toLowerCase() == _meshtasticStockServiceUuid,
+    );
+  }
+
+  static const String _meshtasticStockServiceUuid =
+      '6ba1b218-15a8-461f-9fa8-5dcae273eafd';
 
   static const Duration _recentSosDedupWindow = Duration(seconds: 2);
   static const Duration _iosSignalQualityThrottleWindow = Duration(seconds: 5);
@@ -304,6 +322,17 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
 
   @override
   Stream<DeviceStatus> watchRuntimeStatus() => _runtimeStatusController.stream;
+
+  /// When a TAG SOS frame (own, relayed, unknown origin, clear or cancel)
+  /// was last classified: the TAG notification liveness check never drops
+  /// the link with an SOS frame still being processed.
+  DateTime? get lastSosFrameAt => _lastSosFrameAt;
+  DateTime? _lastSosFrameAt;
+
+  /// A `0x23` request is waiting for its reply (another caller's timeout).
+  bool get hasPendingRuntimeStatusRequest =>
+      _pendingRuntimeStatusRequest != null;
+
   bool get hasCommandChannel =>
       _connectedDeviceId != null &&
       BleDebugRegistry.instance.currentState.cmdFound;
@@ -444,36 +473,38 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           : runtimeStatus.batteryPercent;
       final activated = currentStatus.activated;
 
-      final nextStatus = currentStatus.copyWith(
-        deviceId: candidate.deviceId,
-        nodeId: runtimeStatus?.nodeId,
-        canonicalHardwareId: candidate.canonicalHardwareId,
-        deviceAlias: candidate.name,
-        model: 'EIXAM R1',
-        paired: true,
-        activated: activated,
-        connected: true,
-        provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
-        batteryPercent: runtimeBatteryPercent,
-        lifecycleState: activated
-            ? DeviceLifecycleState.ready
-            : DeviceLifecycleState.paired,
-        batteryLevel: runtimeStatus == null
-            ? _effectiveBatteryLevel(currentStatus)
-            : runtimeBatteryState?.protocolValue,
-        batteryState: runtimeStatus == null
-            ? _effectiveBatteryState(currentStatus)
-            : runtimeBatteryState,
-        batterySource: runtimeStatus == null
-            ? _effectiveBatterySource(currentStatus)
-            : runtimeStatus.batteryPercent != null
-            ? DeviceBatterySource.deviceStatus
-            : DeviceBatterySource.unknown,
-        firmwareVersion: hydration.firmwareVersion,
-        signalQuality: hydration.signalQuality,
-        lastSeen: DateTime.now(),
-        lastSyncedAt: DateTime.now(),
-        clearProvisioningError: true,
+      final nextStatus = normalizeDfuBootloaderFirmware(
+        currentStatus.copyWith(
+          deviceId: candidate.deviceId,
+          nodeId: runtimeStatus?.nodeId,
+          canonicalHardwareId: candidate.canonicalHardwareId,
+          deviceAlias: candidate.name,
+          model: 'EIXAM R1',
+          paired: true,
+          activated: activated,
+          connected: true,
+          provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
+          batteryPercent: runtimeBatteryPercent,
+          lifecycleState: activated
+              ? DeviceLifecycleState.ready
+              : DeviceLifecycleState.paired,
+          batteryLevel: runtimeStatus == null
+              ? _effectiveBatteryLevel(currentStatus)
+              : runtimeBatteryState?.protocolValue,
+          batteryState: runtimeStatus == null
+              ? _effectiveBatteryState(currentStatus)
+              : runtimeBatteryState,
+          batterySource: runtimeStatus == null
+              ? _effectiveBatterySource(currentStatus)
+              : runtimeStatus.batteryPercent != null
+              ? DeviceBatterySource.deviceStatus
+              : DeviceBatterySource.unknown,
+          firmwareVersion: hydration.firmwareVersion,
+          signalQuality: hydration.signalQuality,
+          lastSeen: DateTime.now(),
+          lastSyncedAt: DateTime.now(),
+          clearProvisioningError: true,
+        ),
       );
       _publishRuntimeStatus(nextStatus, reason: 'pair_completed');
       return nextStatus;
@@ -639,39 +670,41 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           : runtimeStatus.batteryPercent;
       final activated = currentStatus.activated;
 
-      final nextStatus = currentStatus.copyWith(
-        deviceId: deviceId,
-        nodeId: runtimeStatus?.nodeId,
-        deviceAlias: _connectedDeviceAlias,
-        // Pairing sets a hardware model; reconnect must too or OTA eligibility
-        // treats the device as unsupportedHardware ("update incompatible").
-        model: currentStatus.model?.trim().isNotEmpty == true
-            ? currentStatus.model
-            : 'EIXAM R1',
-        paired: true,
-        activated: activated,
-        connected: true,
-        provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
-        batteryPercent: runtimeBatteryPercent,
-        lifecycleState: activated
-            ? DeviceLifecycleState.ready
-            : DeviceLifecycleState.paired,
-        batteryLevel: runtimeStatus == null
-            ? _effectiveBatteryLevel(currentStatus)
-            : runtimeBatteryState?.protocolValue,
-        batteryState: runtimeStatus == null
-            ? _effectiveBatteryState(currentStatus)
-            : runtimeBatteryState,
-        batterySource: runtimeStatus == null
-            ? _effectiveBatterySource(currentStatus)
-            : runtimeStatus.batteryPercent != null
-            ? DeviceBatterySource.deviceStatus
-            : DeviceBatterySource.unknown,
-        firmwareVersion: hydration.firmwareVersion,
-        signalQuality: hydration.signalQuality,
-        lastSeen: DateTime.now(),
-        lastSyncedAt: DateTime.now(),
-        clearProvisioningError: true,
+      final nextStatus = normalizeDfuBootloaderFirmware(
+        currentStatus.copyWith(
+          deviceId: deviceId,
+          nodeId: runtimeStatus?.nodeId,
+          deviceAlias: _connectedDeviceAlias,
+          // Pairing sets a hardware model; reconnect must too or OTA eligibility
+          // treats the device as unsupportedHardware ("update incompatible").
+          model: currentStatus.model?.trim().isNotEmpty == true
+              ? currentStatus.model
+              : 'EIXAM R1',
+          paired: true,
+          activated: activated,
+          connected: true,
+          provisioningStatus: _provisioningStatusFromRuntime(runtimeStatus),
+          batteryPercent: runtimeBatteryPercent,
+          lifecycleState: activated
+              ? DeviceLifecycleState.ready
+              : DeviceLifecycleState.paired,
+          batteryLevel: runtimeStatus == null
+              ? _effectiveBatteryLevel(currentStatus)
+              : runtimeBatteryState?.protocolValue,
+          batteryState: runtimeStatus == null
+              ? _effectiveBatteryState(currentStatus)
+              : runtimeBatteryState,
+          batterySource: runtimeStatus == null
+              ? _effectiveBatterySource(currentStatus)
+              : runtimeStatus.batteryPercent != null
+              ? DeviceBatterySource.deviceStatus
+              : DeviceBatterySource.unknown,
+          firmwareVersion: hydration.firmwareVersion,
+          signalQuality: hydration.signalQuality,
+          lastSeen: DateTime.now(),
+          lastSyncedAt: DateTime.now(),
+          clearProvisioningError: true,
+        ),
       );
       _publishRuntimeStatus(nextStatus, reason: 'reconnect_completed');
       return nextStatus;
@@ -1213,26 +1246,28 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'Activation succeeded for ${currentStatus.deviceId}',
     );
-    final nextStatus = currentStatus.copyWith(
-      activated: true,
-      canonicalHardwareId: currentStatus.canonicalHardwareId,
-      connected: await _resolveConnection(currentStatus.deviceId),
-      lifecycleState: DeviceLifecycleState.ready,
-      batteryLevel: _effectiveBatteryLevel(currentStatus),
-      batteryState: _effectiveBatteryState(currentStatus),
-      batterySource: _effectiveBatterySource(currentStatus),
-      firmwareVersion: await _readFirmwareMetadata(
-        currentStatus.deviceId,
-        currentFirmwareVersion: currentStatus.firmwareVersion,
-        reason: 'activation',
+    final nextStatus = normalizeDfuBootloaderFirmware(
+      currentStatus.copyWith(
+        activated: true,
+        canonicalHardwareId: currentStatus.canonicalHardwareId,
+        connected: await _resolveConnection(currentStatus.deviceId),
+        lifecycleState: DeviceLifecycleState.ready,
+        batteryLevel: _effectiveBatteryLevel(currentStatus),
+        batteryState: _effectiveBatteryState(currentStatus),
+        batterySource: _effectiveBatterySource(currentStatus),
+        firmwareVersion: await _readFirmwareMetadata(
+          currentStatus.deviceId,
+          currentFirmwareVersion: currentStatus.firmwareVersion,
+          reason: 'activation',
+        ),
+        signalQuality: await _readSignalQuality(
+          currentStatus.deviceId,
+          reason: 'activation',
+        ),
+        lastSeen: DateTime.now(),
+        lastSyncedAt: DateTime.now(),
+        clearProvisioningError: true,
       ),
-      signalQuality: await _readSignalQuality(
-        currentStatus.deviceId,
-        reason: 'activation',
-      ),
-      lastSeen: DateTime.now(),
-      lastSyncedAt: DateTime.now(),
-      clearProvisioningError: true,
     );
     _publishRuntimeStatus(nextStatus, reason: 'activate_completed');
     return nextStatus;
@@ -1298,31 +1333,33 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     BleDebugRegistry.instance.recordEvent(
       'Refreshed device status for ${currentStatus.deviceId}',
     );
-    final nextStatus = currentStatus.copyWith(
-      connected: connected,
-      nodeId: runtimeStatus?.nodeId,
-      canonicalHardwareId: currentStatus.canonicalHardwareId,
-      provisioningStatus: mode == DeviceRefreshMode.heartbeat
-          ? currentStatus.provisioningStatus
-          : _provisioningStatusFromRuntime(runtimeStatus),
-      batteryPercent: runtimeBatteryPercent,
-      batteryLevel: connected && runtimeStatus != null
-          ? runtimeBatteryState?.protocolValue
-          : _effectiveBatteryLevel(currentStatus),
-      batteryState: connected && runtimeStatus != null
-          ? runtimeBatteryState
-          : _effectiveBatteryState(currentStatus),
-      batterySource: connected && runtimeStatus != null
-          ? runtimeStatus.batteryPercent != null
-                ? DeviceBatterySource.deviceStatus
-                : DeviceBatterySource.unknown
-          : _effectiveBatterySource(currentStatus),
-      firmwareVersion: firmwareVersion,
-      signalQuality: signalQuality,
-      lifecycleState: _resolveLifecycle(currentStatus, connected),
-      lastSeen: connected ? DateTime.now() : currentStatus.lastSeen,
-      lastSyncedAt: DateTime.now(),
-      clearProvisioningError: true,
+    final nextStatus = normalizeDfuBootloaderFirmware(
+      currentStatus.copyWith(
+        connected: connected,
+        nodeId: runtimeStatus?.nodeId,
+        canonicalHardwareId: currentStatus.canonicalHardwareId,
+        provisioningStatus: mode == DeviceRefreshMode.heartbeat
+            ? currentStatus.provisioningStatus
+            : _provisioningStatusFromRuntime(runtimeStatus),
+        batteryPercent: runtimeBatteryPercent,
+        batteryLevel: connected && runtimeStatus != null
+            ? runtimeBatteryState?.protocolValue
+            : _effectiveBatteryLevel(currentStatus),
+        batteryState: connected && runtimeStatus != null
+            ? runtimeBatteryState
+            : _effectiveBatteryState(currentStatus),
+        batterySource: connected && runtimeStatus != null
+            ? runtimeStatus.batteryPercent != null
+                  ? DeviceBatterySource.deviceStatus
+                  : DeviceBatterySource.unknown
+            : _effectiveBatterySource(currentStatus),
+        firmwareVersion: firmwareVersion,
+        signalQuality: signalQuality,
+        lifecycleState: _resolveLifecycle(currentStatus, connected),
+        lastSeen: connected ? DateTime.now() : currentStatus.lastSeen,
+        lastSyncedAt: DateTime.now(),
+        clearProvisioningError: true,
+      ),
     );
     _publishRuntimeStatus(nextStatus, reason: 'refresh_completed');
     return nextStatus;
@@ -1626,6 +1663,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       signalQuality: null,
       lifecycleState: DeviceLifecycleState.unpaired,
       provisioningError: null,
+      inDfuBootloader: currentStatus.inDfuBootloader,
     );
     _publishRuntimeStatus(nextStatus, reason: 'unpair_completed');
     return nextStatus;
@@ -1910,6 +1948,37 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       case EixamBleChannel.sos:
         return 'ea02';
     }
+  }
+
+  /// Tears down the Flutter-owned link exactly as an unexpected drop would be
+  /// seen, so the existing reconnect path (unexpected disconnect -> backoff ->
+  /// preferred reconnect) brings it back with fresh notification
+  /// registrations. No new connection mechanism.
+  Future<bool> dropLinkForRecovery({required String reason}) async {
+    final deviceId = _connectedDeviceId;
+    final currentStatus = _lastRuntimeStatus;
+    if (_disposed ||
+        _ownershipSuspended ||
+        deviceId == null ||
+        currentStatus == null ||
+        !currentStatus.connected) {
+      return false;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'BLE_LINK_RECOVERY_DROP reason=$reason',
+    );
+    try {
+      await _bleClient.disconnect(deviceId);
+    } catch (error) {
+      BleDebugRegistry.instance.recordEvent(
+        'BLE_LINK_RECOVERY_DROP disconnect_failed errorType=${error.runtimeType}',
+      );
+    }
+    // The connection monitor normally reports this; calling it directly keeps
+    // the drop observable even if the platform stream does not emit for a
+    // locally initiated disconnect. It is idempotent.
+    await _handleUnexpectedDisconnect(deviceId);
+    return true;
   }
 
   Future<void> _handleUnexpectedDisconnect(String deviceId) async {
@@ -2774,7 +2843,7 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     bool hasRecentExternalRelayContext = false,
     RemoteRelaySosSource? remoteRelaySource,
   }) {
-    return _lastKnownPositions.bind(
+    final classification = _lastKnownPositions.bind(
       _payloadClassifier.classifySosPayload(
         payload: payload,
         payloadHex: payloadHex,
@@ -2788,6 +2857,19 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       ),
       receivedAt: receivedAt,
     );
+    switch (classification.kind) {
+      case BleIncomingPayloadKind.ownDeviceSos:
+      case BleIncomingPayloadKind.remoteRelaySos:
+      case BleIncomingPayloadKind.unknownOriginSos:
+      case BleIncomingPayloadKind.sosClear:
+      case BleIncomingPayloadKind.sosCancel:
+        _lastSosFrameAt = DateTime.now();
+      case BleIncomingPayloadKind.telPosition:
+      case BleIncomingPayloadKind.telRelayRx:
+      case BleIncomingPayloadKind.unknown:
+        break;
+    }
+    return classification;
   }
 
   BleIncomingPayloadClassification _classifyD2RelayPeerPayload({

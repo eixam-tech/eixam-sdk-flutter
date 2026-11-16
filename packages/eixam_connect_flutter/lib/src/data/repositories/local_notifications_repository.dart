@@ -1,6 +1,8 @@
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+import '../../tag_alerts/tag_alert_notification_ids.dart';
+
 /// Local notifications adapter used by the starter SDK.
 class LocalNotificationsRepository implements NotificationsRepository {
   LocalNotificationsRepository({FlutterLocalNotificationsPlugin? plugin})
@@ -270,6 +272,9 @@ class LocalNotificationsRepository implements NotificationsRepository {
   }
 
   int _nextNotificationId() {
-    return DateTime.now().microsecondsSinceEpoch % 2147483647;
+    // Keep generic ids out of the range reserved for TAG alerts.
+    return TagAlertNotificationIds.outsideRange(
+      DateTime.now().microsecondsSinceEpoch % 2147483647,
+    );
   }
 }

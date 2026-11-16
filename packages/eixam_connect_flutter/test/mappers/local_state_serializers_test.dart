@@ -152,6 +152,39 @@ void main() {
       expect(restored.provisioningStatus, DeviceProvisioningStatus.unknown);
     });
 
+    test('F11: round-trips the bootloader flag and drops a cached '
+        'bootloader revision', () {
+      const status = DeviceStatus(
+        deviceId: 'tag',
+        paired: true,
+        activated: true,
+        connected: false,
+        inDfuBootloader: true,
+      );
+      final restored = LocalStateSerializers.deviceStatusFromJson(
+        LocalStateSerializers.deviceStatusToJson(status),
+      );
+      expect(restored.inDfuBootloader, isTrue);
+      expect(restored.firmwareVersion, isNull);
+
+      // Cached by a build without the F11 rule.
+      final legacy = LocalStateSerializers.deviceStatusFromJson({
+        'deviceId': 'tag',
+        'paired': true,
+        'firmwareVersion': '0.4.3 s140 6.1.1',
+      });
+      expect(legacy.firmwareVersion, isNull);
+      expect(legacy.inDfuBootloader, isTrue);
+
+      final app = LocalStateSerializers.deviceStatusFromJson({
+        'deviceId': 'tag',
+        'paired': true,
+        'firmwareVersion': '2.7.68.f9a277c',
+      });
+      expect(app.firmwareVersion, '2.7.68.f9a277c');
+      expect(app.inDfuBootloader, isFalse);
+    });
+
     test('rejects invalid persisted exact battery percentage', () {
       final restored =
           LocalStateSerializers.deviceStatusFromJson(<String, dynamic>{

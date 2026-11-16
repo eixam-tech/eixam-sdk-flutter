@@ -12,6 +12,8 @@ import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_command.dart';
 import 'package:eixam_connect_flutter/src/sdk/background_telemetry_platform_adapter.dart';
+import 'package:eixam_connect_flutter/src/sdk/dfu_recovery_controller.dart';
+import 'package:eixam_connect_flutter/src/sdk/dfu_recovery_record_store.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_dfu_transport.dart';
 import 'package:eixam_connect_flutter/src/sdk/firmware_update_coordinator.dart';
@@ -110,7 +112,7 @@ void main() {
       await runtimeProvider.dispose();
     });
 
-    test('firmware recovery preempts active backlog ownership', () async {
+    test('firmware recovery action preempts active backlog ownership', () async {
       final deviceRepository = FakeDeviceRepository(
         initialStatus: buildDeviceStatus(
           deviceId: 'device',
@@ -137,9 +139,16 @@ void main() {
           localStore: MemorySharedPrefsSdkStore(),
         ),
       );
+      final recoveryController = DfuRecoveryController(
+        firmware: firmware,
+        bleClient: MockBleClient(),
+        recordStore: InMemoryDfuRecoveryRecordStore(),
+        inspectStock: (deviceId, name) => throw UnimplementedError(),
+      );
       final sdk = _buildSdk(
         deviceRepository: deviceRepository,
         firmwareUpdateCoordinator: firmware,
+        dfuRecoveryController: recoveryController,
         backlogCommandWriter: (command) {
           commands.add(command);
           if (command.opcode == 0x30 && !firstStartSeen) {
@@ -161,14 +170,15 @@ void main() {
       );
       unawaited(backlog.then((_) => backlogSettled = true));
       await Future<void>.delayed(Duration.zero);
-      final recovery = await sdk.recoverFirmwareUpdate(
-        bootloaderDeviceId: 'bootloader',
-        releaseId: 'fw-recovery',
+      // No interrupted update is persisted, so the action is refused, but the
+      // backlog preemption happens first, exactly as for an ordinary update.
+      await expectLater(
+        sdk.prepareCableRecovery(),
+        throwsA(isA<DfuRecoveryException>()),
       );
 
       expect((await backlog).completed, isFalse);
       expect(commands.map((command) => command.opcode), <int>[0x30]);
-      expect(recovery.state, FirmwareUpdateState.recoveryRequired);
 
       final replacement = sdk.syncDevicePositionBacklog(
         since: DateTime.utc(2026, 8, 23),
@@ -316,6 +326,7 @@ EixamConnectSdkImpl _buildSdk({
       const Stream<BleIncomingEvent>.empty(),
   Future<void> Function()? disposeCallback,
   FirmwareUpdateCoordinator? firmwareUpdateCoordinator,
+  DfuRecoveryController? dfuRecoveryController,
   Future<void> Function(EixamDeviceCommand command)? backlogCommandWriter,
 }) {
   final localStore = MemorySharedPrefsSdkStore();
@@ -338,6 +349,7 @@ EixamConnectSdkImpl _buildSdk({
     backgroundTelemetryPlatformAdapter:
         const NoopBackgroundTelemetryPlatformAdapter(),
     firmwareUpdateCoordinator: firmwareUpdateCoordinator,
+    dfuRecoveryController: dfuRecoveryController,
     backlogCommandWriter: backlogCommandWriter,
     disposeCallback: disposeCallback,
   );

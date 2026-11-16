@@ -4,6 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/data/datasources_local/shared_prefs_sdk_store.dart';
 import 'package:eixam_connect_flutter/src/data/repositories/in_memory_device_repository.dart';
 import 'package:eixam_connect_flutter/src/device/ble_debug_registry.dart';
+import 'package:eixam_connect_flutter/src/mappers/local_state_serializers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../../support/builders/device_status_builder.dart';
@@ -272,6 +273,58 @@ void main() {
       await subscription.cancel();
       await repository.dispose();
       await runtimeProvider.dispose();
+    });
+
+    test('a reconnect whose runtime echo carries no effective change still '
+        'publishes the reconnected TAG and starts the heartbeat', () async {
+      // BleDeviceRuntimeProvider publishes `reconnect_completed` and returns
+      // the same status. When the reconnect-time 0x23 gets no reply, nothing
+      // else follows, so this echo must not cancel the reconnect's own emit.
+      final runtimeProvider = _EchoingReconnectRuntimeProvider();
+      final store = MemorySharedPrefsSdkStore();
+      final repository = InMemoryDeviceRepository(
+        runtimeProvider: runtimeProvider,
+        localStore: store,
+        heartbeatInterval: const Duration(milliseconds: 10),
+      );
+      final emitted = <DeviceStatus>[];
+      final subscription = repository.watchDeviceStatus().listen(emitted.add);
+      try {
+        final result = await repository.reconnectDevice(
+          device: PreferredDevice(
+            deviceId: 'device-42',
+            lastConnectedAt: DateTime(2026),
+          ),
+        );
+        await pumpEventQueue();
+        // Before any heartbeat: the echo itself was persisted.
+        final persisted = LocalStateSerializers.deviceStatusFromJson(
+          (await store.readJson(SharedPrefsSdkStore.deviceStatusKey))!,
+        );
+        expect(
+          persisted.lastSeen?.toUtc(),
+          _EchoingReconnectRuntimeProvider.echoLastSeen,
+          reason: 'the echo is still persisted (non-effective fields)',
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 45));
+
+        expect(result.connected, isTrue);
+        expect((await repository.getDeviceStatus()).connected, isTrue);
+        expect(
+          emitted.where((status) => status.connected),
+          isNotEmpty,
+          reason: 'the reconnected TAG must be published',
+        );
+        expect(
+          runtimeProvider.refreshCallCount,
+          greaterThanOrEqualTo(1),
+          reason: 'the heartbeat must run after the reconnect',
+        );
+      } finally {
+        await subscription.cancel();
+        await repository.dispose();
+        await runtimeProvider.dispose();
+      }
     });
 
     test('suspend rejects a stale refresh completion', () async {
@@ -555,4 +608,28 @@ void main() {
       }
     });
   });
+}
+
+/// Mirrors BleDeviceRuntimeProvider.reconnect: publishes the result on the
+/// runtime stream, then returns that same status.
+class _EchoingReconnectRuntimeProvider extends FakeDeviceRuntimeProvider {
+  static final DateTime echoLastSeen = DateTime.utc(2026, 11, 12, 10, 30);
+
+  @override
+  Future<DeviceStatus> reconnect({
+    required DeviceStatus currentStatus,
+    required PreferredDevice preferredDevice,
+    String? attemptId,
+    bool Function()? canCreateGatt,
+  }) async {
+    final result = await super.reconnect(
+      currentStatus: currentStatus,
+      preferredDevice: preferredDevice,
+      attemptId: attemptId,
+      canCreateGatt: canCreateGatt,
+    );
+    // The echo differs only in non-effective fields.
+    emitRuntimeStatus(result.copyWith(lastSeen: echoLastSeen));
+    return result;
+  }
 }

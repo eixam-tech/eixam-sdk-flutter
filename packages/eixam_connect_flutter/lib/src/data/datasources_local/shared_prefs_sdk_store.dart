@@ -13,6 +13,8 @@ class SharedPrefsSdkStore {
   static const String sosIncidentKey = 'eixam.sos.active_incident';
   static const String sosStateKey = 'eixam.sos.state';
   static const String sosClosedIncidentKey = 'eixam.sos.closed_incident';
+  // Pending SOS trigger/cancel actions awaiting backend confirmation.
+  static const String sosDeliveryOutboxKey = 'eixam.sos.delivery_outbox.v1';
   static const String trackingPositionKey = 'eixam.tracking.last_position';
   static const String resolvedLocationKey = 'eixam.location.resolved';
   static const int resolvedLocationHandoffVersion = 2;
@@ -31,9 +33,13 @@ class SharedPrefsSdkStore {
   // Availability is also cleared through its controller's checked writer lease.
   static const String activityAvailabilityKey =
       'eixam.activity.availability.v1';
+  // TAG alert settings are per-device user data, cleared through their
+  // controller's checked writer lease together with the scheduled alerts.
+  static const String tagAlertsKey = 'eixam.tag_alerts.v1';
   static const List<String> checkedLocalUserDataKeys = <String>[
     activitySessionKey,
     activityAvailabilityKey,
+    tagAlertsKey,
   ];
   static const String preSosSessionKey = 'eixam.sos.pre_sos_session';
 
@@ -56,8 +62,10 @@ class SharedPrefsSdkStore {
       'eixam.device.migration_session';
   static const String firmwareUpdateSessionKey =
       'eixam.device.firmware_update_session';
+  static const String dfuRecoveryRecordKey = 'eixam.device.dfu_recovery_record';
   static const List<String> localUserDataKeys = <String>[
     sosIncidentKey,
+    sosDeliveryOutboxKey,
     sosStateKey,
     sosClosedIncidentKey,
     trackingPositionKey,
@@ -78,6 +86,7 @@ class SharedPrefsSdkStore {
     manualDisconnectRequestedKey,
     deviceMigrationSessionKey,
     firmwareUpdateSessionKey,
+    dfuRecoveryRecordKey,
   ];
 
   SharedPreferences? _prefs;

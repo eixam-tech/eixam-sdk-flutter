@@ -46,6 +46,13 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     nativeCommandReady: snapshot['nativeCommandReady'] as bool? ?? false,
     pendingSosCount: snapshot['pendingSosCount'] as int? ?? 0,
     pendingTelemetryCount: snapshot['pendingTelemetryCount'] as int? ?? 0,
+    pendingNativeSosCreateCount:
+        snapshot['pendingNativeSosCreateCount'] as int? ?? 0,
+    pendingNativeSosCancelCount:
+        snapshot['pendingNativeSosCancelCount'] as int? ?? 0,
+    pendingNativeSosCancelCreatedAt: readProtectionPlatformDateTime(
+      snapshot['pendingNativeSosCancelCreatedAt'],
+    ),
     lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
     lastRestorationEventAt: readProtectionPlatformDateTime(
       snapshot['lastRestorationEventAt'],
@@ -158,6 +165,9 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
         snapshot['pendingNativeSosCreateCount'] as int? ?? 0,
     pendingNativeSosCancelCount:
         snapshot['pendingNativeSosCancelCount'] as int? ?? 0,
+    pendingNativeSosCancelCreatedAt: readProtectionPlatformDateTime(
+      snapshot['pendingNativeSosCancelCreatedAt'],
+    ),
     lastRestorationEvent: snapshot['lastRestorationEvent'] as String?,
     lastRestorationEventAt: readProtectionPlatformDateTime(
       snapshot['lastRestorationEventAt'],
@@ -367,6 +377,19 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.bluetoothTurnedOn;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
+    // Native SOS hand-off (pending create / TAG cancel stored natively).
+    // Without these the iOS events fell to `woke`: a background TAG SOS
+    // reached the outbox only on a later app resume or MQTT reconnect (F7),
+    // and a native TAG cancel never reached the backend (F8). iOS native
+    // emits only Queued today; Succeeded/Failed are mapped for parity with
+    // Android (a future iOS Failed for a transient error would mark the
+    // activation failed: emit it only for a definitive failure).
+    case 'nativeBackendSyncQueued':
+      return ProtectionPlatformEventType.nativeBackendSyncQueued;
+    case 'nativeBackendSyncSucceeded':
+      return ProtectionPlatformEventType.nativeBackendSyncSucceeded;
+    case 'nativeBackendSyncFailed':
+      return ProtectionPlatformEventType.nativeBackendSyncFailed;
     case 'woke':
     default:
       return ProtectionPlatformEventType.woke;
@@ -507,6 +530,58 @@ DateTime? readProtectionPlatformDateTime(Object? value) {
   }
   if (value is String && value.trim().isNotEmpty) {
     return DateTime.tryParse(value)?.toUtc();
+  }
+  return null;
+}
+
+/// Pending native SOS create, same map on Android and iOS.
+ProtectionPendingNativeSosCreate? mapProtectionPendingNativeSosCreate(
+  Map<String, dynamic> value,
+) {
+  final signature = (value['signature'] as String?)?.trim();
+  final incidentId = (value['incidentId'] as String?)?.trim();
+  final cycleKey = (value['cycleKey'] as String?)?.trim();
+  final correlationId = (value['correlationId'] as String?)?.trim();
+  if (signature == null ||
+      signature.isEmpty ||
+      incidentId == null ||
+      incidentId.isEmpty ||
+      cycleKey == null ||
+      cycleKey.isEmpty ||
+      correlationId == null ||
+      correlationId.isEmpty) {
+    return null;
+  }
+  return ProtectionPendingNativeSosCreate(
+    signature: signature,
+    incidentId: incidentId,
+    cycleKey: cycleKey,
+    correlationId: correlationId,
+    source: (value['source'] as String?)?.trim().isNotEmpty == true
+        ? (value['source'] as String).trim()
+        : 'native_protection_sos',
+    triggerSource:
+        (value['triggerSource'] as String?)?.trim().isNotEmpty == true
+        ? (value['triggerSource'] as String).trim()
+        : 'native_protection_sos',
+    deviceId: (value['deviceId'] as String?)?.trim(),
+    hardwareId: (value['hardwareId'] as String?)?.trim(),
+    nodeId: (value['nodeId'] as num?)?.toInt(),
+    createdAt:
+        _readPendingNativeMs(value['createdAt']) ?? DateTime.now().toUtc(),
+    updatedAt: _readPendingNativeMs(value['updatedAt']),
+    lastAttemptAt: _readPendingNativeMs(value['lastAttemptAt']),
+    lastPublishedAt: _readPendingNativeMs(value['lastPublishedAt']),
+    retryCount: (value['retryCount'] as num?)?.toInt() ?? 0,
+    state: (value['state'] as String?)?.trim().isNotEmpty == true
+        ? (value['state'] as String).trim()
+        : 'pending_mqtt',
+  );
+}
+
+DateTime? _readPendingNativeMs(Object? value) {
+  if (value is num && value > 0) {
+    return DateTime.fromMillisecondsSinceEpoch(value.toInt(), isUtc: true);
   }
   return null;
 }
