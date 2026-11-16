@@ -14,9 +14,18 @@
 # host is generated with `flutter create`, depends on this package by path, and
 # runs `:eixam_connect_flutter:testDebugUnitTest --rerun-tasks`. Gradle
 # discovers every test class itself (no hand list). This script then fails
-# loudly unless the run produced tests (> 0), no failures/errors, and a result
-# XML for every *Test.kt under android/src/test.
+# loudly unless the run produced tests (> 0), no failures/errors, no skipped
+# (@Ignore'd / assumption-failed) tests, and a result XML for every *Test.kt
+# under android/src/test.
 # iOS: see tool/test_ios_native.sh.
+# (macOS `sh` is bash in POSIX mode: re-executed too.)
+case "${BASH_VERSION:-}:${SHELLOPTS:-}" in
+  :* | *posix*)
+    if [ -n "${EIXAM_NATIVE_TEST_REEXEC:-}" ] || ! command -v bash >/dev/null 2>&1; then
+      echo "ERROR: $0 needs bash (not POSIX mode)" >&2; exit 2
+    fi
+    EIXAM_NATIVE_TEST_REEXEC=1 exec env -u POSIXLY_CORRECT bash "$0" "$@" ;;
+esac
 set -euo pipefail
 
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
@@ -65,17 +74,22 @@ grep -E '^e: |FAILED|BUILD (SUCCESSFUL|FAILED)' "$OUT/gradle.log" | head -20 || 
 python3 - "$RESULTS" "$PKG/android/src/test" "$rc" <<'EOF'
 import glob, os, re, sys
 results, test_root, rc = sys.argv[1], sys.argv[2], int(sys.argv[3])
-total = failures = errors = 0
+total = failures = errors = skipped = 0
 reported = set()
 for path in glob.glob(os.path.join(results, "TEST-*.xml")):
     xml = open(path).read()
-    m = re.search(r'<testsuite name="([^"]+)" tests="(\d+)" skipped="\d+" failures="(\d+)" errors="(\d+)"', xml)
+    m = re.search(r'<testsuite name="([^"]+)" tests="(\d+)" skipped="(\d+)" failures="(\d+)" errors="(\d+)"', xml)
     if not m:
+        print("UNPARSED result file %s" % os.path.basename(path))
+        failures += 1
         continue
     reported.add(m.group(1))
-    total += int(m.group(2)); failures += int(m.group(3)); errors += int(m.group(4))
+    total += int(m.group(2)); skipped += int(m.group(3))
+    failures += int(m.group(4)); errors += int(m.group(5))
     for name, message in re.findall(r'<testcase name="([^"]+)"[^>]*>\s*<failure message="([^"]{0,300})', xml):
         print("FAIL %s :: %s" % (name, message))
+    for name in re.findall(r'<testcase name="([^"]+)"[^>]*>\s*<skipped', xml):
+        print("SKIPPED %s :: %s" % (m.group(1), name))
 expected = set()
 for dirpath, _, files in os.walk(test_root):
     for f in files:
@@ -84,11 +98,12 @@ for dirpath, _, files in os.walk(test_root):
             pkg = re.search(r"^package\s+([\w.]+)", src, re.M)
             expected.add((pkg.group(1) + "." if pkg else "") + f[:-3])
 missing = sorted(expected - reported)
-print("tests=%d failures=%d errors=%d classes=%d/%d" % (total, failures, errors, len(expected & reported), len(expected)))
+print("tests=%d failures=%d errors=%d skipped=%d classes=%d/%d" % (total, failures, errors, skipped, len(expected & reported), len(expected)))
 problems = []
 if rc != 0: problems.append("gradle exit %d" % rc)
 if total == 0: problems.append("no tests ran")
 if failures or errors: problems.append("%d failures, %d errors" % (failures, errors))
+if skipped: problems.append("%d skipped (@Ignore'd or assumption failed): a skipped test proves nothing" % skipped)
 if missing: problems.append("no result for: " + ", ".join(missing))
 if problems:
     print("Android native: FAIL (" + "; ".join(problems) + ")")

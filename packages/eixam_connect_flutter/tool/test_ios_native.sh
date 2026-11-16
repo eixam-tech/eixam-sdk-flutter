@@ -4,8 +4,9 @@
 # Usage:   packages/eixam_connect_flutter/tool/test_ios_native.sh
 # Env:     EIXAM_NATIVE_TEST_OUT   output dir (default: a new temp dir; never
 #                                  inside the repository)
-#          FLUTTER_ROOT            Flutter SDK (default: from `flutter` on PATH),
-#                                  for the Flutter.framework typecheck
+#          FLUTTER_ROOT            Flutter SDK (default: from `flutter` on PATH,
+#                                  symlinks resolved), for the Flutter.framework
+#                                  typecheck; not found = FAIL, never a skip
 #          EIXAM_SKIP_IOS_TYPECHECK=1  skip the typecheck (reported, not silent)
 #
 # What it does:
@@ -20,6 +21,18 @@
 #   4. Typechecks the excluded files (all Classes, FirmwareDfuBridge stubbed)
 #      against the iOS simulator SDK and Flutter.framework.
 # Android: see tool/test_android_native.sh.
+#
+# Bash only (arrays, [[ ]], process substitution). Run under another shell
+# (`zsh script`, `sh script`) it re-executes itself with bash; POSIX syntax
+# until then.
+# (macOS `sh` is bash in POSIX mode: re-executed too.)
+case "${BASH_VERSION:-}:${SHELLOPTS:-}" in
+  :* | *posix*)
+    if [ -n "${EIXAM_NATIVE_TEST_REEXEC:-}" ] || ! command -v bash >/dev/null 2>&1; then
+      echo "ERROR: $0 needs bash (not POSIX mode)" >&2; exit 2
+    fi
+    EIXAM_NATIVE_TEST_REEXEC=1 exec env -u POSIXLY_CORRECT bash "$0" "$@" ;;
+esac
 set -euo pipefail
 
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
@@ -83,12 +96,12 @@ for t in "${tests[@]}"; do
 done
 
 echo "iOS native tests: ${#classes[@]} classes x ${#tests[@]} test executables; ${#excluded_paths[@]} excluded; out=$OUT"
-status=0
+overall_rc=0
 for t in "${tests[@]}"; do
   name="$(basename "$t" .swift)"
   if ! swiftc -parse-as-library -o "$OUT/$name" "${classes[@]}" "$t" > "$OUT/$name.build.log" 2>&1; then
     echo "BUILD_FAILED $name"; grep 'error:' "$OUT/$name.build.log" | head -20
-    status=1; continue
+    overall_rc=1; continue
   fi
   set +e
   (cd "$IOS" && "$OUT/$name") > "$OUT/$name.log" 2>&1
@@ -96,7 +109,7 @@ for t in "${tests[@]}"; do
   set -e
   if [[ $rc -ne 0 ]] || grep -qE 'FAIL' "$OUT/$name.log"; then
     echo "FAILED $name (exit=$rc)"; grep -E 'FAIL' "$OUT/$name.log" | head -40
-    status=1
+    overall_rc=1
   else
     echo "OK $name: $(tail -1 "$OUT/$name.log")"
   fi
@@ -105,10 +118,26 @@ done
 if [[ "${EIXAM_SKIP_IOS_TYPECHECK:-}" == "1" ]]; then
   echo "TYPECHECK SKIPPED (EIXAM_SKIP_IOS_TYPECHECK=1): excluded files not checked"
 else
+  # `flutter` on PATH is often a symlink (Homebrew, ~/bin): follow it to the
+  # real SDK; FLUTTER_ROOT wins when set.
+  resolve_link() {
+    local path="$1" target
+    while [[ -L "$path" ]]; do
+      target="$(readlink "$path")"
+      case "$target" in
+        /*) path="$target" ;;
+        *) path="$(dirname "$path")/$target" ;;
+      esac
+    done
+    echo "$path"
+  }
   root="${FLUTTER_ROOT:-}"
-  if [[ -z "$root" ]] && command -v flutter >/dev/null; then
-    root="$(cd "$(dirname "$(command -v flutter)")/.." && pwd)"
+  if [[ -z "$root" ]]; then
+    flutter_bin="$(command -v flutter || true)"
+    [[ -n "$flutter_bin" ]] || fail "flutter not on PATH and FLUTTER_ROOT unset: cannot typecheck (EIXAM_SKIP_IOS_TYPECHECK=1 to skip explicitly)"
+    root="$(cd "$(dirname "$(resolve_link "$flutter_bin")")/.." && pwd)"
   fi
+  [[ -x "$root/bin/flutter" ]] || fail "not a Flutter SDK: $root (set FLUTTER_ROOT)"
   framework="$root/bin/cache/artifacts/engine/ios/Flutter.xcframework/ios-arm64_x86_64-simulator"
   [[ -d "$framework" ]] || fail "Flutter.framework not found ($framework); set FLUTTER_ROOT, run 'flutter precache --ios', or EIXAM_SKIP_IOS_TYPECHECK=1"
   cat > "$OUT/FirmwareDfuBridgeStub.swift" <<'EOF'
@@ -125,9 +154,9 @@ EOF
     echo "OK typecheck: ${#typecheck[@]} Classes files against iOS simulator SDK + Flutter.framework"
   else
     echo "TYPECHECK_FAILED"; grep 'error:' "$OUT/typecheck.log" | head -20
-    status=1
+    overall_rc=1
   fi
 fi
 
-[[ $status -eq 0 ]] && echo "iOS native: PASS" || echo "iOS native: FAIL (logs in $OUT)"
-exit $status
+[[ $overall_rc -eq 0 ]] && echo "iOS native: PASS" || echo "iOS native: FAIL (logs in $OUT)"
+exit $overall_rc
