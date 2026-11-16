@@ -132,18 +132,83 @@ internal object ProtectionSosStaleGuard {
     const val recentFrameMs = 90_000L
     private const val decideToleranceMs = 100L
 
+    /** F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s minus the decision window). */
+    const val observedHandedOverMs = 18_000L
+
     /**
      * Only a handed-over SOS (like iOS): the native cycle reached createPending
-     * and the SDK claimed its create. Never a running countdown.
+     * and the SDK claimed its create, or (F17c) Dart forwarded frames of an
+     * SOS that ran past its countdown ([observed]: native never saw the cycle
+     * because Dart owned the link). Never a running countdown, never an
+     * unclaimed native create.
      */
     fun shouldArm(
         terminal: ProtectionSosStaleTerminal?,
         lifecycleState: ProtectionSosLifecycleState,
         hasUnclaimedNativeCreate: Boolean,
+        observed: ProtectionSosObservedCycle? = null,
+        now: Long = 0L,
     ): Boolean =
         terminal != null &&
-            lifecycleState == ProtectionSosLifecycleState.createPending &&
-            !hasUnclaimedNativeCreate
+            !hasUnclaimedNativeCreate &&
+            (lifecycleState == ProtectionSosLifecycleState.createPending ||
+                observedHandedOver(observed, now))
+
+    /** F17c: Dart forwarded frames of this SOS for longer than its countdown, recently. */
+    fun observedHandedOver(observed: ProtectionSosObservedCycle?, now: Long): Boolean =
+        observed != null &&
+            now - observed.firstSeenAt >= observedHandedOverMs &&
+            now - observed.lastSeenAt in 0..capMs
+
+    /** F17c: an admitted Dart-forwarded push of the TAG's SOS; a long silence starts a new episode. */
+    fun onObservedFrame(
+        previous: ProtectionSosObservedCycle?,
+        nodeId: Int?,
+        now: Long,
+    ): ProtectionSosObservedCycle {
+        val sameTag = previous?.nodeId == null || nodeId == null ||
+            normalize(previous.nodeId) == normalize(nodeId)
+        if (previous == null || !sameTag || now - previous.lastSeenAt !in 0..gapMs) {
+            return ProtectionSosObservedCycle(nodeId = nodeId, firstSeenAt = now, lastSeenAt = now)
+        }
+        return previous.copy(nodeId = previous.nodeId ?: nodeId, lastSeenAt = now)
+    }
+
+    /**
+     * F17c: one own-TAG frame Dart received through its own BLE link. Native
+     * is the only classifier: same guard, same copy collapse (which also merges
+     * the same push arriving through both paths), same burst rule. A close
+     * frame from any path ends the guard.
+     */
+    fun onForwardedFrame(
+        state: ProtectionSosStaleGuardState?,
+        observed: ProtectionSosObservedCycle?,
+        frame: ProtectionSosForwardedFrame,
+        now: Long,
+    ): ProtectionSosForwardedDecision {
+        if (frame.close) {
+            return ProtectionSosForwardedDecision(
+                outcome = ProtectionSosStaleOutcome(
+                    ProtectionSosStaleAction.disarmed,
+                    null,
+                    reason = "tag_close",
+                ),
+                observed = null,
+                verdict = ProtectionOwnTagSosVerdict.proceed,
+            )
+        }
+        val outcome = onFrame(state, frame.nodeId, now)
+        val verdict = ProtectionOwnTagSosVerdict.of(outcome)
+        return ProtectionSosForwardedDecision(
+            outcome = outcome,
+            observed = if (verdict == ProtectionOwnTagSosVerdict.suppress) {
+                observed
+            } else {
+                onObservedFrame(observed, frame.nodeId, now)
+            },
+            verdict = verdict,
+        )
+    }
 
     fun arm(
         terminal: ProtectionSosStaleTerminal,
@@ -275,4 +340,82 @@ internal object ProtectionSosStaleGuard {
         )
 
     private fun normalize(nodeId: Int): Long = nodeId.toLong() and 0xFFFF_FFFFL
+}
+
+/** F17c: what native saw of an SOS through Dart's forwarded frames (persisted). */
+internal data class ProtectionSosObservedCycle(
+    val nodeId: Int?,
+    val firstSeenAt: Long,
+    val lastSeenAt: Long,
+)
+
+/** F17c: Dart's answer for one forwarded own-TAG frame. */
+internal enum class ProtectionOwnTagSosVerdict {
+    /** Not guarded (or the guard ended): Dart handles the frame exactly as before. */
+    proceed,
+
+    /** A countdown burst under the guard: a genuine new SOS; Dart handles the frame. */
+    newSos,
+
+    /** A copy, a frame still being classified, or the closed SOS: Dart drops it. */
+    suppress,
+    ;
+
+    companion object {
+        fun of(outcome: ProtectionSosStaleOutcome): ProtectionOwnTagSosVerdict =
+            when (outcome.action) {
+                ProtectionSosStaleAction.notArmed,
+                ProtectionSosStaleAction.ignored,
+                ProtectionSosStaleAction.disarmed,
+                -> proceed
+
+                ProtectionSosStaleAction.newSos -> newSos
+                else -> suppress
+            }
+    }
+}
+
+internal data class ProtectionSosForwardedDecision(
+    val outcome: ProtectionSosStaleOutcome,
+    val observed: ProtectionSosObservedCycle?,
+    val verdict: ProtectionOwnTagSosVerdict,
+)
+
+/** F17c: the raw frame Dart forwarded, parsed like the native frame path. */
+internal data class ProtectionSosForwardedFrame(
+    val close: Boolean,
+    val nodeId: Int?,
+) {
+    companion object {
+        /** null: not an SOS frame (Dart handles it as before). */
+        fun parse(raw: List<Int>): ProtectionSosForwardedFrame? {
+            if (raw.any { it !in 0..0xFF }) return null
+            val payload = ProtectionBleSosIdentityClassifier.boundSosBody(raw) ?: raw
+            return when (payload.size) {
+                4, 6 -> {
+                    val opcode = payload[0]
+                    val subcode = payload[1]
+                    val close = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
+                        ((opcode == 0xE2 || opcode == 0xE3) && subcode in 0x01..0x03)
+                    if (!close) {
+                        null
+                    } else {
+                        ProtectionSosForwardedFrame(close = true, nodeId = readU32(payload, 2))
+                    }
+                }
+
+                5, 10 -> ProtectionSosForwardedFrame(close = false, nodeId = null)
+                7, 12 -> ProtectionSosForwardedFrame(close = false, nodeId = readU32(payload, 0))
+                else -> null
+            }
+        }
+
+        private fun readU32(payload: List<Int>, offset: Int): Int? {
+            if (payload.size < offset + 4) return null
+            return payload[offset] or
+                (payload[offset + 1] shl 8) or
+                (payload[offset + 2] shl 16) or
+                (payload[offset + 3] shl 24)
+        }
+    }
 }

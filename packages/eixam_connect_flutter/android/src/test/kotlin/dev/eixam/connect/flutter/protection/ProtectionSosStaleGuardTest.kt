@@ -321,4 +321,210 @@ class ProtectionSosStaleGuardTest {
         val restored = ProtectionSosStaleGuardState.fromPersisted(armed.toPersisted())
         assertEquals(armed, restored)
     }
+
+    /**
+     * F17c: the scenario fixture shared with the iOS store and the Dart contract
+     * test. Frames of both paths (native GATT, Dart-forwarded) go through the
+     * same classifier; the SDK terminal arms whenever the SOS was seen on any path.
+     */
+    @Test
+    fun `shared stale guard scenarios replay identically`() {
+        val fixture = listOf(
+            "../test/fixtures/stale_sos_guard_scenarios.txt",
+            "test/fixtures/stale_sos_guard_scenarios.txt",
+            "packages/eixam_connect_flutter/test/fixtures/stale_sos_guard_scenarios.txt",
+        ).map { java.io.File(it) }.firstOrNull { it.exists() }
+        assertNotNull("shared fixture not found from ${java.io.File(".").absolutePath}", fixture)
+        var state: ProtectionSosStaleGuardState? = null
+        var observed: ProtectionSosObservedCycle? = null
+        var lifecycle = ProtectionSosLifecycleState.idle
+        var name = ""
+        var steps = 0
+        var dartFrames = 0
+        val base = 5_000_000L
+        for (raw in fixture!!.readLines()) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            if (line.startsWith("scenario ")) {
+                name = line.removePrefix("scenario ")
+                state = null
+                observed = null
+                lifecycle = ProtectionSosLifecycleState.idle
+                continue
+            }
+            val (eventPart, expectPart) = line.split(" => ")
+            val event = eventPart.split(" ")
+            val expect = expectPart.split(" ")
+            val t = base + event[0].toLong()
+            val args = event.drop(2).mapNotNull { token ->
+                token.split("=", limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] }
+            }.toMap()
+            val want = expect.drop(1).mapNotNull { token ->
+                token.split("=", limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] }
+            }.toMap()
+            val node = args["node"]?.toInt() ?: 7
+            val label = "$name @${event[0]} ${event[1]}"
+            var outcome: ProtectionSosStaleOutcome? = null
+            when (event[1]) {
+                "seen" -> when (args["source"]) {
+                    "native" -> lifecycle = ProtectionSosLifecycleState.createPending
+                    "dart" -> {
+                        val age = args["age"]!!.toLong()
+                        val sos = ProtectionSosForwardedFrame(close = false, nodeId = node)
+                        observed = guard.onForwardedFrame(null, observed, sos, t - age).observed
+                        observed = guard.onForwardedFrame(null, observed, sos, t - 1).observed
+                    }
+                    else -> Unit
+                }
+                "terminal" -> {
+                    val terminal = ProtectionSosStaleTerminal.fromWire(args["kind"])!!
+                    if (guard.shouldArm(terminal, lifecycle, false, observed, t)) {
+                        state = guard.arm(terminal, node, t, connected = args["connected"] == "true")
+                        observed = null
+                    }
+                    lifecycle = ProtectionSosLifecycleState.idle
+                }
+                "frame" -> if (args["source"] == "dart") {
+                    val decision = guard.onForwardedFrame(
+                        state,
+                        observed,
+                        ProtectionSosForwardedFrame(close = false, nodeId = node),
+                        t,
+                    )
+                    outcome = decision.outcome
+                    observed = decision.observed
+                    state = outcome.state
+                    val wantVerdict = when (expect[0]) {
+                        "pass" -> ProtectionOwnTagSosVerdict.proceed
+                        "newSos" -> ProtectionOwnTagSosVerdict.newSos
+                        else -> ProtectionOwnTagSosVerdict.suppress
+                    }
+                    assertEquals("$label: dart verdict", wantVerdict, decision.verdict)
+                    dartFrames++
+                } else {
+                    outcome = guard.onFrame(state, node, t)
+                    state = outcome.state
+                }
+                "decide" -> {
+                    outcome = state?.let { guard.onDecide(it, t) }
+                        ?: ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, null)
+                    state = outcome.state
+                }
+                "close" -> if (args["source"] == "dart") {
+                    val decision = guard.onForwardedFrame(
+                        state,
+                        observed,
+                        ProtectionSosForwardedFrame(close = true, nodeId = node),
+                        t,
+                    )
+                    assertEquals("$label: dart verdict", ProtectionOwnTagSosVerdict.proceed, decision.verdict)
+                    state = decision.outcome.state
+                    observed = decision.observed
+                } else {
+                    state = guard.onTagClose(state)
+                    observed = null
+                }
+                "link_drop" -> state = state?.let { guard.onLinkDropped(it) }
+                "link_up" -> state = state?.let { guard.onReconnected(it, t) }
+                "session" -> {
+                    state = guard.onSessionChanged(state)
+                    observed = null
+                }
+                "sdk_open" -> state = null
+                else -> throw AssertionError("$name: unknown event ${event[1]}")
+            }
+            steps++
+            if (expect[0] != "-") {
+                val got = when (outcome?.action) {
+                    ProtectionSosStaleAction.notArmed,
+                    ProtectionSosStaleAction.ignored,
+                    ProtectionSosStaleAction.disarmed,
+                    -> "pass"
+                    else -> outcome?.action?.name ?: "-"
+                }
+                assertEquals("$label: action", expect[0], got)
+            }
+            val stop = if (outcome?.sendStop == true) state?.terminal?.wire ?: "?" else "none"
+            assertEquals("$label: stop", want["stop"] ?: "none", stop)
+            assertEquals("$label: notice", want["notice"] == "true", outcome?.showNotice == true)
+            want["armed"]?.let { assertEquals("$label: armed", it == "true", state != null) }
+        }
+        assertTrue("fixture replayed ($steps steps)", steps > 100)
+        assertTrue("dart frames replayed ($dartFrames)", dartFrames > 20)
+    }
+
+    @Test
+    fun `forwarded frames are parsed like the native frame path`() {
+        val active = listOf(0x34, 0x12, 0x00, 0x00, 0x48, 0xCD, 0x1B, 0x34, 0x44, 0x28, 0x00, 0xC0)
+        assertEquals(
+            ProtectionSosForwardedFrame(close = false, nodeId = 0x1234),
+            ProtectionSosForwardedFrame.parse(active),
+        )
+        assertEquals(
+            ProtectionSosForwardedFrame(close = true, nodeId = 0x1234),
+            ProtectionSosForwardedFrame.parse(listOf(0xE1, 0x02, 0x34, 0x12, 0x00, 0x00)),
+        )
+        assertEquals(
+            ProtectionSosForwardedFrame(close = true, nodeId = 0x1234),
+            ProtectionSosForwardedFrame.parse(listOf(0xE3, 0x01, 0x34, 0x12, 0x00, 0x00)),
+        )
+        assertNull(ProtectionSosForwardedFrame.parse(listOf(0xE1, 0x09, 0x34, 0x12, 0x00, 0x00)))
+        assertNull(ProtectionSosForwardedFrame.parse(listOf(0x01, 0x02, 0x03)))
+    }
+
+    /** F17c C1: no guard means every Dart frame proceeds at once (never waits for a decision). */
+    @Test
+    fun `without a guard every forwarded frame proceeds immediately`() {
+        var observed: ProtectionSosObservedCycle? = null
+        for (i in 0 until 4) {
+            val decision = guard.onForwardedFrame(
+                null,
+                observed,
+                ProtectionSosForwardedFrame(close = false, nodeId = node),
+                t0 + i * 500L,
+            )
+            assertEquals(ProtectionOwnTagSosVerdict.proceed, decision.verdict)
+            assertNull(decision.outcome.decideAt)
+            observed = decision.observed
+        }
+        assertEquals(t0, observed!!.firstSeenAt)
+    }
+
+    /** F17c (Android foreground, 2026-11-16): `NATIVE_SOS_STALE_GUARD_NOT_ARMED lifecycle=idle`. */
+    @Test
+    fun `an sos seen only through dart arms the guard on the sdk terminal`() {
+        var observed: ProtectionSosObservedCycle? = null
+        val sos = ProtectionSosForwardedFrame(close = false, nodeId = node)
+        observed = guard.onForwardedFrame(null, observed, sos, t0).observed
+        observed = guard.onForwardedFrame(null, observed, sos, t0 + 20_000L).observed
+        assertTrue(
+            guard.shouldArm(
+                ProtectionSosStaleTerminal.cancel,
+                ProtectionSosLifecycleState.idle,
+                hasUnclaimedNativeCreate = false,
+                observed = observed,
+                now = t0 + 30_000L,
+            ),
+        )
+        assertFalse(
+            "an unclaimed native create is never guarded",
+            guard.shouldArm(
+                ProtectionSosStaleTerminal.cancel,
+                ProtectionSosLifecycleState.idle,
+                hasUnclaimedNativeCreate = true,
+                observed = observed,
+                now = t0 + 30_000L,
+            ),
+        )
+        assertFalse(
+            "a cycle last seen beyond the cap is not this SOS",
+            guard.shouldArm(
+                ProtectionSosStaleTerminal.cancel,
+                ProtectionSosLifecycleState.idle,
+                hasUnclaimedNativeCreate = false,
+                observed = observed,
+                now = t0 + 20_000L + ProtectionSosStaleGuard.capMs + 1,
+            ),
+        )
+    }
 }

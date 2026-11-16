@@ -58,6 +58,12 @@ struct IosNativeSosDeliveryStoreTests {
     otherTagNeverEndsTheGuard()
     unreportedDropRestartsTheGapClockAtReconnect()
     sessionChangeEndsTheGuard()
+    forwardedFramesWithoutAGuardProceedAtOnce()
+    sosSeenOnlyThroughDartArmsTheGuard()
+    burstThroughDartNeverOpensTheNativeCycle()
+    newSdkSosDropsAPendingDecision()
+    sessionChangeForgetsTheDartCycle()
+    sharedStaleGuardScenarios()
     if failures > 0 {
       print("FAILED: \(failures)")
       exit(1)
@@ -650,5 +656,203 @@ struct IosNativeSosDeliveryStoreTests {
     _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
     store.disarmStaleGuard()
     check(store.staleGuardKind == nil, "no guard crosses accounts")
+  }
+
+  // MARK: - F17c: native is the single classifier for every own-TAG frame
+
+  /// C1: no guard means every Dart frame proceeds at once, Protection armed
+  /// or not; nothing waits for a decision window.
+  static func forwardedFramesWithoutAGuardProceedAtOnce() {
+    let (store, _) = makeStore()
+    for _ in 0..<4 {
+      let result = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+      check(result.verdict == "proceed", "unguarded frame proceeds")
+      check(result.transition.evaluateStaleAt == nil, "no decision timer")
+      clock += 500
+    }
+    check(store.cycleState == .idle, "Dart frames never open the native cycle")
+    check(store.pendingCreateCount == 0, "no native create from Dart frames")
+  }
+
+  /// Android foreground (2026-11-16): Dart owned the link, native never saw
+  /// the cycle, and the SDK cancel logged `NATIVE_SOS_STALE_GUARD_NOT_ARMED
+  /// lifecycle=idle`. The forwarded frames are the cycle native saw.
+  static func sosSeenOnlyThroughDartArmsTheGuard() {
+    let (store, _) = makeStore()
+    _ = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    clock += 25_000
+    _ = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    clock += 5_000
+    store.noteLinkDropped()
+    check(store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "terminal of a Dart-seen SOS")
+    check(store.staleGuardKind == .cancel, "guard armed from the Dart-seen cycle")
+    clock += 200_000
+    store.noteLinkUp()
+    clock += 30_000
+    let first = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    check(first.verdict == "suppress", "stale frame through Dart is held")
+    clock += 2_000
+    let decided = store.evaluateStaleCandidate()
+    check(decided.stopTag == .cancel, "stop required with the cancel command")
+
+    let (fresh, _) = makeStore()
+    _ = fresh.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    clock += 5_000
+    check(!fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "a countdown cancel arms nothing")
+    check(fresh.staleGuardKind == nil, "no guard for a countdown")
+  }
+
+  static func burstThroughDartNeverOpensTheNativeCycle() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:90")
+    store.noteLinkDropped()
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 120_000
+    check(store.observeForwardedSosFrame(kind: .active, nodeId: 7).verdict == "suppress", "push 1 held")
+    clock += 500
+    check(store.observeForwardedSosFrame(kind: .active, nodeId: 7).verdict == "suppress", "push 2 held")
+    clock += 500
+    let third = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    check(third.verdict == "newSos", "push 3: a genuine new SOS")
+    check(third.transition.stopTag == nil, "never stopped")
+    check(store.staleGuardKind == nil, "guard ended")
+    check(store.cycleState == .idle, "Dart runs this SOS: the native cycle stays idle")
+  }
+
+  /// M3: a pending decision never writes a stop once a new SOS is open.
+  static func newSdkSosDropsAPendingDecision() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:91")
+    _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
+    clock += 10_000
+    _ = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    clock += 500
+    store.disarmForNewSdkSos()
+    clock += 1_500
+    check(store.evaluateStaleCandidate().stopTag == nil, "no stop after a new SOS opened")
+  }
+
+  static func sessionChangeForgetsTheDartCycle() {
+    let (store, _) = makeStore()
+    _ = store.observeForwardedSosFrame(kind: .active, nodeId: 7)
+    clock += 30_000
+    store.disarmStaleGuardForSessionChange()
+    check(!store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "previous account's cycle arms nothing")
+  }
+
+  /// The scenario fixture shared with the Android guard and the Dart contract test.
+  static func sharedStaleGuardScenarios() {
+    let candidates = ["../test/fixtures/stale_sos_guard_scenarios.txt",
+                      "test/fixtures/stale_sos_guard_scenarios.txt",
+                      "packages/eixam_connect_flutter/test/fixtures/stale_sos_guard_scenarios.txt"]
+    guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }),
+          let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+      check(false, "shared fixture not found (run from packages/eixam_connect_flutter/ios)")
+      return
+    }
+    var store: IosNativeSosDeliveryStore?
+    var name = ""
+    var base = 0
+    var steps = 0
+    var dartFrames = 0
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = raw.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty || line.hasPrefix("#") { continue }
+      if line.hasPrefix("scenario ") {
+        name = String(line.dropFirst("scenario ".count))
+        store = makeStore().0
+        clock += 10_000_000
+        base = clock
+        continue
+      }
+      guard let store else { continue }
+      let parts = line.components(separatedBy: " => ")
+      let event = parts[0].split(separator: " ").map(String.init)
+      let expect = parts[1].split(separator: " ").map(String.init)
+      let t = Int(event[0])!
+      var args: [String: String] = [:]
+      for token in event.dropFirst(2) {
+        let kv = token.split(separator: "=", maxSplits: 1).map(String.init)
+        if kv.count == 2 { args[kv[0]] = kv[1] }
+      }
+      var want: [String: String] = [:]
+      for token in expect.dropFirst() {
+        let kv = token.split(separator: "=", maxSplits: 1).map(String.init)
+        if kv.count == 2 { want[kv[0]] = kv[1] }
+      }
+      let node = Int(args["node"] ?? "7") ?? 7
+      let label = "\(name) @\(t) \(event[1])"
+      var transition = IosNativeSosTransition()
+      var action = "-"
+      switch event[1] {
+      case "seen":
+        let age = Int(args["age"] ?? "0") ?? 0
+        switch args["source"] {
+        case "native":
+          clock = base + t - age
+          deliver(store, key: "sos:\(node):1")
+        case "dart":
+          clock = base + t - age
+          _ = store.observeForwardedSosFrame(kind: .active, nodeId: node)
+          clock = base + t - 1
+          _ = store.observeForwardedSosFrame(kind: .active, nodeId: node)
+        default:
+          break
+        }
+      case "terminal":
+        clock = base + t
+        if args["connected"] == "false" { store.noteLinkDropped() } else { store.noteLinkUp() }
+        _ = store.closeDeliveredCycle(
+          nodeId: node, terminal: IosSosTerminalKind(rawValue: args["kind"] ?? "cancel"))
+      case "frame":
+        clock = base + t
+        if args["source"] == "dart" {
+          let result = store.observeForwardedSosFrame(kind: .active, nodeId: node)
+          transition = result.transition
+          let wantVerdict = expect[0] == "pass" ? "proceed" : expect[0] == "newSos" ? "newSos" : "suppress"
+          check(result.verdict == wantVerdict, "\(label): verdict \(result.verdict) != \(wantVerdict)")
+          dartFrames += 1
+        } else {
+          transition = store.observe(kind: .active, nodeId: node, cycleKey: "sos:\(node):9", deviceId: nil)
+        }
+        action = store.lastStaleAction
+      case "decide":
+        clock = base + t
+        transition = store.evaluateStaleCandidate()
+        action = store.lastStaleAction
+      case "close":
+        clock = base + t
+        if args["source"] == "dart" {
+          check(store.observeForwardedSosFrame(kind: .cancelled, nodeId: node).verdict == "proceed",
+                "\(label): close proceeds")
+        } else {
+          _ = store.observe(kind: .cancelled, nodeId: node, cycleKey: "sos:\(node)", deviceId: nil)
+        }
+      case "link_drop":
+        store.noteLinkDropped()
+      case "link_up":
+        clock = base + t
+        store.noteLinkUp()
+      case "session":
+        store.disarmStaleGuardForSessionChange()
+      case "sdk_open":
+        store.disarmForNewSdkSos()
+      default:
+        check(false, "\(name): unknown event \(event[1])")
+      }
+      steps += 1
+      if expect[0] != "-" {
+        let got = ["notArmed", "ignored", "disarmed"].contains(action) ? "pass" : action
+        check(got == expect[0], "\(label): action \(got) != \(expect[0])")
+      }
+      let stop = transition.stopTag?.rawValue ?? "none"
+      check(stop == (want["stop"] ?? "none"), "\(label): stop \(stop) != \(want["stop"] ?? "none")")
+      check(transition.staleStopNotice == (want["notice"] == "true"), "\(label): notice")
+      if let armed = want["armed"] {
+        check((store.staleGuardKind != nil) == (armed == "true"), "\(label): armed != \(armed)")
+      }
+    }
+    check(steps > 100, "fixture replayed (\(steps) steps)")
+    check(dartFrames > 20, "dart frames replayed (\(dartFrames))")
   }
 }

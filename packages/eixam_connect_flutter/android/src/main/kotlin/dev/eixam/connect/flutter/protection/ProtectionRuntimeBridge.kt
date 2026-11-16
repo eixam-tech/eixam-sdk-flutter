@@ -308,6 +308,25 @@ internal object ProtectionRuntimeBridge {
                     else store.ackPendingExternalRelayCancel(signature),
                 )
             }
+            "observeOwnTagSosFrame" -> {
+                // F17c: Dart forwards every own-TAG SOS frame it receives itself; the
+                // native store is the only classifier and answers with a verdict.
+                val bytes = ((call.arguments as? Map<*, *>)?.get("bytes") as? List<*>)
+                    ?.mapNotNull { (it as? Number)?.toInt() }
+                    .orEmpty()
+                val verdict = ensureRuntimeOwner(context).observeForwardedOwnTagSosFrame(bytes)
+                result.success(mapOf("verdict" to verdict.name))
+            }
+            "disarmSosStaleGuard" -> {
+                val reason = (call.arguments as? Map<*, *>)?.get("reason") as? String ?: "sdk"
+                ensureRuntimeOwner(context).disarmSosStaleGuard(reason)
+                result.success(null)
+            }
+            "noteOwnTagSosLink" -> {
+                val up = (call.arguments as? Map<*, *>)?.get("up") as? Boolean ?: false
+                ensureRuntimeOwner(context).noteForwardedOwnTagLink(up)
+                result.success(null)
+            }
             "closeNativeSosCycle" -> {
                 // F17b: the SDK ended an SOS. The native runtime closes its cycle and
                 // stops the TAG itself when it may still be running that SOS.

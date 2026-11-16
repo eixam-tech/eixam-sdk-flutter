@@ -237,12 +237,16 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       result(acked)
     case "closeNativeSosCycle":
       let arguments = call.arguments as? [String: Any]
-      if arguments?["force"] as? Bool == true, sosDelivery.staleGuardKind != nil {
-        // Session change: an F17b guard never crosses accounts.
-        sosDelivery.disarmStaleGuard()
+      if arguments?["force"] as? Bool == true {
+        // Session change: an F17b guard (and an F17c Dart-seen cycle) never
+        // crosses accounts.
+        let hadGuard = sosDelivery.staleGuardKind != nil
+        sosDelivery.disarmStaleGuardForSessionChange()
         staleDecisionTimer?.invalidate()
         staleDecisionTimer = nil
-        logSosDelivery("NATIVE_SOS_STALE_GUARD_DISARMED reason=session_changed")
+        if hadGuard {
+          logSosDelivery("NATIVE_SOS_STALE_GUARD_DISARMED reason=session_changed")
+        }
       }
       if arguments?["force"] as? Bool == true, sosDelivery.cycleState == .preConfirmSeen {
         // Session change: a running countdown never survives into the next
@@ -267,10 +271,53 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
           // runtime holds the link). Stop it from here.
           logSosDelivery("NATIVE_SOS_STALE_GUARD_ARMED terminal=\(kind.rawValue)")
           if let now = sosDelivery.staleStopToSendNow {
-            sendStaleStop(now, reason: "sdk_close")
+            // Arm time: the SDK's own stop is already on its way through
+            // whichever path owns the link; no Dart fallback here.
+            sendStaleStop(now, reason: "sdk_close", dartFallback: false)
           }
         }
         updateSosBackgroundHold(reason: "sdk_sos_closed")
+      }
+      result(nil)
+    case "observeOwnTagSosFrame":
+      // F17c: Dart forwards every own-TAG SOS frame it received through its
+      // own BLE link (flutter_blue_plus). This store is the only classifier
+      // for every own-TAG frame, whichever path received it.
+      let arguments = call.arguments as? [String: Any]
+      let bytes = (arguments?["bytes"] as? [NSNumber] ?? []).map { UInt8(truncatingIfNeeded: $0.intValue) }
+      let characteristic: IosBleSosCharacteristic =
+        (arguments?["characteristic"] as? String) == "tel" ? .tel : .sos
+      guard let parsed = IosBleSosFrameClassifier.parse(
+        bytes: bytes,
+        characteristic: characteristic,
+        receivedAt: Date().millisecondsSince1970
+      ) else {
+        result(["verdict": "proceed"])
+        return
+      }
+      let decision = sosDelivery.observeForwardedSosFrame(kind: parsed.kind, nodeId: parsed.nodeId)
+      if decision.verdict != "proceed" {
+        logSosDelivery(
+          "NATIVE_SOS_STALE_DART_FRAME verdict=\(decision.verdict) action=\(sosDelivery.lastStaleAction)")
+      }
+      applyStaleGuardTransition(decision.transition)
+      result(["verdict": decision.verdict])
+    case "disarmSosStaleGuard":
+      // F17c (M3): the SDK opened a new SOS; no pending decision may stop it.
+      if sosDelivery.staleGuardKind != nil {
+        let reason = ((call.arguments as? [String: Any])?["reason"] as? String) ?? "sdk"
+        logSosDelivery("NATIVE_SOS_STALE_GUARD_DISARMED reason=\(reason)")
+      }
+      sosDelivery.disarmForNewSdkSos()
+      staleDecisionTimer?.invalidate()
+      staleDecisionTimer = nil
+      result(nil)
+    case "noteOwnTagSosLink":
+      // F17c: Dart's own TAG link changed; the guard's gap clock follows it.
+      if (call.arguments as? [String: Any])?["up"] as? Bool == true {
+        sosDelivery.noteLinkUp()
+      } else {
+        sosDelivery.noteLinkDropped()
       }
       result(nil)
     case "setSosDeliveryPending":
@@ -1495,7 +1542,13 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       }
     }
     if let kind = transition.stopTag {
-      sendStaleStop(kind, reason: "stale_frame")
+      // F17c: the link owner executes. This runtime writes when it holds a
+      // writable TAG link; otherwise Dart writes it (`ownTagSosStopRequired`).
+      if nativeOwnsWritableTagLink {
+        sendStaleStop(kind, reason: "stale_frame", dartFallback: true)
+      } else {
+        requestDartStaleStop(kind, reason: "stale_frame")
+      }
     }
     if transition.staleStopNotice {
       postStaleStopNotification()
@@ -1504,13 +1557,28 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
 
   /// The SDK's own terminal command: cancel `0x04`, resolve `0x07` (SOS ACK),
   /// on the CMD characteristic. Only for an SOS the SDK already closed.
-  private func sendStaleStop(_ kind: IosSosTerminalKind, reason: String) {
+  private func sendStaleStop(_ kind: IosSosTerminalKind, reason: String, dartFallback: Bool) {
     let label = kind == .cancel ? "SOS CANCEL" : "SOS ACK"
     let bytes = kind == .cancel ? [0x04] : [0x07]
     enqueueProtectionCommand(label: label, bytes: bytes, forceCmdCharacteristic: true) { [weak self] value in
       let ok = (value as? [String: Any])?["success"] as? Bool ?? false
       self?.logSosDelivery("NATIVE_SOS_STALE_STOP_SENT terminal=\(kind.rawValue) reason=\(reason) accepted=\(ok)")
+      if !ok && dartFallback {
+        self?.requestDartStaleStop(kind, reason: "\(reason)_native_write_failed")
+      }
     }
+  }
+
+  /// F17c: native holds a TAG link it can write the stop on right now.
+  private var nativeOwnsWritableTagLink: Bool {
+    isArmed && commandQueueHealthy && protectedPeripheral?.state == .connected &&
+      (cmdCharacteristic ?? inetCharacteristic) != nil
+  }
+
+  /// F17c: Dart owns the TAG link; it writes the SDK's terminal command.
+  private func requestDartStaleStop(_ kind: IosSosTerminalKind, reason: String) {
+    logSosDelivery("NATIVE_SOS_STALE_STOP_REQUIRED_FROM_DART terminal=\(kind.rawValue) reason=\(reason)")
+    emitEvent(type: "ownTagSosStopRequired", reason: kind.rawValue)
   }
 
   private func postStaleStopNotification() {

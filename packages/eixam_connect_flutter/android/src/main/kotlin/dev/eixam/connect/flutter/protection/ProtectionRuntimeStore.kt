@@ -1013,6 +1013,35 @@ internal class ProtectionRuntimeStore(context: Context) {
         editor.apply()
     }
 
+    /** F17c: an SOS seen only through Dart's forwarded frames; survives process death. */
+    fun loadSosObservedCycle(): ProtectionSosObservedCycle? {
+        val first = preferences.getLong(keyObservedCycleFirstAt, 0L).takeIf { it > 0L } ?: return null
+        val last = preferences.getLong(keyObservedCycleLastAt, 0L).takeIf { it > 0L } ?: first
+        return ProtectionSosObservedCycle(
+            nodeId = preferences.getIntOrNull(keyObservedCycleNodeId),
+            firstSeenAt = first,
+            lastSeenAt = last,
+        )
+    }
+
+    fun saveSosObservedCycle(observed: ProtectionSosObservedCycle?) {
+        val editor = preferences.edit()
+        if (observed == null) {
+            editor.remove(keyObservedCycleFirstAt)
+                .remove(keyObservedCycleLastAt)
+                .remove(keyObservedCycleNodeId)
+        } else {
+            editor.putLong(keyObservedCycleFirstAt, observed.firstSeenAt)
+                .putLong(keyObservedCycleLastAt, observed.lastSeenAt)
+            if (observed.nodeId == null) {
+                editor.remove(keyObservedCycleNodeId)
+            } else {
+                editor.putInt(keyObservedCycleNodeId, observed.nodeId)
+            }
+        }
+        editor.apply()
+    }
+
     fun recordOwnSosFrameObserved(at: Long) {
         preferences.edit().putLong(keyLastOwnSosFrameAt, at).apply()
     }
@@ -1574,6 +1603,9 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyStaleGuardLastFrameAt = "sos_stale_guard_last_frame_at"
         private const val keyStaleGuardLinkDropped = "sos_stale_guard_link_dropped"
         private const val keyStaleGuardNoticeShown = "sos_stale_guard_notice_shown"
+        private const val keyObservedCycleFirstAt = "sos_observed_cycle_first_at"
+        private const val keyObservedCycleLastAt = "sos_observed_cycle_last_at"
+        private const val keyObservedCycleNodeId = "sos_observed_cycle_node_id"
         private const val keyLastOwnSosFrameAt = "sos_last_own_frame_at"
         private const val keyLastOwnSosCloseAt = "sos_last_own_close_at"
         private const val keyNearbyMessageChannelName = "notification_nearby_message_channel_name"
