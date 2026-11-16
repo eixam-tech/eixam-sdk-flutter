@@ -36,7 +36,16 @@ reply to its exact pending `occurredAt`; it now retains that pending cycleKey
 with the resulting backend incident UUID, including persistence/restoration.
 Every bound lifecycle return must also retain that canonical occurredAt; missing
 or stale canonical timestamps are rejected before local lifecycle admission.
-No new backend JSON field or endpoint is introduced.
+No new endpoint is introduced. Two optional backend JSON fields were added
+later (backend episode registry, 2026-11): the relay SOS publish carries
+`mesh.cycle` (the same uint32 as the `lora:` cycleKey) so the backend binds the
+origin's cycle to the incident and never opens a new incident for an episode it
+already closed, and the relay cancel carries `occurredAt` (the receipt time) so
+a cancel delivered late cannot close an incident opened after it. A cancel
+synthesized from a relay terminal residue sends none: it is dated by the relay's
+last packet, which can predate the SOS it ends. A backend that
+does not know them ignores both. Suppressed publishes get no `processed` reply:
+the receipt stays unbound and authorizes no return, as any unconfirmed publish.
 
 A new observed cycle cannot inherit the previous incident UUID. Both nonterminal
 ACK and terminal RESOLVE/CANCEL require matching incident, origin, relay, relay

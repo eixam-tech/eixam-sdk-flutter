@@ -17029,6 +17029,7 @@ class _NoActiveSosRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async => null;
 
   @override
@@ -17089,6 +17090,7 @@ final class _DelayedCancelSosRemoteDataSource
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     if (!_cancelStarted.isCompleted) {
       _cancelStarted.complete();

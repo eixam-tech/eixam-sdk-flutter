@@ -216,6 +216,7 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     return active?.copyWith(state: cancelResponseState);
   }

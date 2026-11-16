@@ -654,6 +654,7 @@ class _Remote implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     restCancelCalls++;
     throw StateError('REST cancel must never be called');

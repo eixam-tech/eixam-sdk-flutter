@@ -35,6 +35,7 @@ abstract class SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   });
   Future<SosIncidentDto?> resolveSos();
   Future<SosIncidentDto?> getActiveSos();

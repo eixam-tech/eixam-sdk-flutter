@@ -2993,6 +2993,12 @@ void main() {
 
           expect(cancelDataSource.cancelDeviceIds.single, isNull);
           expect(cancelDataSource.cancelIncidentIds.single, isNull);
+          // With no backend incident to name, the time the cancel was received
+          // is what keeps it from closing an SOS raised after it.
+          expect(
+            cancelDataSource.cancelOccurredAts.single,
+            DateTime.utc(2026, 4, 28, 10, 20),
+          );
           expect(
             BleDebugRegistry.instance.currentState.events.any(
               (event) =>
@@ -3803,6 +3809,7 @@ class _MissingCurrentIncidentSosRepository extends FakeSosRepository {
 class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
   final List<String?> cancelDeviceIds = <String?>[];
   final List<String?> cancelIncidentIds = <String?>[];
+  final List<DateTime?> cancelOccurredAts = <DateTime?>[];
   Object? cancelError;
 
   bool get sentCancelWithoutDeviceId =>
@@ -3842,9 +3849,11 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     cancelDeviceIds.add(deviceId);
     cancelIncidentIds.add(incidentId);
+    cancelOccurredAts.add(occurredAt);
     final error = cancelError;
     if (error != null) {
       throw error;

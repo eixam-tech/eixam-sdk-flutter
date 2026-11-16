@@ -430,6 +430,7 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     final normalizedDeviceId = deviceId?.trim();
     final requestPayload = <String, dynamic>{
@@ -451,6 +452,10 @@ class HttpSosRemoteDataSource implements SosRemoteDataSource {
         'incidentId': incidentId.trim(),
       if (cycleKey != null && cycleKey.trim().isNotEmpty)
         'cycleKey': cycleKey.trim(),
+      // When the cancel happened. Delivered late (a flushed queue), the backend
+      // leaves alone an incident that was opened after it.
+      if (occurredAt != null)
+        'occurredAt': occurredAt.toUtc().toIso8601String(),
       if (_isExternalRelaySource(source, triggerSource, relaySource))
         'owner': 'device',
       if (_isExternalRelaySource(source, triggerSource, relaySource))

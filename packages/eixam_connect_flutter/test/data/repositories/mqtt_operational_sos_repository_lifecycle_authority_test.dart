@@ -2260,6 +2260,7 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     cancelCalls += 1;
     lastCancelIncidentId = incidentId;
