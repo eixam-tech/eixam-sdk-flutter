@@ -20834,10 +20834,12 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
 
 /// F17c-cdc: the user cancels in the app DURING the TAG countdown while the
 /// TAG is out of range. The 0x04 never reaches the TAG, whose countdown ends
-/// on its own -> ACTIVE. The native stale guard is not armed (the cycle never
-/// ran past its countdown), so native answers `proceed`. When the TAG comes
-/// back with ACTIVE retries of that same cancelled cycle, Dart must not turn
-/// them into a new SOS.
+/// on its own -> ACTIVE. When the TAG comes back with ACTIVE retries of that
+/// same cancelled cycle, they must never become a new SOS. In-process Dart's
+/// physical-closure admission fence drops them even when native answers
+/// `proceed`; across an app restart that fence admits the first start frame,
+/// so native arms its (persisted) stale guard for a cancel past the countdown
+/// burst and classifies the retries.
 void _cancelDuringCountdownTests() {
   group('F17c-cdc app cancel during the TAG countdown, TAG out of range', () {
     var sequence = 9000;
@@ -20869,8 +20871,10 @@ void _cancelDuringCountdownTests() {
       required bool active,
       required int packetId,
       String characteristic = 'sos',
+      DateTime? at,
     }) async {
       final seq = ++sequence;
+      final receivedAt = at ?? DateTime.now().toUtc();
       final bytes = <int>[
         0x34, 0x12, 0x00, 0x00, 0x00, 0x00, //
         0x00, 0x00, 0x00, 0x00,
@@ -20882,7 +20886,7 @@ void _cancelDuringCountdownTests() {
         OwnTagSosFrameReport(
           bytes: bytes,
           characteristic: characteristic,
-          receivedAt: DateTime.now().toUtc(),
+          receivedAt: receivedAt,
         ),
         () => harness.deviceSosController.handleIncomingSosPacket(
           packet,
@@ -20974,18 +20978,68 @@ void _cancelDuringCountdownTests() {
     }
 
     /// ACTIVE retries of the cancelled cycle once the TAG is back: packet id
-    /// advances on every transmission, SOS and TEL copies.
+    /// advances on every transmission, SOS and TEL copies, TAG retry cadence
+    /// (2/8/20 s) on the frame clock.
     Future<void> activeRetries(
       _SdkSosHarness harness, {
       required int firstPacketId,
       int count = 3,
     }) async {
+      final start = DateTime.now().toUtc();
+      const cadence = <int>[0, 6, 18];
       for (var n = 0; n < count; n++) {
         final id = firstPacketId + n;
-        await frame(harness, active: true, packetId: id);
-        await frame(harness, active: true, packetId: id, characteristic: 'tel');
+        final at = start.add(Duration(seconds: cadence[n % cadence.length]));
+        await frame(harness, active: true, packetId: id, at: at);
+        await frame(
+          harness,
+          active: true,
+          packetId: id,
+          characteristic: 'tel',
+          at: at.add(const Duration(milliseconds: 5)),
+        );
         await settle(200);
       }
+    }
+
+    /// The fixed native store as seen through the channel (the store itself
+    /// is covered by the Swift/Kotlin fixture replays): armed by the SDK cancel
+    /// of a cycle seen past its countdown burst, persisted across an app
+    /// restart. Single pushes are held (stale, native asks for the stop); a
+    /// 3-push burst within 1.7 s is a new SOS; TEL copies (< 300 ms) collapse;
+    /// the TAG close frame ends it.
+    OwnTagSosFrameVerdict Function(OwnTagSosFrameReport) fixedNativeGuard(
+      bool Function() armed,
+    ) {
+      var ended = false;
+      DateTime? lastPush;
+      final pushes = <DateTime>[];
+      return (frame) {
+        if (frame.isClose) {
+          ended = true;
+          return OwnTagSosFrameVerdict.proceed;
+        }
+        if (ended || !armed()) {
+          return OwnTagSosFrameVerdict.proceed;
+        }
+        final at = frame.receivedAt;
+        final previous = lastPush;
+        if (previous != null &&
+            at.difference(previous) < const Duration(milliseconds: 300)) {
+          return OwnTagSosFrameVerdict.suppress;
+        }
+        lastPush = at;
+        pushes
+          ..removeWhere(
+            (p) => at.difference(p) > const Duration(milliseconds: 1700),
+          )
+          ..add(at);
+        if (pushes.length >= 3) {
+          ended = true;
+          return OwnTagSosFrameVerdict.newSos;
+        }
+        return OwnTagSosFrameVerdict.suppress;
+      };
     }
 
     void expectNoNewSos(
@@ -21007,65 +21061,77 @@ void _cancelDuringCountdownTests() {
       );
     }
 
-    test('reconnect after the TAG countdown ended (field ~30 s, then the '
-        '60 s retry ~90 s): ACTIVE frames of the cancelled cycle open no '
-        'SOS', () async {
-      final adapter = iosNative();
-      final written = <int>[];
-      final harness = _SdkSosHarness(
-        connectedBle: true,
-        connectedNodeId: 0x1234,
-        deviceCountdown: countdown,
-        protectionPlatformAdapter: adapter,
-      );
-      try {
-        final cancelled = await preSosThenCancelOutOfRange(harness, written);
-        // The TAG countdown completes out of range -> ACTIVE.
-        await settle(countdown.inMilliseconds + 300);
-        await connect(harness, written);
-        final forwardedBefore = adapter.frames.length;
-        await activeRetries(harness, firstPacketId: 6);
-        expect(
-          adapter.frames.length - forwardedBefore,
-          6,
-          reason: 'native classifies every frame (and answers proceed)',
+    test(
+      'reconnect after the TAG countdown ended (field ~30 s, then the '
+      '60 s retry ~90 s), even with native answering proceed: the Dart '
+      'physical-closure fence opens no SOS from the cancelled cycle',
+      () async {
+        final adapter = iosNative();
+        final written = <int>[];
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: countdown,
+          protectionPlatformAdapter: adapter,
         );
-        // Longer than a full Dart countdown: nothing promotes.
-        await settle(countdown.inMilliseconds + 500);
-        expectNoNewSos(harness, cancelled, await harness.sdk.getSosLifecycle());
-        // The 60 s retry, after a second link drop.
-        await harness.deviceSosController.detach();
-        await settle(300);
-        await connect(harness, written);
-        await activeRetries(harness, firstPacketId: 9, count: 1);
-        await settle(countdown.inMilliseconds + 500);
-        expectNoNewSos(harness, cancelled, await harness.sdk.getSosLifecycle());
-        expect(
-          messages.where(
-            (m) =>
-                m.startsWith('SOS_PHYSICAL_START_ADMISSION') &&
-                m.contains('decision=reject_replay') &&
-                m.contains('reason=physical_episode_closure_not_observed'),
-          ),
-          isNotEmpty,
-          reason: 'dropped by the physical-closure admission fence',
-        );
-      } finally {
-        await harness.dispose();
-      }
-    });
+        try {
+          final cancelled = await preSosThenCancelOutOfRange(harness, written);
+          // The TAG countdown completes out of range -> ACTIVE.
+          await settle(countdown.inMilliseconds + 300);
+          await connect(harness, written);
+          final forwardedBefore = adapter.frames.length;
+          await activeRetries(harness, firstPacketId: 6);
+          expect(
+            adapter.frames.length - forwardedBefore,
+            6,
+            reason: 'native classifies every frame (and answers proceed)',
+          );
+          // Longer than a full Dart countdown: nothing promotes.
+          await settle(countdown.inMilliseconds + 500);
+          expectNoNewSos(
+            harness,
+            cancelled,
+            await harness.sdk.getSosLifecycle(),
+          );
+          // The 60 s retry, after a second link drop.
+          await harness.deviceSosController.detach();
+          await settle(300);
+          await connect(harness, written);
+          await activeRetries(harness, firstPacketId: 9, count: 1);
+          await settle(countdown.inMilliseconds + 500);
+          expectNoNewSos(
+            harness,
+            cancelled,
+            await harness.sdk.getSosLifecycle(),
+          );
+          expect(
+            messages.where(
+              (m) =>
+                  m.startsWith('SOS_PHYSICAL_START_ADMISSION') &&
+                  m.contains('decision=reject_replay') &&
+                  m.contains('reason=physical_episode_closure_not_observed'),
+            ),
+            isNotEmpty,
+            reason: 'dropped by the physical-closure admission fence',
+          );
+        } finally {
+          await harness.dispose();
+        }
+      },
+    );
 
-    test('app restart before the TAG is back: ACTIVE frames of the '
-        'cancelled cycle open no SOS', () async {
+    Future<(_SdkSosHarness, _F17cNativeAdapter, SosLifecycleSnapshot)>
+    restartAfterCancelOutOfRange(List<int> written) async {
       final localStore = MemorySharedPrefsSdkStore();
       final sessionStore = SdkSessionStore(localStore: localStore);
       final secureStore = InMemorySecureKeyValueStore();
-      final written = <int>[];
+      final before = iosNative();
+      before.verdictFor = fixedNativeGuard(() => before.cancelledByTheSdk);
       final first = _SdkSosHarness(
         connectedBle: true,
         connectedNodeId: 0x1234,
         deviceCountdown: countdown,
-        protectionPlatformAdapter: iosNative(),
+        protectionPlatformAdapter: before,
         localStore: localStore,
         sessionStore: sessionStore,
         sosLifecycleSecureStore: secureStore,
@@ -21073,11 +21139,18 @@ void _cancelDuringCountdownTests() {
       late final SosLifecycleSnapshot cancelled;
       try {
         cancelled = await preSosThenCancelOutOfRange(first, written);
+        expect(
+          before.closeNativeSosCycleArgs.last.terminal,
+          'cancel',
+          reason: 'native gets the SDK cancel (it arms its guard)',
+        );
       } finally {
         await first.dispose();
       }
       await settle(countdown.inMilliseconds + 300);
+      // The guard is persisted natively: it survives the app restart.
       final adapter = iosNative();
+      adapter.verdictFor = fixedNativeGuard(() => true);
       final restarted = _SdkSosHarness(
         connectedBle: true,
         connectedNodeId: 0x1234,
@@ -21087,23 +21160,73 @@ void _cancelDuringCountdownTests() {
         sessionStore: sessionStore,
         sosLifecycleSecureStore: secureStore,
       );
+      await connect(restarted, written);
+      await restarted.sdk.initialize(
+        const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+      );
+      await restarted.setSession();
+      await settle(50);
+      final restored = await restarted.sdk.getSosLifecycle();
+      expect(restored.stage, SosLifecycleStage.cancelled);
+      expect(restored.generation, cancelled.generation);
+      return (restarted, adapter, cancelled);
+    }
+
+    test('app restart before the TAG is back: the native guard (persisted) '
+        'holds the ACTIVE retries of the cancelled cycle; Dart writes the '
+        'stop once', () async {
+      final written = <int>[];
+      final (restarted, adapter, cancelled) =
+          await restartAfterCancelOutOfRange(written);
       try {
-        await connect(restarted, written);
-        await restarted.sdk.initialize(
-          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
-        );
-        await restarted.setSession();
-        await settle(50);
-        final restored = await restarted.sdk.getSosLifecycle();
-        expect(restored.stage, SosLifecycleStage.cancelled);
-        expect(restored.generation, cancelled.generation);
+        final forwardedBefore = adapter.frames.length;
         await activeRetries(restarted, firstPacketId: 6);
+        expect(adapter.frames.length - forwardedBefore, 6);
         await settle(countdown.inMilliseconds + 500);
         expectNoNewSos(
           restarted,
           cancelled,
           await restarted.sdk.getSosLifecycle(),
         );
+        // Native decided `stale` and holds no writable link: Dart writes it.
+        final writesBefore = written.length;
+        adapter.emit(
+          ProtectionPlatformEvent(
+            type: ProtectionPlatformEventType.ownTagSosStopRequired,
+            timestamp: DateTime.now().toUtc(),
+            reason: 'cancel',
+          ),
+        );
+        await settle(50);
+        expect(written.skip(writesBefore), <int>[0x04]);
+      } finally {
+        await restarted.dispose();
+      }
+    });
+
+    test('app restart, then a genuine new press (countdown burst) is still '
+        'admitted', () async {
+      final written = <int>[];
+      final (restarted, adapter, cancelled) =
+          await restartAfterCancelOutOfRange(written);
+      try {
+        await activeRetries(restarted, firstPacketId: 6, count: 1);
+        final pressAt = DateTime.now().toUtc().add(const Duration(seconds: 40));
+        for (var push = 0; push < 4; push++) {
+          final at = pressAt.add(Duration(milliseconds: 500 * push));
+          await frame(restarted, active: false, packetId: 11 + push, at: at);
+          await frame(
+            restarted,
+            active: false,
+            packetId: 11 + push,
+            characteristic: 'tel',
+            at: at.add(const Duration(milliseconds: 5)),
+          );
+        }
+        await settle(50);
+        final next = await restarted.sdk.getSosLifecycle();
+        expect(next.generation, cancelled.generation + 1, reason: 'admitted');
+        expect(next.isOpen, isTrue);
       } finally {
         await restarted.dispose();
       }

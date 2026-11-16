@@ -2110,7 +2110,19 @@ internal class ProtectionBleRuntimeOwner(
                     }
                 val storedNodeId = snapshot["preSosOriginatorNodeId"] as? Int
                 val unclaimed = runtimeStore.hasPendingNativeSosCreate()
-                val nextState = ProtectionSosLifecycleLogic.onSdkClose(lifecycleState, unclaimed)
+                // F17c-cdc: only the cancel of this TAG's countdown ends it.
+                val countdownStartedAt = (snapshot["preSosStartedAt"] as? Long)?.takeIf {
+                    nodeId == null || storedNodeId == null || nodeId == storedNodeId
+                }
+                val nextState =
+                    if (ProtectionSosStaleGuard.cancelsRunningCountdown(
+                            terminal, lifecycleState, unclaimed, countdownStartedAt, now,
+                        )
+                    ) {
+                        ProtectionSosLifecycleState.idle
+                    } else {
+                        ProtectionSosLifecycleLogic.onSdkClose(lifecycleState, unclaimed)
+                    }
                 if (nextState != lifecycleState) {
                     cancelSosActivationTimeout()
                     pendingSosLifecycleState = nextState
@@ -2124,7 +2136,9 @@ internal class ProtectionBleRuntimeOwner(
                 val observed = sosObservedCycle
                 val dartSeen = ProtectionSosStaleGuard.observedHandedOver(observed, now)
                 if (terminal == null ||
-                    !ProtectionSosStaleGuard.shouldArm(terminal, lifecycleState, unclaimed, observed, now)
+                    !ProtectionSosStaleGuard.shouldArm(
+                        terminal, lifecycleState, unclaimed, observed, now, countdownStartedAt,
+                    )
                 ) {
                     Log.i(
                         logTag,

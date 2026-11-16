@@ -719,9 +719,9 @@ struct IosNativeSosDeliveryStoreTests {
 
     let (fresh, _) = makeStore()
     _ = fresh.observeForwardedSosFrame(kind: .active, nodeId: 7)
-    clock += 5_000
-    check(!fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "a countdown cancel arms nothing")
-    check(fresh.staleGuardKind == nil, "no guard for a countdown")
+    clock += 1_000
+    check(!fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "a cancel inside the burst arms nothing")
+    check(fresh.staleGuardKind == nil, "no guard inside the countdown burst")
   }
 
   static func burstThroughDartNeverOpensTheNativeCycle() {
