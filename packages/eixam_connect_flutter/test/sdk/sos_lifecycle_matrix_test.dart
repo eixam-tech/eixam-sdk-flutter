@@ -16982,6 +16982,87 @@ void main() {
     });
 
     test(
+      'M1: a native newSos burst while the portal resolve still waits for '
+      'the TAG (terminal device mirror pending) is admitted at once',
+      () async {
+        final adapter = nativeAdapter();
+        final script = <OwnTagSosFrameVerdict>[
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.newSos,
+        ];
+        // Native classifies the new press as a countdown burst (the burst
+        // pushes after the terminal: suppress, suppress, newSos).
+        var afterTerminal = false;
+        adapter.verdictFor = (_) => !afterTerminal || script.isEmpty
+            ? OwnTagSosFrameVerdict.proceed
+            : script.removeAt(0);
+        final written = <int>[];
+        final stopInFlight = Completer<void>();
+        final harness = _SdkSosHarness(
+          connectedBle: true,
+          connectedNodeId: 0x1234,
+          deviceCountdown: const Duration(milliseconds: 200),
+          protectionPlatformAdapter: adapter,
+        );
+        try {
+          await harness.deviceSosController.attach(
+            commandWriter: (command) async {
+              written.add(command.opcode);
+              // The stop is still in flight to the TAG (no write result yet).
+              if (command.opcode == 0x07) await stopInFlight.future;
+            },
+            transportId: 'ble-1',
+          );
+          await harness.sdk.initialize(
+            const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+          );
+          await harness.setSession();
+          await harness.sdk.triggerSosAuthoritatively(
+            const SosTriggerPayload(triggerSource: 'commercial_app'),
+          );
+          await fbpFrame(harness, active: true, packetId: 1);
+          await settle(50);
+          // Resolved in the portal with the TAG connected: the 0x07 write has
+          // not completed and the TAG has not confirmed: the mirror is pending.
+          harness.sosRepository.currentIncident = harness
+              .sosRepository
+              .currentIncident
+              .copyWith(state: SosState.resolved, isBackendConfirmed: true);
+          harness.sosRepository.stateController.add(SosState.resolved);
+          await settle(50);
+          expect(written, contains(0x07));
+          afterTerminal = true;
+          final cancelled = await harness.sdk.getSosLifecycle();
+          expect(cancelled.isOpen, isFalse);
+          messages.clear();
+          for (var push = 0; push < 3; push++) {
+            await fbpFrame(harness, active: false, packetId: 3);
+          }
+          await settle(20);
+          final admissions = messages
+              .where((m) => m.startsWith('SOS_PHYSICAL_START_ADMISSION'))
+              .toList();
+          expect(
+            admissions.any((m) => m.contains('pendingTerminalFence=true')),
+            isTrue,
+            reason: 'the burst arrived while the terminal mirror was pending',
+          );
+          final opened = await harness.sdk.getSosLifecycle();
+          expect(
+            opened.generation,
+            cancelled.generation + 1,
+            reason: 'native newSos bypasses the cancel/resolve wait',
+          );
+          expect(opened.isOpen, isTrue);
+        } finally {
+          if (!stopInFlight.isCompleted) stopInFlight.complete();
+          await harness.dispose();
+        }
+      },
+    );
+
+    test(
       'C1: Protection off, native guard ended -> a genuine TAG SOS is '
       'admitted at its first push; no Dart copy of an armed state blocks it',
       () async {

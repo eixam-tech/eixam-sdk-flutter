@@ -17593,12 +17593,19 @@ class EixamConnectSdkImpl
         sameDevice: exactCurrentDeviceIdentity,
         receiveSequence: evidence.receiveSequence,
       );
+      // F17c: native (the single classifier) saw a new TAG countdown burst
+      // after a stop the TAG never confirmed: a genuine new SOS. M1: it never
+      // waits for the cancel/resolve still being mirrored to the TAG.
+      final gate = deviceSosController.ownTagSosFrameGate;
+      final nativeNewCountdown =
+          gate.admittingVerdict == OwnTagSosFrameVerdict.newSos;
       final convergenceSuppresses =
-          (pendingTerminalFence &&
-              _sosDeviceMirrorState != _SosDeviceMirrorState.failed) ||
-          convergenceEvaluation?.suppress == true ||
-          (_terminalDeviceMirrorIsPending &&
-              convergenceEvaluation?.provenNewCycle != true);
+          !nativeNewCountdown &&
+          ((pendingTerminalFence &&
+                  _sosDeviceMirrorState != _SosDeviceMirrorState.failed) ||
+              convergenceEvaluation?.suppress == true ||
+              (_terminalDeviceMirrorIsPending &&
+                  convergenceEvaluation?.provenNewCycle != true));
       if (convergenceSuppresses) {
         if (convergenceEvaluation != null) {
           _logPostTerminalInflightStartSuppressed(convergenceEvaluation);
@@ -17627,12 +17634,7 @@ class EixamConnectSdkImpl
         // retries within the same physical episode. Neither a changed counter
         // nor unconsumed bytes prove that a mirrored terminal episode ended.
         // Require an observed physical closure before reopening that episode.
-        // F17c: native (the single classifier) saw a new TAG countdown burst
-        // after a stop the TAG never confirmed: a genuine new SOS, never
-        // dropped by this closure fence.
-        final gate = deviceSosController.ownTagSosFrameGate;
-        final nativeNewCountdown =
-            gate.admittingVerdict == OwnTagSosFrameVerdict.newSos;
+        // A native new countdown burst (above) is never dropped by this fence.
         // F17c (Roger 16/11/2026): native is the single classifier. A frame it
         // let through after it knew this terminal is not ambiguous (or native
         // was unreachable: fail open); it is never dropped silently here.
