@@ -7944,6 +7944,9 @@ class EixamConnectSdkImpl
     await _handleRemoteRelaySosCancelBackendHandoff(
       snapshot,
       relayHardwareIdOverride: context.relayHardwareId,
+      // A terminal residue is dated by the relay's last packet, which can
+      // predate the SOS it ends.
+      heardAtKnown: false,
     );
     return true;
   }
@@ -23266,6 +23269,7 @@ class EixamConnectSdkImpl
     required RemoteRelaySosSnapshot snapshot,
     required String? relayHardwareId,
     String? nativePendingSignature,
+    bool heardAtKnown = true,
   }) {
     snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
     final key = _externalRelayCancelContextKey(snapshot);
@@ -23274,6 +23278,7 @@ class EixamConnectSdkImpl
       snapshot: snapshot,
       relayHardwareId: relayHardwareId,
       nativePendingSignature: nativePendingSignature,
+      heardAtKnown: heardAtKnown,
       expiresAt: now.add(const Duration(minutes: 10)),
     );
     BleDebugRegistry.instance.recordEvent(
@@ -23353,6 +23358,7 @@ class EixamConnectSdkImpl
         flushSnapshot,
         nativePendingSignature: pending.nativePendingSignature,
         relayHardwareIdOverride: pending.relayHardwareId ?? relayHardwareId,
+        heardAtKnown: pending.heardAtKnown,
       ),
     );
   }
@@ -23394,6 +23400,7 @@ class EixamConnectSdkImpl
         pending.snapshot,
         nativePendingSignature: pending.nativePendingSignature,
         relayHardwareIdOverride: pending.relayHardwareId,
+        heardAtKnown: pending.heardAtKnown,
       );
     }
   }
@@ -27369,6 +27376,9 @@ class EixamConnectSdkImpl
     RemoteRelaySosSnapshot snapshot, {
     String? nativePendingSignature,
     String? relayHardwareIdOverride,
+    // False when snapshot.receivedAt is not when the cancel was heard: the
+    // backend must not then judge the cancel by it.
+    bool heardAtKnown = true,
   }) async {
     snapshot = _normalizeRemoteRelaySosSnapshot(snapshot);
     final relayHardwareId =
@@ -27477,6 +27487,7 @@ class EixamConnectSdkImpl
         snapshot: snapshot,
         relayHardwareId: relayHardwareId,
         nativePendingSignature: nativePendingSignature,
+        heardAtKnown: heardAtKnown,
       );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS pending_cancel_kept reason=identity_missing '
@@ -27515,6 +27526,7 @@ class EixamConnectSdkImpl
         snapshot: snapshot,
         relayHardwareId: relayHardwareId,
         nativePendingSignature: nativePendingSignature,
+        heardAtKnown: heardAtKnown,
       );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS pending_cancel_kept reason=backend_failure '
@@ -27564,6 +27576,7 @@ class EixamConnectSdkImpl
         relayNodeId: snapshot.relayNodeId,
         relayHardwareId: relayHardwareId,
         incidentId: backendIncidentId,
+        occurredAt: heardAtKnown ? snapshot.receivedAt : null,
       );
       BleDebugRegistry.instance.recordEvent(
         '[REMOTE_RELAY_SOS] remote_cancel_handoff_success '
@@ -27653,6 +27666,7 @@ class EixamConnectSdkImpl
           snapshot: snapshot,
           relayHardwareId: relayHardwareId,
           nativePendingSignature: nativePendingSignature,
+          heardAtKnown: heardAtKnown,
         );
         BleDebugRegistry.instance.recordEvent(
           'EXTERNAL_SOS pending_cancel_kept reason=backend_failure '
@@ -27698,6 +27712,7 @@ class EixamConnectSdkImpl
         snapshot: snapshot,
         relayHardwareId: relayHardwareId,
         nativePendingSignature: nativePendingSignature,
+        heardAtKnown: heardAtKnown,
       );
       BleDebugRegistry.instance.recordEvent(
         'EXTERNAL_SOS pending_cancel_kept reason=backend_failure '
@@ -29977,12 +29992,16 @@ class _PendingExternalRelayCancel {
     required this.relayHardwareId,
     required this.expiresAt,
     this.nativePendingSignature,
+    this.heardAtKnown = true,
   });
 
   final RemoteRelaySosSnapshot snapshot;
   final String? relayHardwareId;
   final String? nativePendingSignature;
   final DateTime expiresAt;
+
+  /// False when `snapshot.receivedAt` is not when the cancel was heard.
+  final bool heardAtKnown;
 }
 
 Stream<T> _seedThenReplayLiveStream<T>({

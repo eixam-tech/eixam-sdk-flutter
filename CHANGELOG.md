@@ -23,6 +23,16 @@
 - Review fixes: a throwing frame handler no longer breaks Dart's frame chain (every later own-TAG frame was dropped; now release-logged `SOS_OUTBOX_STALE_GATE_HANDLER_FAILED`, suppressed frames `SOS_OUTBOX_STALE_FRAME_SUPPRESSED`). `ownTagSosStopRequired` is live-only on Android (never buffered and replayed) and Dart ignores one decided more than 5 s ago (`SOS_OUTBOX_STALE_STOP_SKIPPED reason=decision_too_old`). Dart link notes (also a native/Dart owner handover) no longer reset a countdown burst being counted on Android (iOS semantics). Forwarded frames count at Dart's `receivedAtMs` when plausible (<= 5 s old, not in the future, never before the last counted push), so a late-delivered burst stays a burst. Another TAG's close frame forwarded by Dart no longer ends the guard. iOS re-checks the guard right before writing a native stale stop.
 - Internal API only (`ProtectionPlatformAdapter` gained `classifiesOwnTagSosFrames`, `observeOwnTagSosFrame`, `disarmSosStaleGuard`, `noteOwnTagSosLink` and the event type `ownTagSosStopRequired`); no public SDK API change.
 
+## Unreleased — SOS episode identity for the backend
+
+- The cycle-bound relay SOS publish now carries `mesh.cycle`, and the relay
+  cancel carries `occurredAt` (when the cancel receipt arrived; not for a cancel
+  synthesized from a relay terminal residue, whose time is unreliable). Both are
+  optional and additive: the backend uses them so a receipt or cancel delivered
+  late never opens a new incident for a closed episode nor closes a newer one.
+  No lifecycle, BLE or public API change; hosts need no source changes. Physical
+  validation pending. Details: `docs/LORA_CYCLE_BOUND_RETURN.md`.
+
 ## Unreleased — restart required after an in-app TAG re-pair (F12/F16 mitigation)
 
 - After a TAG is unpaired through `unpairDevice()`/`disconnectDevice()` and a TAG pairing then completes (paired and connected) in the same app process, `DeviceStatus.linkHealth` is the new `DeviceLinkHealth.restartRequiredAfterRepair` (hosts: "Restart EIXAM to finish pairing your TAG"). TAG SOS notifications can stop reaching the app/backend in that case until the app restarts (root cause unknown). It wins over `ok`/`restartRequired`, is reported while a TAG is paired (also while the native runtime owns BLE), and is never cleared by a later liveness check; only a process restart clears it (not persisted). The first pairing of an app session, and a pairing after an unpair with no TAG known, stay `ok`. An unpair outside the SDK (system Bluetooth settings) is not detected.

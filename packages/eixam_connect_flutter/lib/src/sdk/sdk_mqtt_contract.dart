@@ -245,8 +245,12 @@ class SdkMqttContract {
       incidentId: request.incidentId,
       cycleKey: request.cycleKey,
     );
+    final boundCycle = _boundRelayCycle(request.cycleKey);
     final payload = <String, dynamic>{
       'timestamp': request.timestamp.toUtc().toIso8601String(),
+      // The origin tag's episode id. The backend binds it to the incident, so a
+      // receipt delivered late never opens a new incident for a closed episode.
+      if (boundCycle != null) 'mesh': <String, dynamic>{'cycle': boundCycle},
       if (request.positionSnapshot != null) ...{
         'latitude': request.positionSnapshot!.latitude,
         'longitude': request.positionSnapshot!.longitude,
@@ -324,6 +328,16 @@ class SdkMqttContract {
           'userId': payloadUserId,
       }),
     );
+  }
+
+  static final RegExp _boundRelayCycleKey = RegExp(r'^lora:\d+:(\d+)$');
+
+  /// The cycle of a `lora:<origin>:<cycle>` key (a cycle-bound relay receipt).
+  /// Local keys (`sos-<micros>`, `<node>:<counter>`) name no firmware cycle.
+  static int? _boundRelayCycle(String? cycleKey) {
+    final match = _boundRelayCycleKey.firstMatch(cycleKey?.trim() ?? '');
+    final cycle = match == null ? null : int.tryParse(match.group(1)!);
+    return cycle == null || cycle <= 0 || cycle > 0xFFFFFFFF ? null : cycle;
   }
 
   static SdkMqttEnvelope buildTelemetryEnvelope({
