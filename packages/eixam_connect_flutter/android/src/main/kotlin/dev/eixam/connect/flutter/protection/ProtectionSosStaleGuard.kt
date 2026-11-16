@@ -132,22 +132,15 @@ internal object ProtectionSosStaleGuard {
     const val recentFrameMs = 90_000L
     private const val decideToleranceMs = 100L
 
-    /**
-     * F17c-cdc: a cycle first seen this long ago is past its TAG countdown
-     * burst (4 pushes in its first 2 s): no burst push of it can follow the SDK
-     * terminal, so the guard classifies the rest. An app cancel during the
-     * countdown with the TAG out of range never reaches it: the TAG goes ACTIVE
-     * and its retries must be stopped, never a new SOS.
-     */
-    const val observedPastBurstMs = 2_000L
+    /** F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s minus the decision window). */
+    const val observedHandedOverMs = 18_000L
 
     /**
-     * A handed-over SOS (like iOS): the native cycle reached createPending and
-     * the SDK claimed its create; (F17c) Dart forwarded frames of this SOS past
-     * its countdown burst ([observed]: native never saw the cycle because Dart
-     * owned the link); or (F17c-cdc) the SDK cancelled the running native
-     * countdown past its burst ([countdownStartedAt]). Never an unclaimed
-     * native create.
+     * Only a handed-over SOS (like iOS): the native cycle reached createPending
+     * and the SDK claimed its create, or (F17c) Dart forwarded frames of an
+     * SOS that ran past its countdown ([observed]: native never saw the cycle
+     * because Dart owned the link). Never a running countdown, never an
+     * unclaimed native create.
      */
     fun shouldArm(
         terminal: ProtectionSosStaleTerminal?,
@@ -155,24 +148,24 @@ internal object ProtectionSosStaleGuard {
         hasUnclaimedNativeCreate: Boolean,
         observed: ProtectionSosObservedCycle? = null,
         now: Long = 0L,
-        countdownStartedAt: Long? = null,
     ): Boolean =
         terminal != null &&
             !hasUnclaimedNativeCreate &&
             (lifecycleState == ProtectionSosLifecycleState.createPending ||
-                observedHandedOver(observed, now) ||
-                cancelsRunningCountdown(terminal, lifecycleState, false, countdownStartedAt, now))
+                observedHandedOver(observed, now))
 
-    /** F17c: Dart forwarded frames of this SOS past its countdown burst, recently. */
+    /** F17c: Dart forwarded frames of this SOS for longer than its countdown, recently. */
     fun observedHandedOver(observed: ProtectionSosObservedCycle?, now: Long): Boolean =
         observed != null &&
-            now - observed.firstSeenAt >= observedPastBurstMs &&
+            now - observed.firstSeenAt >= observedHandedOverMs &&
             now - observed.lastSeenAt in 0..capMs
 
     /**
-     * F17c-cdc: the SDK cancel of the running native countdown past its burst
-     * ends it (the SDK already drops the create of a cycle cancelled after its
-     * start, M5) and arms the guard: the TAG may never get the stop.
+     * F17c-cdc: the SDK cancel of this TAG's running native countdown ends it:
+     * it is never promoted into a native create at its deadline (the SDK
+     * already drops the create of a cycle cancelled after its start, M5). It
+     * arms nothing: without a firmware episode id, frames after a reconnect
+     * are ambiguous and a missed SOS is worse than a duplicate.
      */
     fun cancelsRunningCountdown(
         terminal: ProtectionSosStaleTerminal?,
@@ -185,7 +178,7 @@ internal object ProtectionSosStaleGuard {
             !hasUnclaimedNativeCreate &&
             lifecycleState == ProtectionSosLifecycleState.preConfirmSeen &&
             countdownStartedAt != null &&
-            now - countdownStartedAt >= observedPastBurstMs
+            now >= countdownStartedAt
 
     /** F17c: an admitted Dart-forwarded push of the TAG's SOS; a long silence starts a new episode. */
     fun onObservedFrame(

@@ -284,14 +284,14 @@ class ProtectionSosStaleGuardTest {
 
     /** F17c-cdc: app cancel 8 s into the native countdown, TAG out of range. */
     @Test
-    fun `an sdk cancel of the running countdown past its burst ends it and arms`() {
+    fun `an sdk cancel ends the running countdown and arms nothing`() {
         val countdown = ProtectionSosLifecycleState.preConfirmSeen
         val cancel = ProtectionSosStaleTerminal.cancel
         assertTrue(guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 8_000L))
-        assertTrue(guard.shouldArm(cancel, countdown, false, null, t0 + 8_000L, t0))
+        assertTrue(guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 1_000L))
         assertFalse(
-            "inside the countdown burst: its own pushes may still follow",
-            guard.cancelsRunningCountdown(cancel, countdown, false, t0, t0 + 1_000L),
+            "a cancelled countdown never arms the guard",
+            guard.shouldArm(cancel, countdown, false, null, t0 + 8_000L),
         )
         assertFalse(
             "only an SDK cancel ends a countdown",
@@ -304,6 +304,10 @@ class ProtectionSosStaleGuardTest {
         assertFalse(
             "start unknown (or another TAG's countdown)",
             guard.cancelsRunningCountdown(cancel, countdown, false, null, t0 + 8_000L),
+        )
+        assertFalse(
+            "a countdown started after the cancel is a newer SOS",
+            guard.cancelsRunningCountdown(cancel, countdown, false, t0 + 9_000L, t0 + 8_000L),
         )
     }
 
@@ -409,7 +413,7 @@ class ProtectionSosStaleGuardTest {
                 }
                 "terminal" -> {
                     val terminal = ProtectionSosStaleTerminal.fromWire(args["kind"])!!
-                    if (guard.shouldArm(terminal, lifecycle, false, observed, t, countdownStartedAt)) {
+                    if (guard.shouldArm(terminal, lifecycle, false, observed, t)) {
                         state = guard.arm(terminal, node, t, connected = args["connected"] == "true")
                         observed = null
                     }

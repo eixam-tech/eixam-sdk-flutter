@@ -2136,9 +2136,7 @@ internal class ProtectionBleRuntimeOwner(
                 val observed = sosObservedCycle
                 val dartSeen = ProtectionSosStaleGuard.observedHandedOver(observed, now)
                 if (terminal == null ||
-                    !ProtectionSosStaleGuard.shouldArm(
-                        terminal, lifecycleState, unclaimed, observed, now, countdownStartedAt,
-                    )
+                    !ProtectionSosStaleGuard.shouldArm(terminal, lifecycleState, unclaimed, observed, now)
                 ) {
                     Log.i(
                         logTag,

@@ -33,7 +33,7 @@ struct IosNativeSosDeliveryStoreTests {
     recycledFrameKeyGivesNewIdentity()
     missedCloseFrameNeverBlocksTheNextSos()
     sdkCloseKeepsAnSosNotHandedOver()
-    sdkCancelOfARunningCountdownEndsItAndGuardsTheTag()
+    sdkCancelOfARunningCountdownEndsIt()
     framesRightAfterACloseNeverOpenAnSos()
     realSosInsideTheQuietWindowIsBackdated()
     olderCancelNeverDropsANewerSos()
@@ -423,24 +423,24 @@ struct IosNativeSosDeliveryStoreTests {
   }
 
   /// F17c-cdc: the app cancels the TAG countdown (8 s in) while the TAG is out
-  /// of range: the countdown never becomes a native create, and the TAG's
-  /// ACTIVE retries of that cycle are guarded (stopped), never a new SOS.
-  static func sdkCancelOfARunningCountdownEndsItAndGuardsTheTag() {
+  /// of range: the countdown never becomes a native create. No guard is armed
+  /// (a reconnect with ACTIVE retries is ambiguous: accepted duplicate).
+  static func sdkCancelOfARunningCountdownEndsIt() {
     let (store, _) = makeStore()
     _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
     clock += 8_000
     store.noteLinkDropped()
     check(store.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "the SDK cancel ends the countdown")
     check(store.cycleState == .idle, "countdown closed")
-    check(store.staleGuardKind == .cancel, "guard armed")
+    check(store.staleGuardKind == nil, "no guard armed")
     clock += 12_000
     _ = store.promoteExpiredCountdown(deviceId: nil)
     check(store.pendingCreateCount == 0, "a cancelled countdown is never promoted")
     clock += 10_000
     store.noteLinkUp()
     let retry = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
-    check(store.lastStaleAction == "pending" && retry.evaluateStaleAt != nil, "ACTIVE retry held")
-    check(store.cycleState == .idle && store.pendingCreateCount == 0, "no new cycle")
+    check(store.lastStaleAction == "notArmed" && retry.stopTag == nil, "no stop written")
+    check(store.pendingCreateCount == 0, "no native create from the cancelled countdown")
   }
 
   static func framesRightAfterACloseNeverOpenAnSos() {
@@ -719,9 +719,9 @@ struct IosNativeSosDeliveryStoreTests {
 
     let (fresh, _) = makeStore()
     _ = fresh.observeForwardedSosFrame(kind: .active, nodeId: 7)
-    clock += 1_000
-    check(!fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "a cancel inside the burst arms nothing")
-    check(fresh.staleGuardKind == nil, "no guard inside the countdown burst")
+    clock += 5_000
+    check(!fresh.closeDeliveredCycle(nodeId: 7, terminal: .cancel), "a countdown cancel arms nothing")
+    check(fresh.staleGuardKind == nil, "no guard for a countdown")
   }
 
   static func burstThroughDartNeverOpensTheNativeCycle() {

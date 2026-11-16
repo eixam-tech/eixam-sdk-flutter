@@ -65,12 +65,9 @@ final class IosNativeSosDeliveryStore {
   static let staleDecisionMs = 2_000
   static let staleGapMs = 90_000
   static let staleGuardMaxMs = 600_000
-  /// F17c-cdc: a cycle first seen this long ago is past its TAG countdown
-  /// burst (4 pushes in its first 2 s): no burst push of it can follow the
-  /// SDK terminal, so the guard classifies the rest. An app cancel during the
-  /// countdown with the TAG out of range never reaches it: the TAG goes
-  /// ACTIVE and its retries must be stopped, never a new SOS.
-  static let observedPastBurstMs = 2_000
+  /// F17c: a cycle Dart saw this long ago is past its TAG countdown (20 s
+  /// minus the decision window): its SDK terminal arms the guard.
+  static let observedHandedOverMs = 18_000
   static let sosEventTypes: Set<String> = [
     "ownDeviceSosLifecycleObserved",
     "nativeBackendSyncQueued",
@@ -221,12 +218,13 @@ final class IosNativeSosDeliveryStore {
   /// incident.
   /// F17c: the cycle may also have been seen only through Dart's forwarded
   /// frames (Dart owned the TAG link, native never saw it): the terminal of an
-  /// SOS seen past its countdown burst arms the guard too (Android foreground
+  /// SOS that ran past its countdown arms the guard too (Android foreground
   /// `NATIVE_SOS_STALE_GUARD_NOT_ARMED lifecycle=idle`).
-  /// F17c-cdc: the SDK cancel of a running countdown past its burst ends it
-  /// and arms the guard (the TAG may never get the stop and go ACTIVE). The
-  /// SDK already drops the create of a cycle cancelled after its start (M5),
-  /// so ending it here loses nothing; a later burst is a new SOS.
+  /// F17c-cdc: the SDK cancel of this TAG's running countdown ends it: it is
+  /// never promoted into a native create at its deadline (the SDK already
+  /// drops the create of a cycle cancelled after its start, M5). It arms
+  /// nothing: without a firmware episode id, frames after a reconnect are
+  /// ambiguous and a missed SOS is worse than a duplicate.
   func closeDeliveredCycle(nodeId: Int? = nil, terminal: IosSosTerminalKind? = nil) -> Bool {
     let keptCountdown = cycleState == .preConfirmSeen &&
       defaults.bool(forKey: Keys.cycleKeptAfterStop) &&
@@ -237,9 +235,7 @@ final class IosNativeSosDeliveryStore {
     let cancelledCountdown = !keptCountdown && terminal == .cancel &&
       cycleState == .preConfirmSeen && pendingCreateRecord == nil &&
       (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId) &&
-      (defaults.object(forKey: Keys.cycleStartedAt) as? Int).map {
-        now() - $0 >= Self.observedPastBurstMs
-      } == true
+      (defaults.object(forKey: Keys.cycleStartedAt) as? Int).map { now() >= $0 } == true
     guard keptCountdown || handedOver || dartSeen || cancelledCountdown else {
       return false
     }
@@ -248,7 +244,7 @@ final class IosNativeSosDeliveryStore {
     if keptCountdown || handedOver || cancelledCountdown {
       closeCycle()
     }
-    if handedOver || dartSeen || cancelledCountdown, let terminal {
+    if handedOver || dartSeen, let terminal {
       armStaleGuard(terminal, nodeId: guardNode, linkDropped: linkDropped)
       clearDartCycle()
     }
@@ -303,7 +299,7 @@ final class IosNativeSosDeliveryStore {
     }
     let last = defaults.object(forKey: Keys.dartCycleLastSeenAt) as? Int ?? first
     let timestamp = now()
-    return timestamp - first >= Self.observedPastBurstMs &&
+    return timestamp - first >= Self.observedHandedOverMs &&
       timestamp - last >= 0 && timestamp - last <= Self.staleGuardMaxMs
   }
 
