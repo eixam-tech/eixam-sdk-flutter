@@ -55,6 +55,19 @@ enum IosSosPromptNotification {
     return result
   }
 
+  /// L5: whether the prompt category is missing or stale in [existing] (a
+  /// host's later full `setNotificationCategories` strips it, or the language
+  /// changed). Merged again only then, so the host's own registration is not
+  /// rewritten needlessly.
+  static func needsRegistration(_ existing: Set<UNNotificationCategory>, texts: Texts) -> Bool {
+    guard let current = existing.first(where: { $0.identifier == categoryIdentifier }) else {
+      return true
+    }
+    let wanted = actions(texts: texts)
+    return current.actions.map { [$0.identifier, $0.title] } != wanted.map { [$0.identifier, $0.title] } ||
+      current.actions.map { $0.options.rawValue } != wanted.map { $0.options.rawValue }
+  }
+
   static func content(texts: Texts, terminal: String, deadlineAtMs: Int) -> UNMutableNotificationContent {
     let content = UNMutableNotificationContent()
     content.title = texts.title

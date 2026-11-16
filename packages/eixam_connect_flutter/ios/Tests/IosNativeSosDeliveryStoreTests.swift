@@ -71,6 +71,7 @@ struct IosNativeSosDeliveryStoreTests {
     promptSurvivesAnAppRestart()
     answersNeedAnOpenPrompt()
     promptNotificationActions()
+    promptCategorySurvivesAHostReRegistration()
     promptNotificationIsANormalLocalNotification()
     sharedStaleGuardScenarios()
     if failures > 0 {
@@ -887,6 +888,24 @@ struct IosNativeSosDeliveryStoreTests {
     let merged = IosSosPromptNotification.merged([other, stale], texts: texts)
     check(merged.count == 2 && merged.contains(where: { $0.identifier == "host" }), "host categories kept")
     check(merged.first(where: { $0.identifier == IosSosPromptNotification.categoryIdentifier })?.actions.count == 2, "own category replaced")
+  }
+
+  /// F17c L5: a host that later sets its own categories (full
+  /// setNotificationCategories) strips the prompt's actions; the SDK detects it
+  /// and merges its category back (registration, resume, before posting).
+  static func promptCategorySurvivesAHostReRegistration() {
+    let texts = IosSosPromptNotification.Texts()
+    let host = UNNotificationCategory(identifier: "host", actions: [], intentIdentifiers: [], options: [])
+    let registered = IosSosPromptNotification.merged([host], texts: texts)
+    check(!IosSosPromptNotification.needsRegistration(registered, texts: texts), "registered: nothing to do")
+    let hostReset: Set<UNNotificationCategory> = [host]
+    check(IosSosPromptNotification.needsRegistration(hostReset, texts: texts), "stripped by the host: merge again")
+    let remerged = IosSosPromptNotification.merged(hostReset, texts: texts)
+    check(remerged.contains(where: { $0.identifier == "host" }), "host category kept")
+    check(!IosSosPromptNotification.needsRegistration(remerged, texts: texts), "merged back")
+    var spanish = texts
+    spanish.sendAction = "Enviar SOS"
+    check(IosSosPromptNotification.needsRegistration(registered, texts: spanish), "new language: merge again")
   }
 
   static func promptNotificationIsANormalLocalNotification() {

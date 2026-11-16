@@ -1557,6 +1557,9 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
   /// the app was suspended becomes the pending create now; a running one gets
   /// its timer (and background time) back.
   private func resumeNativeSosCycle(trigger: String) {
+    // F17c L5: keep the prompt's actions even if the host re-registered its
+    // notification categories since.
+    ensurePromptCategory()
     // F17c: a prompt whose deadline passed while suspended sends the SOS now.
     expirePromptIfDue()
     // A countdown kept across a runtime stop is still promoted (no reconnect).
@@ -1754,11 +1757,24 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     )
   }
 
-  private func postPromptNotification(terminal: String, deadline: Int) {
+  /// F17c L5: the prompt's category (both actions) survives a host that later
+  /// sets its own categories: merged back on registration, resume and snapshot
+  /// refresh (`resumeNativeSosCycle`) and before posting, only when missing.
+  private func ensurePromptCategory(then completion: (() -> Void)? = nil) {
     let texts = promptTexts
     let center = UNUserNotificationCenter.current()
     center.getNotificationCategories { categories in
-      center.setNotificationCategories(IosSosPromptNotification.merged(categories, texts: texts))
+      if IosSosPromptNotification.needsRegistration(categories, texts: texts) {
+        center.setNotificationCategories(IosSosPromptNotification.merged(categories, texts: texts))
+      }
+      completion?()
+    }
+  }
+
+  private func postPromptNotification(terminal: String, deadline: Int) {
+    let texts = promptTexts
+    let center = UNUserNotificationCenter.current()
+    ensurePromptCategory {
       center.getNotificationSettings { [weak self] settings in
         guard let self, self.isNotificationAuthorized(settings.authorizationStatus) else {
           // No notification permission: the native timeout still sends the SOS.
