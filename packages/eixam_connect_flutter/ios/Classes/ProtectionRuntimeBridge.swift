@@ -1454,24 +1454,32 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
     }
     // F17c: an expired prompt is the timeout before this frame is classified.
     expirePromptIfDue()
+    // F17c H1: set when a suppressed frame completed a countdown burst: the
+    // native cycle already started (counted from the burst's first push).
+    var burstTransition: IosNativeSosTransition?
     if shouldSuppressAfterTerminalSnapshot(parsed: parsed, receivedAt: timestamp) {
-#if DEBUG
-      print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil)")
-#endif
-      // The snapshot/event stay suppressed, but the native cycle sees the
-      // frame: its post-close quiet window decides, and backdates a real new
-      // SOS that started inside it instead of delaying it by the window.
-      applyNativeSosTransition(
-        sosDelivery.observe(
-          kind: parsed.kind,
-          nodeId: parsed.nodeId,
-          cycleKey: parsed.cycleKey,
-          deviceId: defaults.string(forKey: Keys.protectedDeviceId)
-        ),
-        reason: "device_cycle_after_close",
-        notifyActive: true
+      // The native cycle sees the frame first: its stale guard / post-close
+      // window decides. Lone retries of the closed SOS stay hidden from Dart.
+      let wasIdle = sosDelivery.cycleState == .idle
+      let transition = sosDelivery.observe(
+        kind: parsed.kind,
+        nodeId: parsed.nodeId,
+        cycleKey: parsed.cycleKey,
+        deviceId: defaults.string(forKey: Keys.protectedDeviceId)
       )
-      return
+      guard wasIdle, sosDelivery.cycleState != .idle else {
+#if DEBUG
+        print("IOS_BLE_SOS_STALE_ACTIVE_SUPPRESSED source=native_snapshot kind=\(parsed.kind.rawValue) originator_identity_present=\(parsed.nodeId != nil) packet_identity_present=\(parsed.packetId != nil)")
+#endif
+        applyNativeSosTransition(transition, reason: "device_cycle_after_close", notifyActive: true)
+        return
+      }
+      // A countdown burst is a new SOS: never hidden from Dart. It follows
+      // the normal flow below (snapshot, event, countdown notification).
+#if DEBUG
+      print("IOS_BLE_SOS_BURST_AFTER_CLOSE_ADMITTED kind=\(parsed.kind.rawValue)")
+#endif
+      burstTransition = transition
     }
     let previousNotificationContext = currentSosNotificationContext()
 
@@ -1518,13 +1526,15 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       payload: eventPayload
     )
     applyNativeSosTransition(
-      sosDelivery.observe(
+      burstTransition ?? sosDelivery.observe(
         kind: parsed.kind,
         nodeId: parsed.nodeId,
         cycleKey: parsed.cycleKey,
         deviceId: defaults.string(forKey: Keys.protectedDeviceId)
       ),
-      reason: parsed.kind == .active ? "device_cycle_active" : "device_cycle_\(parsed.kind.rawValue)",
+      reason: burstTransition != nil
+        ? "device_cycle_burst_after_close"
+        : parsed.kind == .active ? "device_cycle_active" : "device_cycle_\(parsed.kind.rawValue)",
       notifyActive: false
     )
     // One notification per SOS: keyed by the native cycle (the TAG repeats

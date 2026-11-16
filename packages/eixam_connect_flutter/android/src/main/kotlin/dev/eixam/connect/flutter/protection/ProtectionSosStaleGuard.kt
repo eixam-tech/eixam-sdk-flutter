@@ -18,8 +18,9 @@ package dev.eixam.connect.flutter.protection
  * - a frame < [duplicateMs] after the previous accepted push is a copy: ignored;
  * - a candidate window opens at the first push; [burstPushes] distinct pushes
  *   within [burstWindowMs] = COUNTDOWN = a genuine new SOS (always admitted);
- * - [decideAfterMs] after the first push, fewer pushes = ambiguous: prompt
- *   (once; a later retry while it is open never re-prompts).
+ * - [decideAfterMs] after the first push (L2: exactly, never earlier; the
+ *   same rule on iOS and in the shared fixture), fewer pushes = ambiguous:
+ *   prompt (once; a later retry while it is open never re-prompts).
  * The record ends only on the TAG's close frame (`0xE1/0xE2/0xE3`), a
  * countdown burst, the user's send / the timeout, a new SDK SOS or a session
  * change (Roger 16/11/2026: no gap, no time cap; a stray retry always asks).
@@ -157,7 +158,6 @@ internal object ProtectionSosStaleGuard {
     const val decideAfterMs = 2_000L
     const val burstPushes = 3
     const val recentFrameMs = 90_000L
-    private const val decideToleranceMs = 100L
 
     /** F17c M-C: a Dart receive time older than this (or in the future) is not trusted. */
     const val forwardedFrameMaxAgeMs = 5_000L
@@ -167,7 +167,8 @@ internal object ProtectionSosStaleGuard {
      * seen on any path arms the "unconfirmed stop" record: a handed-over native
      * create, a native countdown, or frames Dart forwarded ([observed]). Never
      * while native still owes an unclaimed create of that SOS (the terminal is
-     * not a stop of it).
+     * not a stop of it). L1 (iOS rule): a running countdown arms only for the
+     * same TAG ([sameTagAsCycle]: unknown ids count as the same TAG).
      */
     fun shouldArm(
         terminal: ProtectionSosStaleTerminal?,
@@ -175,11 +176,12 @@ internal object ProtectionSosStaleGuard {
         hasUnclaimedNativeCreate: Boolean,
         observed: ProtectionSosObservedCycle? = null,
         now: Long = 0L,
+        sameTagAsCycle: Boolean = true,
     ): Boolean =
         terminal != null &&
             !hasUnclaimedNativeCreate &&
             (lifecycleState == ProtectionSosLifecycleState.createPending ||
-                lifecycleState == ProtectionSosLifecycleState.preConfirmSeen ||
+                (lifecycleState == ProtectionSosLifecycleState.preConfirmSeen && sameTagAsCycle) ||
                 observedRecently(observed, now))
 
     /** F17c: Dart forwarded frames of this TAG's SOS recently. */
@@ -393,12 +395,19 @@ internal object ProtectionSosStaleGuard {
         )
     }
 
-    /** [decideAfterMs] after the candidate's first push. */
+    /**
+     * [decideAfterMs] after the candidate's first push. Earlier (a timer that
+     * fired early) decides nothing and asks to be called again at that time.
+     */
     fun onDecide(state: ProtectionSosStaleGuardState, now: Long): ProtectionSosStaleOutcome {
         val first = state.candidateFirstAt
             ?: return ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, state)
-        if (now - first < decideAfterMs - decideToleranceMs) {
-            return ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, state)
+        if (now - first < decideAfterMs) {
+            return ProtectionSosStaleOutcome(
+                ProtectionSosStaleAction.none,
+                state,
+                decideAt = first + decideAfterMs,
+            )
         }
         if (state.candidatePushes >= burstPushes) {
             return ProtectionSosStaleOutcome(
@@ -548,16 +557,9 @@ internal data class ProtectionSosForwardedFrame(
             if (raw.any { it !in 0..0xFF }) return null
             val payload = ProtectionBleSosIdentityClassifier.boundSosBody(raw) ?: raw
             return when (payload.size) {
-                4, 6 -> {
-                    val opcode = payload[0]
-                    val subcode = payload[1]
-                    val close = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
-                        ((opcode == 0xE2 || opcode == 0xE3) && subcode in 0x01..0x03)
-                    if (!close) {
-                        null
-                    } else {
-                        ProtectionSosForwardedFrame(close = true, nodeId = readU32(payload, 2))
-                    }
+                // The same close rule as the native frame path.
+                4, 6 -> ProtectionSosNativeDecision.closeOpcode(payload)?.let {
+                    ProtectionSosForwardedFrame(close = true, nodeId = readU32(payload, 2))
                 }
 
                 5, 10 -> ProtectionSosForwardedFrame(close = false, nodeId = null)

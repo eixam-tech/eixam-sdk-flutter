@@ -38,6 +38,7 @@ struct IosNativeSosDeliveryStoreTests {
     sdkCancelOfARunningCountdownEndsIt()
     framesRightAfterACloseNeverOpenAnSos()
     realSosInsideTheQuietWindowIsBackdated()
+    burstInsideThePostCloseWindowStartsAtOnce()
     olderCancelNeverDropsANewerSos()
     countdownIsReportedAsCountdown()
     claimedCreateIsKeptOnCancel()
@@ -484,6 +485,43 @@ struct IosNativeSosDeliveryStoreTests {
     let after = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:59", deviceId: nil)
     check(after.queuedCreate, "countdown backdated to the first frame: already elapsed")
     check((store.peekPendingCreate()?["cycleKey"] as? String)?.hasSuffix("@\(firstFrame)") == true, "starts at the first frame")
+  }
+
+  /// F17c H1: inside the 30 s after a TAG close, lone retries of the closed
+  /// SOS are held, but a countdown burst (3 distinct pushes within 1.7 s, the
+  /// TEL copies collapsed) is a new SOS at once, counted from its first push.
+  static func burstInsideThePostCloseWindowStartsAtOnce() {
+    let (store, _) = makeStore()
+    deliver(store, key: "sos:7:70")
+    clock += 1_000
+    _ = store.observe(kind: .cancelled, nodeId: 7, cycleKey: "sos:7", deviceId: nil)
+    // ACTIVE retries spaced like the firmware's (each with its TEL copy): held.
+    for gap in [2_000, 6_000] {
+      clock += gap
+      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
+      clock += 5
+      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:70", deviceId: nil)
+      check(store.cycleState == .idle, "lone retry in the post-close window held")
+    }
+    // A new press (> 1.7 s after the last retry): countdown pushes every
+    // 500 ms, each with its TEL copy.
+    clock += 3_000
+    let first = clock
+    var started: IosNativeSosTransition?
+    for push in 0..<3 {
+      if push > 0 { clock += 495 }
+      let frame = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
+      clock += 5
+      _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:71", deviceId: nil)
+      if push < 2 {
+        check(frame.countdownDeadlineAt == nil, "push \(push + 1) of 3: not yet a burst")
+      } else {
+        started = frame
+      }
+    }
+    check(started?.countdownDeadlineAt == first + 20_000, "burst admitted at its 3rd push, counted from the 1st")
+    check(store.cycleState == .preConfirmSeen, "countdown running")
+    check(store.notification(for: .active)?.kind == .preSos, "countdown notification")
   }
 
   static func olderCancelNeverDropsANewerSos() {
@@ -962,11 +1000,13 @@ struct IosNativeSosDeliveryStoreTests {
         action = store.lastStaleAction
       case "close":
         clock = base + t
+        // 0xE3 is the backend resolve ack; 0xE1/0xE2 close as cancelled.
+        let closeKind: IosBleSosSnapshotKind = args["code"] == "E3" ? .resolved : .cancelled
         if args["source"] == "dart" {
-          check(store.observeForwardedSosFrame(kind: .cancelled, nodeId: node).verdict == "proceed",
+          check(store.observeForwardedSosFrame(kind: closeKind, nodeId: node).verdict == "proceed",
                 "\(label): close proceeds")
         } else {
-          _ = store.observe(kind: .cancelled, nodeId: node, cycleKey: "sos:\(node)", deviceId: nil)
+          _ = store.observe(kind: closeKind, nodeId: node, cycleKey: "sos:\(node)", deviceId: nil)
         }
       case "answer":
         clock = base + t
@@ -1000,6 +1040,10 @@ struct IosNativeSosDeliveryStoreTests {
       if let prompt = want["prompt"] {
         let got = store.promptDeadlineAt != nil ? "open" : "closed"
         check(got == prompt, "\(label): prompt \(got) != \(prompt)")
+      }
+      if let countdown = want["countdown"], let start = Int(countdown) {
+        check(store.countdownDeadlineAt == base + start + IosNativeSosDeliveryStore.countdownMs,
+              "\(label): native countdown deadline \(store.countdownDeadlineAt.map { "\($0 - base)" } ?? "none") != \(start + IosNativeSosDeliveryStore.countdownMs)")
       }
       if let owed = want["owed"] {
         check(store.stopOwed == (owed == "true"), "\(label): owed \(store.stopOwed) != \(owed)")

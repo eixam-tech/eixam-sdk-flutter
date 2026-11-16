@@ -64,8 +64,10 @@ void main() {
       0xC0,
     ];
 
-    List<int> closeFrame(int node) => <int>[
-      0xE1,
+    List<int> closeFrame(int node, {int opcode = 0xE1}) => <int>[
+      opcode,
+      // Subcode 0x02: closed with the SOS already fired/active (firmware
+      // 07 §1.2: 0xE1 0x01|0x02, 0xE2/0xE3 0x01|0x02|0x03).
       0x02,
       node & 0xFF,
       (node >> 8) & 0xFF,
@@ -263,7 +265,17 @@ void main() {
               );
             case 'close':
               final before = forwarded.length;
-              await deliver(EixamBleChannel.tel, closeFrame(node));
+              await deliver(
+                EixamBleChannel.tel,
+                closeFrame(
+                  node,
+                  opcode: switch (args['code']) {
+                    'E2' => 0xE2,
+                    'E3' => 0xE3,
+                    _ => 0xE1,
+                  },
+                ),
+              );
               if (own) {
                 expect(
                   forwarded.length,

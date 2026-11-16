@@ -53,9 +53,10 @@
 #   stop_written ok=true|false
 #                         the result of the GATT write of the owed stop (native
 #                         write callback, or Dart's reportOwnTagSosStopWritten)
-#   close source=native|dart [node=N]
-#                         the TAG's own close frame 0xE1/0xE2/0xE3, any path;
-#                         another TAG's close never ends the record
+#   close source=native|dart [node=N] [code=E1|E2|E3]
+#                         the TAG's own close frame 0xE1/0xE2/0xE3 (default
+#                         E1), any path; another TAG's close never ends the
+#                         record
 #   link_drop | link_up [source=native|dart] | session
 #                         source=dart: Dart's own link note (noteOwnTagSosLink),
 #                         which never resets a burst being counted
@@ -70,7 +71,11 @@
 # Asserted keys (absent = default): stop (default none) = the stop written by
 # this step; kind = the prompt's terminal; opened (default false); prompt = the
 # prompt state after the step; owed = the user's stop still owed after the
-# step; armed = the record after the step.
+# step; armed = the record after the step; countdown=T (native-path frames
+# only) = after this push the native TAG countdown runs, counted from T (the
+# scenario time of the burst's first push: never later, never earlier). A
+# platform may start it at the first push or at the push that completes the
+# burst; it must run, from T, once the burst is complete.
 # Times are ms since the scenario start. Firmware facts: every push arrives
 # twice (SOS + TEL characteristic, ms apart); a TAG countdown pushes every
 # 500 ms in its first 2 s; an ACTIVE/ACK SOS pushes once per retry
@@ -493,3 +498,165 @@ scenario other_tag_close_through_dart_never_ends_the_record
 0 terminal kind=cancel node=7 connected=true => - armed=true
 5000 close source=dart node=99 => - armed=true
 10000 frame node=7 source=dart => pending
+
+# Owner requirement (Roger 16/11/2026): after a TAG-confirmed close (0xE1,
+# 0xE2, 0xE3; native and Dart paths) a genuine NEW countdown burst (3 pushes
+# within 1.7 s) at +5 s and at +25 s is admitted at once: the native
+# countdown starts at the burst's first push. A lone ACTIVE retry of the just
+# closed cycle may only be held because the TAG confirmed the close (no
+# record left).
+
+scenario tag_close_e1_native_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false prompt=closed
+6000 frame node=7 source=native => pass armed=false
+6500 frame node=7 source=native => pass armed=false
+7000 frame node=7 source=native => pass armed=false countdown=6000
+
+scenario tag_close_e1_native_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false prompt=closed
+26000 frame node=7 source=native => pass armed=false
+26500 frame node=7 source=native => pass armed=false
+27000 frame node=7 source=native => pass armed=false countdown=26000
+
+scenario tag_close_e1_dart_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E1 => - armed=false prompt=closed
+6000 frame node=7 source=dart => pass armed=false
+6500 frame node=7 source=dart => pass armed=false
+7000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_dart_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E1 => - armed=false prompt=closed
+26000 frame node=7 source=dart => pass armed=false
+26500 frame node=7 source=dart => pass armed=false
+27000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_then_lone_retry_holds_nothing_back
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false
+3000 frame node=7 source=dart => pass armed=false
+3005 frame node=7 source=native => pass armed=false
+
+scenario tag_close_e2_native_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false prompt=closed
+6000 frame node=7 source=native => pass armed=false
+6500 frame node=7 source=native => pass armed=false
+7000 frame node=7 source=native => pass armed=false countdown=6000
+
+scenario tag_close_e2_native_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false prompt=closed
+26000 frame node=7 source=native => pass armed=false
+26500 frame node=7 source=native => pass armed=false
+27000 frame node=7 source=native => pass armed=false countdown=26000
+
+scenario tag_close_e2_dart_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E2 => - armed=false prompt=closed
+6000 frame node=7 source=dart => pass armed=false
+6500 frame node=7 source=dart => pass armed=false
+7000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e2_dart_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E2 => - armed=false prompt=closed
+26000 frame node=7 source=dart => pass armed=false
+26500 frame node=7 source=dart => pass armed=false
+27000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e2_then_lone_retry_holds_nothing_back
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false
+3000 frame node=7 source=dart => pass armed=false
+3005 frame node=7 source=native => pass armed=false
+
+scenario tag_close_e3_native_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false prompt=closed
+6000 frame node=7 source=native => pass armed=false
+6500 frame node=7 source=native => pass armed=false
+7000 frame node=7 source=native => pass armed=false countdown=6000
+
+scenario tag_close_e3_native_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false prompt=closed
+26000 frame node=7 source=native => pass armed=false
+26500 frame node=7 source=native => pass armed=false
+27000 frame node=7 source=native => pass armed=false countdown=26000
+
+scenario tag_close_e3_dart_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=dart code=E3 => - armed=false prompt=closed
+6000 frame node=7 source=dart => pass armed=false
+6500 frame node=7 source=dart => pass armed=false
+7000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e3_dart_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=dart code=E3 => - armed=false prompt=closed
+26000 frame node=7 source=dart => pass armed=false
+26500 frame node=7 source=dart => pass armed=false
+27000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e3_then_lone_retry_holds_nothing_back
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false
+3000 frame node=7 source=dart => pass armed=false
+3005 frame node=7 source=native => pass armed=false
+
+scenario tag_close_then_burst_with_tel_copies_starts_at_its_first_push
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false
+3000 frame node=7 source=native => pass
+3005 frame node=7 source=native => pass
+3500 frame node=7 source=native => pass
+3505 frame node=7 source=native => pass
+4000 frame node=7 source=native => pass countdown=3000
+
+# L1 (Roger 16/11/2026): the iOS same-TAG rule on every platform. The SDK
+# terminal of another TAG never arms the record on this TAG's countdown, and
+# this TAG's countdown keeps running.
+scenario sdk_terminal_of_another_tag_never_arms_on_this_tags_countdown
+0 seen source=countdown node=7 age=5000 => -
+0 terminal kind=cancel node=99 connected=true => - armed=false
+3000 frame node=7 source=native => pass armed=false
+
+scenario sdk_terminal_of_the_same_tag_arms_on_its_countdown
+0 seen source=countdown node=7 age=5000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+
+# L2 (Roger 16/11/2026): ONE decision delay on every platform (F17b): a lone
+# push is decided 2.0 s after it, not earlier.
+scenario lone_push_is_decided_exactly_2000ms_after_it
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+10000 frame node=7 source=native => pending prompt=closed
+11999 decide => none prompt=closed
+12000 decide => prompt opened=true prompt=open
+
+scenario lone_dart_push_is_decided_exactly_2000ms_after_it
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+10000 frame node=7 source=dart => pending prompt=closed
+11999 decide => none prompt=closed
+12000 decide => prompt opened=true prompt=open

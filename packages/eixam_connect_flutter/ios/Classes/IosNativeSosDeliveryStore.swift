@@ -86,6 +86,9 @@ final class IosNativeSosDeliveryStore {
     static let cycleStartedAt = "native_sos_cycle_started_at"
     static let lastClosedAt = "native_sos_last_closed_at"
     static let firstFrameAfterCloseAt = "native_sos_first_frame_after_close_at"
+    static let postCloseCandidateAt = "native_sos_post_close_candidate_at"
+    static let postCloseCandidatePushes = "native_sos_post_close_candidate_pushes"
+    static let postCloseLastPushAt = "native_sos_post_close_last_push_at"
     static let cycleKeptAfterStop = "native_sos_cycle_kept_after_stop"
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
@@ -149,24 +152,31 @@ final class IosNativeSosDeliveryStore {
       switch cycleState {
       case .idle:
         let timestamp = now()
+        var start = timestamp
         if let closedAt = defaults.object(forKey: Keys.lastClosedAt) as? Int,
            timestamp - closedAt < Self.closeQuietMs {
-          // Close burst / stale repeats of the SOS that just closed. Remember
-          // when frames kept coming, in case this is a new SOS.
-          if timestamp - closedAt >= Self.closeBurstMs,
-             defaults.object(forKey: Keys.firstFrameAfterCloseAt) == nil {
-            defaults.set(timestamp, forKey: Keys.firstFrameAfterCloseAt)
+          // F17c H1: inside the post-close window a countdown burst (the
+          // F17b rule: 3 distinct pushes within 1.7 s, copies < 300 ms
+          // collapse) is a new SOS, admitted at once and counted from its
+          // first push. Only lone retries of the SOS that just closed are held.
+          if let burstStart = countPostClosePush(at: timestamp) {
+            start = burstStart
+          } else {
+            // Remember when frames kept coming, in case this is a new SOS.
+            if timestamp - closedAt >= Self.closeBurstMs,
+               defaults.object(forKey: Keys.firstFrameAfterCloseAt) == nil {
+              defaults.set(timestamp, forKey: Keys.firstFrameAfterCloseAt)
+            }
+            break
           }
-          break
-        }
-        var start = timestamp
-        if let first = defaults.object(forKey: Keys.firstFrameAfterCloseAt) as? Int,
+        } else if let first = defaults.object(forKey: Keys.firstFrameAfterCloseAt) as? Int,
            timestamp - first < Self.closeQuietMs + Self.countdownMs {
           // Frames kept coming through the quiet window: a new SOS that
           // started then (its TAG countdown is already running).
           start = first
         }
         defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+        clearPostCloseBurst()
         let deadline = start + Self.countdownMs
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
         defaults.set(start, forKey: Keys.cycleStartedAt)
@@ -207,7 +217,35 @@ final class IosNativeSosDeliveryStore {
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
     defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+    clearPostCloseBurst()
     defaults.set(now(), forKey: Keys.lastClosedAt)
+  }
+
+  /// F17c H1: one push inside the post-close window, counted with the stale
+  /// guard's burst rule. Returns the burst's first push once it has
+  /// [staleBurstPushes] distinct pushes within [staleBurstWindowMs]; nil
+  /// while it is a copy or a lone retry (held).
+  private func countPostClosePush(at timestamp: Int) -> Int? {
+    if let lastPush = defaults.object(forKey: Keys.postCloseLastPushAt) as? Int,
+       timestamp - lastPush >= 0, timestamp - lastPush < Self.staleDuplicateMs {
+      return nil  // the TEL copy of the same push
+    }
+    defaults.set(timestamp, forKey: Keys.postCloseLastPushAt)
+    if let first = defaults.object(forKey: Keys.postCloseCandidateAt) as? Int,
+       timestamp - first >= 0, timestamp - first <= Self.staleBurstWindowMs {
+      let pushes = (defaults.object(forKey: Keys.postCloseCandidatePushes) as? Int ?? 1) + 1
+      defaults.set(pushes, forKey: Keys.postCloseCandidatePushes)
+      return pushes >= Self.staleBurstPushes ? first : nil
+    }
+    defaults.set(timestamp, forKey: Keys.postCloseCandidateAt)
+    defaults.set(1, forKey: Keys.postCloseCandidatePushes)
+    return nil
+  }
+
+  private func clearPostCloseBurst() {
+    for key in [Keys.postCloseCandidateAt, Keys.postCloseCandidatePushes, Keys.postCloseLastPushAt] {
+      defaults.removeObject(forKey: key)
+    }
   }
 
   /// The SDK says the SOS is over (cancelled / resolved / idle). Closes a
@@ -414,12 +452,25 @@ final class IosNativeSosDeliveryStore {
   /// No countdown burst followed the guarded frame: AMBIGUOUS. Ask the user
   /// (once: an open prompt is never re-opened), unless the user's "No" is
   /// still owed (not written yet): then the stop is re-attempted.
+  /// L2 (one rule with Android and the fixture, F17b): decided
+  /// [staleDecisionMs] after the candidate's first push, never earlier; an
+  /// early call asks to be called again at that time.
   func evaluateStaleCandidate() -> IosNativeSosTransition {
+    decideStaleCandidate(force: false)
+  }
+
+  /// [force]: a later push outside the burst window already proves the
+  /// candidate was no burst: decided now.
+  private func decideStaleCandidate(force: Bool) -> IosNativeSosTransition {
     var transition = IosNativeSosTransition()
     guard let kind = staleGuardKind,
-          let candidateAt = defaults.object(forKey: Keys.staleGuardCandidateAt) as? Int,
-          now() - candidateAt > Self.staleBurstWindowMs else {
+          let candidateAt = defaults.object(forKey: Keys.staleGuardCandidateAt) as? Int else {
       lastStaleAction = "none"
+      return transition
+    }
+    guard force || now() - candidateAt >= Self.staleDecisionMs else {
+      lastStaleAction = "none"
+      transition.evaluateStaleAt = candidateAt + Self.staleDecisionMs
       return transition
     }
     defaults.removeObject(forKey: Keys.staleGuardCandidateAt)
@@ -561,7 +612,7 @@ final class IosNativeSosDeliveryStore {
     }
     // An earlier candidate whose decision was missed (suspended) is decided
     // now (ambiguous: ask). This push opens the next candidate.
-    var transition = evaluateStaleCandidate()
+    var transition = decideStaleCandidate(force: true)
     defaults.set(timestamp, forKey: Keys.staleGuardCandidateAt)
     defaults.set(1, forKey: Keys.staleGuardCandidatePushes)
     // Scheduled from delivery: later pushes of a late-delivered burst still
@@ -635,6 +686,7 @@ final class IosNativeSosDeliveryStore {
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
     defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+    clearPostCloseBurst()
     defaults.removeObject(forKey: Keys.pendingEvents)
     return wasCounting
   }

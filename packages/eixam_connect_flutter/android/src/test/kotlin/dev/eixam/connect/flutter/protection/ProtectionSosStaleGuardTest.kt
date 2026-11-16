@@ -380,10 +380,22 @@ class ProtectionSosStaleGuardTest {
         assertEquals(armed, restored)
     }
 
+    /** A 12 B own-TAG SOS frame (nodeId u32 LE first), as the TAG pushes it. */
+    private fun sosFrame(nodeId: Int): List<Int> =
+        listOf(nodeId and 0xFF, (nodeId shr 8) and 0xFF, (nodeId shr 16) and 0xFF, (nodeId shr 24) and 0xFF) +
+            listOf(0x48, 0xCD, 0x1B, 0x34, 0x44, 0x28, 0x00, 0xC0)
+
+    /** The TAG's 6 B close frame (firmware 07 §1.2), closed with the SOS fired (sub 0x02). */
+    private fun closeFrame(opcode: Int, nodeId: Int): List<Int> =
+        listOf(opcode, 0x02, nodeId and 0xFF, (nodeId shr 8) and 0xFF, (nodeId shr 16) and 0xFF, (nodeId shr 24) and 0xFF)
+
     /**
      * F17c: the scenario fixture shared with the iOS store and the Dart contract
-     * test. Frames of both paths (native GATT, Dart-forwarded) go through the
-     * same classifier; the SDK terminal arms whenever the SOS was seen on any path.
+     * test, replayed through the production decision code of the runtime owner
+     * ([ProtectionSosNativeDecision]: frame classification, guard, native
+     * lifecycle step, SDK-terminal arming, prompt send) on real frame bytes, and
+     * the forwarded-frame parser/guard Dart's frames go through. Only side
+     * effects (persistence, timers, TAG writes) are left out.
      */
     @Test
     fun `shared stale guard scenarios replay identically`() {
@@ -396,11 +408,13 @@ class ProtectionSosStaleGuardTest {
         var state: ProtectionSosStaleGuardState? = null
         var observed: ProtectionSosObservedCycle? = null
         var lifecycle = ProtectionSosLifecycleState.idle
+        var lifecycleNodeId: Int? = null
         var unclaimed = false
         var countdownStartedAt: Long? = null
         var name = ""
         var steps = 0
         var dartFrames = 0
+        var nativeFrames = 0
         val failures = mutableListOf<String>()
         val base = 5_000_000L
         for (raw in fixture!!.readLines()) {
@@ -411,6 +425,7 @@ class ProtectionSosStaleGuardTest {
                 state = null
                 observed = null
                 lifecycle = ProtectionSosLifecycleState.idle
+                lifecycleNodeId = null
                 unclaimed = false
                 countdownStartedAt = null
                 continue
@@ -431,18 +446,23 @@ class ProtectionSosStaleGuardTest {
             try {
             when (event[1]) {
                 "seen" -> when (args["source"]) {
-                    "native" -> lifecycle = ProtectionSosLifecycleState.createPending
+                    "native" -> {
+                        lifecycle = ProtectionSosLifecycleState.createPending
+                        lifecycleNodeId = node
+                    }
                     "native_unclaimed" -> {
                         lifecycle = ProtectionSosLifecycleState.createPending
+                        lifecycleNodeId = node
                         unclaimed = true
                     }
                     "countdown" -> {
                         lifecycle = ProtectionSosLifecycleState.preConfirmSeen
+                        lifecycleNodeId = node
                         countdownStartedAt = t - args["age"]!!.toLong()
                     }
                     "dart" -> {
                         val age = args["age"]!!.toLong()
-                        val sos = ProtectionSosForwardedFrame(close = false, nodeId = node)
+                        val sos = ProtectionSosForwardedFrame.parse(sosFrame(node))!!
                         observed = guard.onForwardedFrame(null, observed, sos, t - age).observed
                         observed = guard.onForwardedFrame(null, observed, sos, t - 1).observed
                     }
@@ -450,12 +470,29 @@ class ProtectionSosStaleGuardTest {
                 }
                 "terminal" -> {
                     val terminal = ProtectionSosStaleTerminal.fromWire(args["kind"])!!
-                    if (guard.shouldArm(terminal, lifecycle, unclaimed, observed, t)) {
-                        state = guard.arm(terminal, node, t, connected = args["connected"] == "true")
+                    val step = ProtectionSosNativeDecision.onSdkTerminal(
+                        terminal = terminal,
+                        lifecycle = lifecycle,
+                        lifecycleNodeId = lifecycleNodeId,
+                        terminalNodeId = node,
+                        hasUnclaimedNativeCreate = unclaimed,
+                        countdownStartedAt = countdownStartedAt,
+                        observed = observed,
+                        now = t,
+                    )
+                    if (step.nextLifecycle != lifecycle) {
+                        countdownStartedAt = null
+                    }
+                    lifecycle = step.nextLifecycle
+                    if (step.arm) {
+                        state = guard.arm(
+                            terminal,
+                            node,
+                            t,
+                            connected = args["connected"] == "true",
+                        )
                         observed = null
                     }
-                    lifecycle = ProtectionSosLifecycleState.idle
-                    unclaimed = false
                 }
                 "frame" -> if (args["source"] == "dart") {
                     // t is Dart's receivedAtMs; delivered the native clock.
@@ -463,7 +500,7 @@ class ProtectionSosStaleGuardTest {
                     val decision = guard.onForwardedFrame(
                         state,
                         observed,
-                        ProtectionSosForwardedFrame(close = false, nodeId = node),
+                        ProtectionSosForwardedFrame.parse(sosFrame(node))!!,
                         delivered,
                         receivedAt = t,
                     )
@@ -478,27 +515,47 @@ class ProtectionSosStaleGuardTest {
                     assertEquals("$label: dart verdict", wantVerdict, decision.verdict)
                     dartFrames++
                 } else {
-                    outcome = guard.onFrame(state, node, t)
+                    val step = ProtectionSosNativeDecision.onSosFrame(state, lifecycle, sosFrame(node), t)
+                    outcome = step.outcome
                     state = outcome.state
+                    step.countdownObservedAt?.let {
+                        countdownStartedAt = it
+                        lifecycleNodeId = node
+                    }
+                    lifecycle = step.nextLifecycle
+                    nativeFrames++
                 }
                 "decide" -> {
                     outcome = state?.let { guard.onDecide(it, t) }
                         ?: ProtectionSosStaleOutcome(ProtectionSosStaleAction.none, null)
                     state = outcome.state
                 }
-                "close" -> if (args["source"] == "dart") {
-                    val decision = guard.onForwardedFrame(
-                        state,
-                        observed,
-                        ProtectionSosForwardedFrame(close = true, nodeId = node),
-                        t,
-                    )
-                    assertEquals("$label: dart verdict", ProtectionOwnTagSosVerdict.proceed, decision.verdict)
-                    state = decision.outcome.state
-                    observed = decision.observed
-                } else {
-                    state = guard.onTagClose(state)
-                    observed = null
+                "close" -> {
+                    val opcode = when (args["code"]) {
+                        "E2" -> 0xE2
+                        "E3" -> 0xE3
+                        else -> 0xE1
+                    }
+                    val bytes = closeFrame(opcode, node)
+                    if (args["source"] == "dart") {
+                        val decision = guard.onForwardedFrame(
+                            state,
+                            observed,
+                            ProtectionSosForwardedFrame.parse(bytes)!!,
+                            t,
+                        )
+                        assertEquals("$label: dart verdict", ProtectionOwnTagSosVerdict.proceed, decision.verdict)
+                        state = decision.outcome.state
+                        observed = decision.observed
+                    } else {
+                        // The owner's close path: the TAG's own close ends the guard and the cycle.
+                        assertEquals("$label: close opcode", opcode, ProtectionSosNativeDecision.closeOpcode(bytes))
+                        state = guard.onTagClose(state)
+                        observed = null
+                        lifecycle = ProtectionSosLifecycleState.idle
+                        lifecycleNodeId = null
+                        countdownStartedAt = null
+                    }
                 }
                 "link_drop" -> state = state?.let {
                     if (args["source"] == "dart") guard.onForwardedLinkDropped(it) else guard.onLinkDropped(it)
@@ -513,6 +570,12 @@ class ProtectionSosStaleGuardTest {
                 "answer" -> {
                     outcome = guard.onAnswer(state, args["choice"]!!, t)
                     state = outcome.state
+                    if (outcome.action == ProtectionSosStaleAction.sosOpened) {
+                        val step = ProtectionSosNativeDecision.onPromptSos(lifecycle)
+                        assertEquals("$label: create only when opened", step.opensNativeSos, step.queuesCreate)
+                        assertTrue("$label: the SOS is opened natively", step.opensNativeSos)
+                        lifecycle = ProtectionSosLifecycleState.createPending
+                    }
                 }
                 "stop_written" -> state = guard.onStopWritten(state, args["ok"] == "true")
                 "sdk_open" -> state = null
@@ -539,6 +602,10 @@ class ProtectionSosStaleGuardTest {
             if (outcome?.action == ProtectionSosStaleAction.sosOpened) {
                 assertTrue("$label: the SOS is opened", outcome.openSos)
             }
+            want["countdown"]?.let {
+                val running = countdownStartedAt.takeIf { lifecycle == ProtectionSosLifecycleState.preConfirmSeen }
+                assertEquals("$label: native countdown start", base + it.toLong(), running)
+            }
             want["owed"]?.let { assertEquals("$label: owed", it == "true", state?.stopOwed == true) }
             want["armed"]?.let { assertEquals("$label: armed", it == "true", state != null) }
             } catch (failure: AssertionError) {
@@ -549,6 +616,35 @@ class ProtectionSosStaleGuardTest {
         assertTrue("scenario failures:\n" + failures.joinToString("\n"), failures.isEmpty())
         assertTrue("fixture replayed ($steps steps)", steps > 100)
         assertTrue("dart frames replayed ($dartFrames)", dartFrames > 20)
+        assertTrue("native frames replayed ($nativeFrames)", nativeFrames > 20)
+    }
+
+    /** F17c M2: "Send SOS" / the timeout queue a create only when native opened the SOS. */
+    @Test
+    fun `prompt send queues a create only when native opens the SOS`() {
+        val idle = ProtectionSosNativeDecision.onPromptSos(ProtectionSosLifecycleState.idle)
+        assertTrue(idle.opensNativeSos)
+        assertTrue(idle.queuesCreate)
+        for (running in listOf(
+            ProtectionSosLifecycleState.preConfirmSeen,
+            ProtectionSosLifecycleState.createPending,
+            ProtectionSosLifecycleState.cancelPending,
+        )) {
+            val step = ProtectionSosNativeDecision.onPromptSos(running)
+            assertFalse("$running: not opened", step.opensNativeSos)
+            assertFalse("$running: no create, no active notification", step.queuesCreate)
+        }
+    }
+
+    /** F17c L2: a decision timer that fires early decides nothing and is rescheduled. */
+    @Test
+    fun `an early decide is rescheduled at exactly 2 s after the first push`() {
+        val armed = armedDisconnected()
+        val pending = guard.onFrame(armed, node, t0 + 10_000).state!!
+        val early = guard.onDecide(pending, t0 + 11_999)
+        assertEquals(ProtectionSosStaleAction.none, early.action)
+        assertEquals(t0 + 12_000, early.decideAt)
+        assertEquals(ProtectionSosStaleAction.prompt, guard.onDecide(pending, t0 + 12_000).action)
     }
 
     @Test
