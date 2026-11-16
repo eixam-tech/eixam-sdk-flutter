@@ -16806,7 +16806,10 @@ final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
   Future<void> Function(DateTime timestamp)? publishSosCancelHook;
 
   @override
-  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+  Future<void> publishOperationalSosCancel({
+    required DateTime timestamp,
+    int? ageMs,
+  }) async {
     publishedSosCancels.add(timestamp);
     await publishSosCancelHook?.call(timestamp);
   }

@@ -1614,7 +1614,10 @@ class MqttOperationalSosRepository
         final timestamp =
             DateTime.tryParse('${action.payload['timestamp']}') ??
             action.createdAt;
-        await realtimeClient.publishOperationalSosCancel(timestamp: timestamp);
+        await realtimeClient.publishOperationalSosCancel(
+          timestamp: timestamp,
+          ageMs: _outbox.ageMsOf(action),
+        );
     }
   }
 

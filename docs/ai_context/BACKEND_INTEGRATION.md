@@ -24,7 +24,7 @@
 | Behavior | Current implementation |
 |---|---|
 | Trigger | MQTT operational publish in production wiring |
-| Cancel | HTTP `POST /v1/sdk/sos/cancel` |
+| Cancel | MQTT `cancel: true` on `sos/alerts/<sdkUserId>` (durable outbox; see below) |
 | Resolve | HTTP `POST /v1/sdk/sos/resolve` |
 | Get active SOS | HTTP `GET /v1/sdk/sos` |
 
@@ -45,6 +45,41 @@
   - telemetry publish: `tel/<sdkUserId>/data`
   - SOS publish: `sos/alerts/<sdkUserId>`
   - SOS event subscribe: `sos/events/<sdkUserId>`
+
+### SOS cancel payload: `ageMs` (optional)
+
+The operational SOS cancel on `sos/alerts/<sdkUserId>` carries an optional
+integer `ageMs` next to the existing fields. Trigger payloads (and every other
+publish) never carry it; nothing changes on HTTP.
+
+Cancel (published 4.2 s after the cancel was created on the phone):
+
+```json
+{"timestamp":"2026-11-16T12:00:05.000Z","cancel":true,"ageMs":4200}
+```
+
+Trigger (no `ageMs`):
+
+```json
+{"timestamp":"2026-11-16T12:00:00.000Z","identitySource":"app","triggerSource":"commercial_app"}
+```
+
+(`userId` is added on legacy user topics, as before.)
+
+- `ageMs` = milliseconds elapsed since the cancel was created on the phone,
+  recomputed at each publish attempt (first publish, every outbox retry, and
+  after an app restart).
+- In-process it is measured with a monotonic clock, so wall-clock changes on the
+  phone cannot skew it. After a restart there is no monotonic reference: it is
+  wall-clock now − the persisted creation time.
+- Always an integer >= 0 (a wall clock moved backwards yields 0). No explicit
+  cap: a cancel older than the outbox `cancelMaxAge` (24 h) expires instead of
+  being published.
+- The backend dates the cancel as server receive time − `ageMs`.
+- `timestamp` (the phone's wall-clock creation time) is kept unchanged for older
+  backends; `cancel: true` is unchanged.
+- Code: `SdkMqttContract.buildOperationalSosCancelEnvelope`,
+  `SosDeliveryOutbox.ageMsOf`.
 
 ## Telemetry Upload Strategy
 
