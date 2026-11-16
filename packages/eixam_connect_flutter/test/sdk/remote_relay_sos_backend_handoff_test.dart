@@ -3874,6 +3874,9 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   @override
   Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
 
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) async {}
+
   int ackPendingNativeSosCancelCalls = 0;
 
   @override

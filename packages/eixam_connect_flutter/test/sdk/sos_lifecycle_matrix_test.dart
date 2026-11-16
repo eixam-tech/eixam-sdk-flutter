@@ -17736,6 +17736,13 @@ class _SnapshotProtectionPlatformAdapter extends Fake
     return true;
   }
 
+  final List<bool> stopWrittenReports = <bool>[];
+
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) async {
+    stopWrittenReports.add(success);
+  }
+
   _SnapshotProtectionPlatformAdapter(
     this.snapshot, {
     Completer<ProtectionPlatformCommandResult>? commandResult,
@@ -20827,6 +20834,25 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
       OwnTagSosFrameVerdict.proceed;
   Object? classifyError;
   Completer<void>? classifyHang;
+  Completer<void>? closeHang;
+
+  @override
+  Future<void> closeNativeSosCycle({
+    int? nodeId,
+    bool force = false,
+    String? terminal,
+  }) async {
+    await super.closeNativeSosCycle(
+      nodeId: nodeId,
+      force: force,
+      terminal: terminal,
+    );
+    final hang = closeHang;
+    if (hang != null && !force) {
+      await hang.future;
+    }
+  }
+
   final List<OwnTagSosFrameReport> frames = <OwnTagSosFrameReport>[];
   final List<String> disarmReasons = <String>[];
   final List<bool> linkNotes = <bool>[];
@@ -21048,83 +21074,92 @@ void _cancelDuringCountdownTests() {
       }
     }
 
-    void expectNoNewSos(
-      _SdkSosHarness harness,
-      SosLifecycleSnapshot cancelled,
-      SosLifecycleSnapshot after,
-    ) {
-      expect(after.generation, cancelled.generation, reason: 'no new SOS');
-      expect(after.isOpen, isFalse);
-      expect(harness.sosRepository.triggerCallCount, 0, reason: 'no incident');
-      expect(
-        messages.where((m) => m.startsWith('SOS_OUTBOX_ENQUEUED kind=trigger')),
-        isEmpty,
-      );
-      expect(
-        harness.deviceSosController.currentStatus.state,
-        isNot(anyOf(DeviceSosState.preConfirm, DeviceSosState.active)),
-        reason: 'no Dart countdown from a frame of the cancelled cycle',
+    // F17c (Roger 16/11/2026): no silent Dart drop. Native records every
+    // unconfirmed stop and asks the user about an ambiguous retry (prompt
+    // tests below). When native nevertheless lets a frame through after it
+    // knew the terminal (no record, or the classifier is unreachable: fail
+    // open), Dart never drops it: the SOS goes through.
+    for (final variant in <String>['native_proceed', 'classifier_error']) {
+      test(
+        'after an app cancel, a stray ACTIVE retry native lets through '
+        '($variant) is never dropped silently by the Dart closure fence',
+        () async {
+          final adapter = iosNative();
+          final written = <int>[];
+          final harness = _SdkSosHarness(
+            connectedBle: true,
+            connectedNodeId: 0x1234,
+            deviceCountdown: countdown,
+            protectionPlatformAdapter: adapter,
+          );
+          try {
+            final cancelled = await preSosThenCancelOutOfRange(
+              harness,
+              written,
+            );
+            await settle(countdown.inMilliseconds + 300);
+            if (variant == 'classifier_error') {
+              adapter.classifyError = StateError('native unreachable');
+            }
+            await connect(harness, written);
+            final forwardedBefore = adapter.frames.length;
+            await activeRetries(harness, firstPacketId: 6, count: 1);
+            await settle(50);
+            expect(adapter.frames.length - forwardedBefore, 2);
+            final after = await harness.sdk.getSosLifecycle();
+            expect(
+              after.generation,
+              cancelled.generation + 1,
+              reason: 'let through by native: the SOS goes through',
+            );
+            expect(after.isOpen, isTrue);
+            expect(
+              messages.where(
+                (m) =>
+                    m.startsWith('SOS_PHYSICAL_START_ADMISSION') &&
+                    m.contains('reason=physical_episode_closure_not_observed'),
+              ),
+              isEmpty,
+              reason: 'no silent drop',
+            );
+          } finally {
+            await harness.dispose();
+          }
+        },
       );
     }
 
-    test(
-      'reconnect after the TAG countdown ended (field ~30 s, then the '
-      '60 s retry ~90 s), even with native answering proceed: the Dart '
-      'physical-closure fence opens no SOS from the cancelled cycle',
-      () async {
-        final adapter = iosNative();
-        final written = <int>[];
-        final harness = _SdkSosHarness(
-          connectedBle: true,
-          connectedNodeId: 0x1234,
-          deviceCountdown: countdown,
-          protectionPlatformAdapter: adapter,
+    test('frames received BEFORE native knew the cancel (in flight) keep the '
+        'closure fence: the cancelled SOS is not reopened', () async {
+      final adapter = iosNative();
+      final release = Completer<void>();
+      adapter.closeHang = release;
+      final written = <int>[];
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: countdown,
+        protectionPlatformAdapter: adapter,
+      );
+      try {
+        final cancelled = await preSosThenCancelOutOfRange(harness, written);
+        await connect(harness, written);
+        // Native has not acknowledged the terminal yet: this frame waits.
+        unawaited(activeRetries(harness, firstPacketId: 6, count: 1));
+        await settle(100);
+        expect(
+          (await harness.sdk.getSosLifecycle()).generation,
+          cancelled.generation,
+          reason: 'not classified before native knows the cancel',
         );
-        try {
-          final cancelled = await preSosThenCancelOutOfRange(harness, written);
-          // The TAG countdown completes out of range -> ACTIVE.
-          await settle(countdown.inMilliseconds + 300);
-          await connect(harness, written);
-          final forwardedBefore = adapter.frames.length;
-          await activeRetries(harness, firstPacketId: 6);
-          expect(
-            adapter.frames.length - forwardedBefore,
-            6,
-            reason: 'native classifies every frame (and answers proceed)',
-          );
-          // Longer than a full Dart countdown: nothing promotes.
-          await settle(countdown.inMilliseconds + 500);
-          expectNoNewSos(
-            harness,
-            cancelled,
-            await harness.sdk.getSosLifecycle(),
-          );
-          // The 60 s retry, after a second link drop.
-          await harness.deviceSosController.detach();
-          await settle(300);
-          await connect(harness, written);
-          await activeRetries(harness, firstPacketId: 9, count: 1);
-          await settle(countdown.inMilliseconds + 500);
-          expectNoNewSos(
-            harness,
-            cancelled,
-            await harness.sdk.getSosLifecycle(),
-          );
-          expect(
-            messages.where(
-              (m) =>
-                  m.startsWith('SOS_PHYSICAL_START_ADMISSION') &&
-                  m.contains('decision=reject_replay') &&
-                  m.contains('reason=physical_episode_closure_not_observed'),
-            ),
-            isNotEmpty,
-            reason: 'dropped by the physical-closure admission fence',
-          );
-        } finally {
-          await harness.dispose();
-        }
-      },
-    );
+        release.complete();
+        await settle(300);
+        expect(adapter.frames, isNotEmpty);
+      } finally {
+        if (!release.isCompleted) release.complete();
+        await harness.dispose();
+      }
+    });
 
     /// A phone as in production: the MQTT operational repository on a
     /// realtime client (backend `processed` / portal `resolved` arrive as MQTT
@@ -21467,8 +21502,12 @@ void _cancelDuringCountdownTests() {
         final cancelled = await preSosThenCancelOutOfRange(harness, written);
         await settle(countdown.inMilliseconds + 300);
         await connect(harness, written);
+        // F17c: native holds the unconfirmed stop's retries (prompt).
+        adapter.verdictFor = (_) => OwnTagSosFrameVerdict.suppress;
         await activeRetries(harness, firstPacketId: 6, count: 1);
-        // The user stops the TAG on the TAG itself: E1 (device cancel).
+        // The user stops the TAG on the TAG itself: E1 (device cancel); the
+        // record ends and native lets frames through again.
+        adapter.verdictFor = (_) => OwnTagSosFrameVerdict.proceed;
         final close = EixamSosEventPacket.tryParse(const <int>[
           0xE1, 0x00, 0x34, 0x12, 0x00, 0x00, //
         ])!;
@@ -22008,6 +22047,9 @@ void _ambiguousSosPromptTests() {
         expect(written, contains(0x04), reason: 'the matching stop (cancel)');
         expect(written, isNot(contains(0x07)));
         expect(phone.realtime.publishedSos, isEmpty, reason: 'no incident');
+        expect(adapter.stopWrittenReports, <bool>[
+          true,
+        ], reason: 'native learns the stop was written: the next retry asks');
         final after = await phone.harness.sdk.getSosLifecycle();
         expect(after.generation, cancelled.generation);
         expect(control(phone).currentAmbiguousTagSosPrompt, isNull);
@@ -22267,6 +22309,39 @@ void _ambiguousSosPromptTests() {
           reason: 'a closed prompt cannot be answered',
         );
         expect(phone.realtime.publishedSos, isEmpty);
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('"No" with a failing TAG write: Dart reports it, the stop stays '
+        'owed natively (re-attempted on the next retry, no prompt)', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, _) = await cancelOutOfRange(adapter, written);
+      try {
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        await phone.harness.deviceSosController.attach(
+          commandWriter: (command) async {
+            if (command.opcode == 0x04) {
+              throw StateError('GATT write failed');
+            }
+            written.add(command.opcode);
+          },
+          transportId: 'ble-1',
+        );
+        await settle(50);
+        await control(
+          phone,
+        ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.stopTag);
+        await settle(200);
+        expect(adapter.stopWrittenReports, <bool>[false]);
+        expect(phone.realtime.publishedSos, isEmpty, reason: 'never an SOS');
       } finally {
         await phone.dispose();
       }

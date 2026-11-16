@@ -166,15 +166,14 @@ class ProtectionSosStaleGuardTest {
     }
 
     @Test
-    fun `reconnect then silence over 90 s admits the next single frame as a new SOS`() {
+    fun `reconnect then silence over 90 s - the next single frame is still ambiguous (F17c, no gap end)`() {
         val reconnectAt = t0 + 120_000L
         val reconnected = guard.onReconnected(armedDisconnected(), reconnectAt)
         assertFalse(reconnected.linkDroppedSinceLastFrame)
         assertEquals(reconnectAt, reconnected.lastFrameAt)
         val outcome = guard.onFrame(reconnected, node, reconnectAt + 95_000L)
-        assertEquals(ProtectionSosStaleAction.disarmed, outcome.action)
-        assertEquals("gap", outcome.reason)
-        assertTrue(outcome.passesToLifecycle)
+        assertEquals(ProtectionSosStaleAction.pending, outcome.action)
+        assertFalse(outcome.passesToLifecycle)
     }
 
     @Test
@@ -219,15 +218,36 @@ class ProtectionSosStaleGuardTest {
     }
 
     @Test
-    fun `no link drop and a gap over 90 s ends the guard`() {
-        val outcome = guard.onFrame(armedConnected(), node, t0 + 120_000L)
-        assertEquals("gap", outcome.reason)
+    fun `no link drop and a gap over 90 s keeps the record (F17c)`() {
+        assertEquals(ProtectionSosStaleAction.pending, guard.onFrame(armedConnected(), node, t0 + 120_000L).action)
     }
 
     @Test
-    fun `the record ends after one day`() {
-        val outcome = guard.onFrame(armedDisconnected(), node, t0 + ProtectionSosStaleGuard.capMs + 1L)
-        assertEquals("cap", outcome.reason)
+    fun `the record has no time cap (F17c)`() {
+        val outcome = guard.onFrame(armedDisconnected(), node, t0 + 2L * 86_400_000L)
+        assertEquals(ProtectionSosStaleAction.pending, outcome.action)
+    }
+
+    @Test
+    fun `an owed stop is re-attempted until written, then a retry asks again`() {
+        val run = Run(armedDisconnected())
+        run.frame(t0 + 30_000L)
+        run.finish(t0 + 32_000L)
+        val no = guard.onAnswer(run.state, "stopTag", t0 + 33_000L)
+        assertTrue(no.state!!.stopOwed)
+        val owed = Run(guard.onStopWritten(no.state, success = false))
+        owed.frame(t0 + 40_000L)
+        owed.finish(t0 + 42_000L)
+        assertEquals("failed write: still owed, re-attempted", 1, owed.stops)
+        assertEquals(0, owed.prompts)
+        assertEquals("no prompt open: a timeout is impossible", ProtectionSosStaleAction.none,
+            guard.onAnswer(owed.state, "timeout", t0 + 90_000L).action)
+        val written = Run(guard.onStopWritten(owed.state, success = true))
+        assertFalse(written.state!!.stopOwed)
+        written.frame(t0 + 100_000L)
+        written.finish(t0 + 102_000L)
+        assertEquals(0, written.stops)
+        assertEquals("written: the next retry asks again", 1, written.prompts)
     }
 
     @Test
@@ -494,6 +514,7 @@ class ProtectionSosStaleGuardTest {
                     outcome = guard.onAnswer(state, args["choice"]!!, t)
                     state = outcome.state
                 }
+                "stop_written" -> state = guard.onStopWritten(state, args["ok"] == "true")
                 "sdk_open" -> state = null
                 else -> throw AssertionError("$name: unknown event ${event[1]}")
             }
@@ -518,6 +539,7 @@ class ProtectionSosStaleGuardTest {
             if (outcome?.action == ProtectionSosStaleAction.sosOpened) {
                 assertTrue("$label: the SOS is opened", outcome.openSos)
             }
+            want["owed"]?.let { assertEquals("$label: owed", it == "true", state?.stopOwed == true) }
             want["armed"]?.let { assertEquals("$label: armed", it == "true", state != null) }
             } catch (failure: AssertionError) {
                 // Every failing step is reported, not only the first one.

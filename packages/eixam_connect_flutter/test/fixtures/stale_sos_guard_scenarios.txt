@@ -12,10 +12,14 @@
 # own-TAG SOS seen on any path (native handed over, native countdown, Dart
 # forwarded frames) arms it, whatever path saw it, unless native still owes an
 # unclaimed create of that SOS. Only the TAG's close frame, a countdown burst,
-# the user's answer (send / timeout), a session change, a new SDK SOS, a 90 s
-# gap with the link up, or the one-day cap end it. A non-burst frame under it
-# is AMBIGUOUS: native asks the user (prompt), it never stops the TAG and
-# never drops the frame silently. The 30 s native timeout sends the SOS.
+# the user's answer (send / timeout), a session change or a new SDK SOS end it
+# (Roger 16/11/2026: no gap or time cap; a stray retry after any silence still
+# asks). A non-burst frame under it is AMBIGUOUS: native asks the user
+# (prompt), it never stops the TAG and never drops the frame silently. The 30 s
+# native timeout sends the SOS. After "No" the stop is OWED until a GATT write
+# of it succeeded (native write result, or Dart's report when Dart owns the
+# link): retries meanwhile re-attempt it without asking; once written, a retry
+# asks again.
 #
 # Line format (plain text: the Android unit-test classpath has no JSON parser):
 #   <t_ms> <event> [key=value ...] => <action> [stop=cancel|resolve]
@@ -46,6 +50,9 @@
 #   answer choice=sendSos|stopTag|timeout
 #                         the user's answer to the prompt (notification action
 #                         or app), or the native 30 s timer firing
+#   stop_written ok=true|false
+#                         the result of the GATT write of the owed stop (native
+#                         write callback, or Dart's reportOwnTagSosStopWritten)
 #   close source=native|dart [node=N]
 #                         the TAG's own close frame 0xE1/0xE2/0xE3, any path;
 #                         another TAG's close never ends the record
@@ -55,14 +62,15 @@
 #   sdk_open              the SDK opened a new SOS lifecycle (Dart disarms native)
 # actions: pass (normal path: not armed / ignored / disarmed), pending, duplicate,
 #          newSos, prompt (ambiguous: ask the user; opened=true when this step
-#          opened the prompt, false while one is already open), stale (the user
-#          already answered "No" within 10 min: write the stop again), sosOpened
+#          opened the prompt, false while one is already open), stale (the
+#          user's "No" is still owed, not yet written: re-attempt it), sosOpened
 #          (send / timeout: native opens the SOS through its create), stop (the
 #          user's "No": write the matching stop), none, - (no decision).
 #          Dart verdicts: pass -> proceed, newSos -> newSos, others -> suppress.
 # Asserted keys (absent = default): stop (default none) = the stop written by
 # this step; kind = the prompt's terminal; opened (default false); prompt = the
-# prompt state after the step; armed = the record after the step.
+# prompt state after the step; owed = the user's stop still owed after the
+# step; armed = the record after the step.
 # Times are ms since the scenario start. Firmware facts: every push arrives
 # twice (SOS + TEL characteristic, ms apart); a TAG countdown pushes every
 # 500 ms in its first 2 s; an ACTIVE/ACK SOS pushes once per retry
@@ -108,19 +116,70 @@ scenario ios_stale_frame_reaches_dart_first_then_send
 235000 answer choice=sendSos => sosOpened prompt=closed armed=false
 235000 answer choice=sendSos => none prompt=closed armed=false
 
-# "No" stops the TAG; until it confirms, its next ACTIVE retry within 10 min of
-# the answer is stopped again without asking (the user already answered).
-scenario android_foreground_cancel_seen_only_by_dart_then_no
+# (i) "No": the stop is owed until a write of it succeeded. A retry before
+# that re-attempts the stop without a second prompt.
+scenario no_retry_before_the_write_reattempts_the_stop
 0 seen source=dart node=7 age=30000 => -
 0 terminal kind=cancel node=7 connected=false => - armed=true
 200000 link_up => - armed=true
 230000 frame node=7 source=dart => pending
 230005 frame node=7 source=dart => duplicate
 232000 decide => prompt kind=cancel opened=true prompt=open armed=true
-236000 answer choice=stopTag => stop stop=cancel prompt=closed armed=true
+236000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
 250000 frame node=7 source=dart => pending
-252000 decide => stale stop=cancel prompt=closed armed=true
+252000 decide => stale stop=cancel prompt=closed owed=true armed=true
 252100 close source=dart => - armed=false
+
+# A failed write (or no link) keeps the stop owed: the next retry re-attempts.
+# A timeout while owed never happens: no prompt is open.
+scenario no_write_failure_keeps_the_stop_owed
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+125200 stop_written ok=false => - owed=true armed=true
+152000 answer choice=timeout => none prompt=closed owed=true armed=true
+180000 frame node=7 source=native => pending
+182000 decide => stale stop=cancel prompt=closed owed=true armed=true
+182200 stop_written ok=true => - owed=false armed=true
+
+# (ii) Once the stop was written, a retry asks again (no silent window).
+scenario no_retry_after_the_write_asks_again
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=resolve prompt=closed owed=true armed=true
+125300 stop_written ok=true => - owed=false armed=true
+185000 frame node=7 source=dart => pending
+187000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
+
+# (iii) A genuine new countdown while the stop is owed: the normal new SOS.
+scenario countdown_burst_while_the_stop_is_owed_is_a_new_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+140000 frame node=7 source=dart => pending
+140500 frame node=7 source=dart => pending
+141000 frame node=7 source=dart => newSos owed=false armed=false
+
+scenario countdown_burst_after_the_stop_was_written_is_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+125200 stop_written ok=true => - owed=false armed=true
+140000 frame node=7 source=native => pending
+140500 frame node=7 source=native => pending
+141000 frame node=7 source=native => newSos armed=false
 
 scenario android_foreground_portal_resolve_seen_only_by_dart_then_no
 0 seen source=dart node=7 age=45000 => -
@@ -310,39 +369,36 @@ scenario new_sdk_sos_closes_an_open_prompt
 14000 sdk_open => - armed=false prompt=closed
 42000 answer choice=timeout => none prompt=closed armed=false
 
-scenario gap_without_link_drop_ends_record
+# Roger 16/11/2026: no 90 s gap end. A stray retry after the link stayed up
+# and silent for longer still asks (was: passed, then dropped by Dart).
+scenario connected_silence_never_ends_the_record
 0 seen source=native node=7 age=30000 => -
 0 terminal kind=cancel node=7 connected=true => - armed=true
 10000 frame node=7 source=native => pending
 12000 decide => prompt kind=cancel opened=true prompt=open armed=true
-15000 answer choice=stopTag => stop stop=cancel prompt=closed armed=true
-105000 frame node=7 source=dart => pass armed=false
+15000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+15200 stop_written ok=true => - owed=false armed=true
+105000 frame node=7 source=dart => pending armed=true
+107000 decide => prompt kind=cancel opened=true prompt=open armed=true
 
-# The record outlives the old 10 min stale cap (a TAG out of range for long is
-# the 4b case; the restart duplicate is replaced by the prompt), up to one day.
+scenario connected_silence_then_native_retry_still_asks
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+200000 frame node=7 source=native => pending armed=true
+202000 decide => prompt kind=resolve opened=true prompt=open armed=true
+
+# No time cap either (a TAG out of range for long is the 4b case).
 scenario ambiguous_after_ten_minutes_still_prompts
 0 seen source=native node=7 age=30000 => -
 0 terminal kind=cancel node=7 connected=false => - armed=true
 601000 frame node=7 source=dart => pending armed=true
 603000 decide => prompt kind=cancel opened=true prompt=open armed=true
 
-scenario one_day_cap
+scenario ambiguous_after_a_day_still_prompts
 0 seen source=native node=7 age=30000 => -
 0 terminal kind=cancel node=7 connected=false => - armed=true
-86401000 frame node=7 source=dart => pass armed=false
-
-# The user's "No" is consent for 10 min only; later frames ask again.
-scenario a_no_is_consent_for_ten_minutes_only
-0 seen source=dart node=7 age=30000 => -
-0 terminal kind=cancel node=7 connected=false => - armed=true
-100000 link_up => - armed=true
-120000 frame node=7 source=dart => pending
-122000 decide => prompt kind=cancel opened=true prompt=open armed=true
-125000 answer choice=stopTag => stop stop=cancel prompt=closed armed=true
-126000 link_drop => - armed=true
-800000 link_up => - armed=true
-810000 frame node=7 source=dart => pending
-812000 decide => prompt kind=cancel opened=true prompt=open armed=true
+86401000 frame node=7 source=dart => pending armed=true
+86403000 decide => prompt kind=cancel opened=true prompt=open armed=true
 
 scenario other_tag_never_ends_the_record
 0 seen source=native node=7 age=30000 => -

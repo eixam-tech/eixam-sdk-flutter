@@ -548,9 +548,9 @@ struct IosNativeSosDeliveryStoreTests {
     let no = store.answerPrompt("stopTag")
     check(no.stopTag == .cancel && !no.queuedCreate, "No: the cancel stop, no incident")
     check(store.promptDeadlineAt == nil && store.staleGuardKind == .cancel, "prompt closed, record kept")
-    clock += 60_000  // the next retry frame of the same SOS
+    clock += 60_000  // the next retry frame of the same SOS, stop not written yet
     let again = staleFrame(store, key: "sos:7:72")
-    check(again.stopTag == .cancel, "within the No consent: stopped again")
+    check(again.stopTag == .cancel, "owed stop (not written yet): re-attempted")
     check(again.openPromptDeadlineAt == nil, "never asked twice for the same answer")
     check(store.pendingCreateCount == 0, "still no new incident")
   }
@@ -647,10 +647,11 @@ struct IosNativeSosDeliveryStoreTests {
     _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
     clock += 10_000
     _ = staleFrame(store, key: "sos:7:79")
-    clock += 95_000  // longer than the TAG's 60 s retry: the TAG went idle
-    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:4", deviceId: nil)
-    check(press.countdownDeadlineAt == clock + 20_000, "after a gap a press is admitted")
-    check(store.staleGuardKind == nil, "gap ended the guard")
+    clock += 95_000  // longer than the TAG's 60 s retry
+    let stray = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:4", deviceId: nil)
+    check(stray.countdownDeadlineAt == nil && store.lastStaleAction == "pending",
+          "F17c: no gap end; a stray retry is still ambiguous")
+    check(store.staleGuardKind == .cancel, "record kept")
   }
 
   static func guardEndsAfterTenMinutes() {
@@ -659,9 +660,10 @@ struct IosNativeSosDeliveryStoreTests {
     store.noteLinkDropped()
     _ = store.closeDeliveredCycle(nodeId: 7, terminal: .cancel)
     clock += 86_401_000
-    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:5", deviceId: nil)
-    check(press.countdownDeadlineAt == clock + 20_000, "one-day cap: admitted")
-    check(store.staleGuardKind == nil, "cap ended the guard")
+    let stray = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:5", deviceId: nil)
+    check(stray.countdownDeadlineAt == nil && store.lastStaleAction == "pending",
+          "F17c: no time cap; still ambiguous")
+    check(store.staleGuardKind == .cancel, "record kept")
   }
 
   static func closeWithRecentFramesStopsTheTagAtOnce() {
@@ -694,9 +696,12 @@ struct IosNativeSosDeliveryStoreTests {
     store.noteLinkDropped()
     clock += 5_000
     store.noteLinkUp()
-    clock += 95_000  // reconnected, but no frame for 95 s: the TAG is idle
-    let press = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:6", deviceId: nil)
-    check(press.countdownDeadlineAt == clock + 20_000, "idle after reconnect: a press is admitted")
+    store.noteStopWritten(success: true)
+    clock += 95_000  // reconnected, but no frame for 95 s
+    _ = store.observe(kind: .active, nodeId: 7, cycleKey: "sos:7:6", deviceId: nil)
+    clock += 2_000
+    check(store.evaluateStaleCandidate().openPromptDeadlineAt != nil,
+          "F17c: written stop, then a stray retry asks again")
   }
 
   static func resendPairIsNotACountdown() {
@@ -967,6 +972,8 @@ struct IosNativeSosDeliveryStoreTests {
         clock = base + t
         transition = store.answerPrompt(args["choice"] ?? "")
         action = store.lastStaleAction
+      case "stop_written":
+        store.noteStopWritten(success: args["ok"] == "true")
       case "link_drop":
         store.noteLinkDropped()
       case "link_up":
@@ -993,6 +1000,9 @@ struct IosNativeSosDeliveryStoreTests {
       if let prompt = want["prompt"] {
         let got = store.promptDeadlineAt != nil ? "open" : "closed"
         check(got == prompt, "\(label): prompt \(got) != \(prompt)")
+      }
+      if let owed = want["owed"] {
+        check(store.stopOwed == (owed == "true"), "\(label): owed \(store.stopOwed) != \(owed)")
       }
       if action == "sosOpened" {
         check(transition.queuedCreate && store.pendingCreateCount == 1, "\(label): the SOS is opened")
