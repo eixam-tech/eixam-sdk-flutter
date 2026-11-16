@@ -7,6 +7,7 @@ import 'package:eixam_connect_flutter/src/device/ble_device_runtime_provider.dar
 import 'package:eixam_connect_flutter/src/device/ble_incoming_event.dart';
 import 'package:eixam_connect_flutter/src/device/device_sos_controller.dart';
 import 'package:eixam_connect_flutter/src/device/eixam_ble_protocol.dart';
+import 'package:eixam_connect_flutter/src/device/eixam_sos_packet.dart';
 import 'package:eixam_connect_flutter/src/device/own_tag_sos_frame_gate.dart';
 import 'package:eixam_connect_flutter/src/diagnostics/sdk_release_log.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,105 +16,219 @@ import '../support/builders/device_status_builder.dart';
 import '../support/device/mock_ble_client.dart';
 
 /// F17c: Dart's side of the single stale-SOS decision point. Native classifies
-/// (Swift and Kotlin replay the same fixture against the real store); Dart only
-/// forwards every own-TAG frame it receives and acts on the verdict. This test
-/// replays the fixture's Dart-path frames through the channel contract fake.
+/// (Swift and Kotlin replay the same fixture against the real store; Dart
+/// cannot run either store, so the verdicts here are the ones those replays
+/// assert). Dart only forwards every own-TAG frame it receives and acts on the
+/// verdict: the fixture's Dart-path frames enter as raw BLE notifications
+/// through BleDeviceRuntimeProvider (not the gate directly), so the routing
+/// itself is under test.
+class _CountingDeviceSosController extends DeviceSosController {
+  int startPacketsHandled = 0;
+
+  @override
+  void handleIncomingSosPacket(
+    EixamSosPacket packet, {
+    required DeviceSosTransitionSource source,
+    DeviceSosStateResolutionContext? resolutionContext,
+  }) {
+    startPacketsHandled++;
+    super.handleIncomingSosPacket(
+      packet,
+      source: source,
+      resolutionContext: resolutionContext,
+    );
+  }
+}
+
 void main() {
   group('shared stale-SOS fixture, Dart side of the channel contract', () {
     final fixture = File('test/fixtures/stale_sos_guard_scenarios.txt');
+    const ownNode = 0x1234;
 
-    test('every Dart-received frame is forwarded in order; only proceed and '
-        'newSos verdicts reach the device SOS state', () async {
+    /// One TAG SOS push (12-byte SOS frame); [variant] keeps every push
+    /// distinct so Dart's own copy filter never hides what the gate decided.
+    List<int> sosPush(int node, int variant) => <int>[
+      node & 0xFF,
+      (node >> 8) & 0xFF,
+      0x00,
+      0x00,
+      0x48,
+      0xCD,
+      0x1B,
+      0x34,
+      variant & 0xFF,
+      0x28,
+      (variant >> 8) & 0x0F,
+      0xC0,
+    ];
+
+    List<int> closeFrame(int node) => <int>[
+      0xE1,
+      0x02,
+      node & 0xFF,
+      (node >> 8) & 0xFF,
+      0x00,
+      0x00,
+    ];
+
+    test('every Dart-received own-TAG frame goes from the BLE provider to '
+        'native in order; only proceed and newSos verdicts reach the device '
+        'SOS state', () async {
       expect(fixture.existsSync(), isTrue);
       var scenarios = 0;
       var dartFrames = 0;
+      var variant = 0;
       String? name;
-      late OwnTagSosFrameGate gate;
-      late List<OwnTagSosFrameReport> forwarded;
-      late List<String> processed;
+      _CountingDeviceSosController? controller;
+      MockBleClient? ble;
+      BleDeviceRuntimeProvider? provider;
+      final forwarded = <OwnTagSosFrameReport>[];
       final expectedVerdicts = <OwnTagSosFrameVerdict>[];
 
-      for (final raw in fixture.readAsLinesSync()) {
-        final line = raw.trim();
-        if (line.isEmpty || line.startsWith('#')) {
-          continue;
-        }
-        if (line.startsWith('scenario ')) {
-          name = line.substring('scenario '.length);
-          scenarios++;
-          gate = OwnTagSosFrameGate();
-          forwarded = <OwnTagSosFrameReport>[];
-          processed = <String>[];
-          expectedVerdicts.clear();
-          gate.setClassifier((frame) async {
-            forwarded.add(frame);
-            if (frame.isClose) {
-              return OwnTagSosFrameVerdict.proceed;
-            }
-            // The native verdict the Swift/Kotlin replays assert for this line.
-            return expectedVerdicts.removeAt(0);
-          });
-          continue;
-        }
-        final parts = line.split(' => ');
-        final event = parts[0].split(' ');
-        final expected = parts[1].split(' ').first;
-        final args = <String, String>{
-          for (final token in event.skip(2))
-            if (token.contains('='))
-              token.split('=').first: token.split('=').last,
-        };
-        final label = '$name @${event[0]} ${event[1]}';
-        if (args['source'] != 'dart') {
-          continue; // native-path frames never reach Dart's gate
-        }
-        switch (event[1]) {
-          case 'frame':
-            final verdict = switch (expected) {
-              'pass' => OwnTagSosFrameVerdict.proceed,
-              'newSos' => OwnTagSosFrameVerdict.newSos,
-              _ => OwnTagSosFrameVerdict.suppress,
-            };
-            expectedVerdicts.add(verdict);
-            final before = forwarded.length;
-            final processedBefore = processed.length;
-            gate.submitStartFrame(
-              OwnTagSosFrameReport(
-                bytes: const <int>[0x07, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x80],
-                characteristic: 'sos',
-                receivedAt: DateTime.now(),
-              ),
-              () => processed.add(label),
-            );
-            await gate.idle;
-            dartFrames++;
-            expect(forwarded.length, before + 1, reason: '$label: forwarded');
-            expect(
-              processed.length - processedBefore,
-              verdict == OwnTagSosFrameVerdict.suppress ? 0 : 1,
-              reason: '$label: Dart acts only on $verdict',
-            );
-          case 'close':
-            final before = forwarded.length;
-            gate.forwardCloseFrame(
-              OwnTagSosFrameReport(
-                bytes: const <int>[0xE1, 0x02, 0x07, 0, 0, 0],
-                characteristic: 'sos',
-                receivedAt: DateTime.now(),
-                isClose: true,
-              ),
-            );
-            await gate.idle;
-            expect(forwarded.length, before + 1, reason: '$label: forwarded');
-            expect(forwarded.last.isClose, isTrue);
-          case 'seen':
-            break;
-          default:
-            fail('$label: unexpected Dart-path event');
-        }
+      Future<void> closeScenario() async {
+        await provider?.dispose();
+        await ble?.dispose();
+        provider = null;
+        ble = null;
       }
-      expect(scenarios, greaterThan(15));
-      expect(dartFrames, greaterThan(20));
+
+      Future<void> deliver(EixamBleChannel channel, List<int> payload) async {
+        ble!.emitNotification(
+          MockBleClient.demoDeviceId,
+          channel: channel,
+          payload: payload,
+        );
+        await pumpEventQueue(times: 10);
+        await controller!.ownTagSosFrameGate.idle;
+        await pumpEventQueue(times: 5);
+      }
+
+      try {
+        for (final raw in fixture.readAsLinesSync()) {
+          final line = raw.trim();
+          if (line.isEmpty || line.startsWith('#')) {
+            continue;
+          }
+          if (line.startsWith('scenario ')) {
+            await closeScenario();
+            name = line.substring('scenario '.length);
+            scenarios++;
+            forwarded.clear();
+            expectedVerdicts.clear();
+            final sosController = controller = _CountingDeviceSosController();
+            final client = ble = MockBleClient();
+            provider = BleDeviceRuntimeProvider(
+              bleClient: client,
+              deviceSosController: sosController,
+            );
+            await client.initialize();
+            BleDebugRegistry.instance.update(
+              selectedDeviceId: MockBleClient.demoDeviceId,
+            );
+            await provider!.pair(
+              currentStatus: buildDeviceStatus(
+                paired: false,
+                activated: false,
+                connected: false,
+                lifecycleState: DeviceLifecycleState.unpaired,
+              ),
+              pairingCode: '1234',
+            );
+            sosController.setOwnTagSosFrameClassifier((frame) async {
+              forwarded.add(frame);
+              if (frame.isClose) {
+                return OwnTagSosFrameVerdict.proceed;
+              }
+              // The native verdict the Swift/Kotlin replays assert here.
+              return expectedVerdicts.removeAt(0);
+            });
+            continue;
+          }
+          final parts = line.split(' => ');
+          final event = parts[0].split(' ');
+          final expected = parts[1].split(' ').first;
+          final args = <String, String>{
+            for (final token in event.skip(2))
+              if (token.contains('='))
+                token.split('=').first: token.split('=').last,
+          };
+          final label = '$name @${event[0]} ${event[1]}';
+          if (args['source'] != 'dart') {
+            continue; // native-path frames never reach Dart's BLE link
+          }
+          // Fixture node 7 is the connected TAG; any other node is another TAG.
+          final own = (args['node'] ?? '7') == '7';
+          final node = own ? ownNode : 0x0063;
+          switch (event[1]) {
+            case 'frame':
+              final verdict = switch (expected) {
+                'pass' => OwnTagSosFrameVerdict.proceed,
+                'newSos' => OwnTagSosFrameVerdict.newSos,
+                _ => OwnTagSosFrameVerdict.suppress,
+              };
+              final before = forwarded.length;
+              final handledBefore = controller!.startPacketsHandled;
+              if (own) {
+                expectedVerdicts.add(verdict);
+              }
+              final channel = dartFrames.isEven
+                  ? EixamBleChannel.sos
+                  : EixamBleChannel.tel;
+              final payload = sosPush(node, ++variant);
+              await deliver(channel, payload);
+              dartFrames++;
+              if (!own) {
+                // Not an own-TAG frame: never forwarded, handled as before.
+                expect(forwarded.length, before, reason: '$label: other TAG');
+                expect(
+                  verdict,
+                  OwnTagSosFrameVerdict.proceed,
+                  reason: '$label: native also lets another TAG pass',
+                );
+                break;
+              }
+              expect(forwarded.length, before + 1, reason: '$label: forwarded');
+              expect(forwarded.last.bytes, payload, reason: label);
+              expect(forwarded.last.isClose, isFalse, reason: label);
+              expect(
+                forwarded.last.characteristic,
+                channel == EixamBleChannel.tel ? 'tel' : 'sos',
+                reason: label,
+              );
+              expect(
+                controller.startPacketsHandled - handledBefore,
+                verdict == OwnTagSosFrameVerdict.suppress ? 0 : 1,
+                reason: '$label: Dart acts only on ${verdict.name}',
+              );
+            case 'close':
+              final before = forwarded.length;
+              await deliver(EixamBleChannel.tel, closeFrame(node));
+              if (own) {
+                expect(
+                  forwarded.length,
+                  before + 1,
+                  reason: '$label: forwarded',
+                );
+                expect(forwarded.last.isClose, isTrue, reason: label);
+              } else {
+                expect(forwarded.length, before, reason: '$label: other TAG');
+              }
+            case 'seen':
+            case 'link_up':
+            case 'link_drop':
+              // Dart link notes go from the SDK (not the provider) to native;
+              // covered by the SDK matrix test, classified by the native replays.
+              break;
+            default:
+              fail('$label: unexpected Dart-path event');
+          }
+          expect(expectedVerdicts, isEmpty, reason: '$label: verdict consumed');
+        }
+      } finally {
+        await closeScenario();
+      }
+      expect(scenarios, greaterThan(25));
+      expect(dartFrames, greaterThan(30));
     });
 
     test('without a native classifier frames are handled synchronously, as '
