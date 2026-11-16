@@ -520,6 +520,10 @@ abstract class ProtectionPlatformAdapter {
   /// F17c: the user's answer (`sendSos` / `stopTag`). Native returns its
   /// decision: `sosOpened`, `stop` or `none` (no prompt open).
   Future<String> answerOwnTagSosPrompt(String choice);
+
+  /// F17c: the result of Dart's GATT write of the record's stop. Success
+  /// clears the user's owed "No" (the next retry asks again).
+  Future<void> reportOwnTagSosStopWritten({required bool success});
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -643,6 +647,9 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
 
   @override
   Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
+
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) async {}
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

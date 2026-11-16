@@ -2254,10 +2254,6 @@ internal class ProtectionBleRuntimeOwner(
         val now = System.currentTimeMillis()
         synchronized(sosLifecycleLock) {
             val current = sosStaleGuard ?: return
-            if (up && ProtectionSosStaleGuard.isExpired(current, now)) {
-                disarmSosStaleGuardLocked("cap")
-                return
-            }
             val next = if (up) {
                 ProtectionSosStaleGuard.onForwardedLinkUp(current, now)
             } else {
@@ -2357,6 +2353,23 @@ internal class ProtectionBleRuntimeOwner(
         Log.i(logTag, "NATIVE_SOS_PROMPT_ANSWERED choice=$choice source=$source action=${action.name}")
         runSosStaleEffects(effects)
         return action.name
+    }
+
+    /**
+     * F17c: the result of a GATT write of the record's stop (native callback,
+     * or Dart's report when Dart owns the link). Success: the user's "No" is
+     * no longer owed and the next retry asks again; failure keeps it owed.
+     */
+    fun noteOwnTagSosStopWritten(success: Boolean, source: String) {
+        synchronized(sosLifecycleLock) {
+            val current = sosStaleGuard ?: return
+            val next = ProtectionSosStaleGuard.onStopWritten(current, success)
+            if (next != current) {
+                sosStaleGuard = next
+                runtimeStore.saveSosStaleGuard(next)
+            }
+        }
+        Log.i(logTag, "NATIVE_SOS_STALE_STOP_WRITTEN success=$success source=$source")
     }
 
     /** F17c: the open prompt for the SDK (`{terminal, deadlineAtMs}`), or null. */
@@ -2495,16 +2508,12 @@ internal class ProtectionBleRuntimeOwner(
     /**
      * Reconnect never writes a stop by itself: a COUNTDOWN started while
      * disconnected is a genuine new SOS. A TAG still running the closed SOS is
-     * stopped on its next retry frame; one silent > 90 s disarms by gap.
+     * asked about on its next retry frame (F17c: no gap or cap end).
      */
     private fun onSosStaleGuardReconnected(reason: String) {
         val now = System.currentTimeMillis()
         synchronized(sosLifecycleLock) {
             val current = sosStaleGuard ?: return
-            if (ProtectionSosStaleGuard.isExpired(current, now)) {
-                disarmSosStaleGuardLocked("cap")
-                return
-            }
             cancelSosStaleDecide()
             val next = ProtectionSosStaleGuard.onReconnected(current, now)
             sosStaleGuard = next
@@ -2539,6 +2548,8 @@ internal class ProtectionBleRuntimeOwner(
                 logTag,
                 "NATIVE_SOS_STALE_STOP_RESULT terminal=${terminal.wire} success=$success",
             )
+            // F17c: a written stop is no longer owed (the next retry asks).
+            noteOwnTagSosStopWritten(success, source = "native")
             // Only while the guard is still armed: a new SDK SOS may have
             // disarmed it while the write was queued (M3).
             if (!success && synchronized(sosLifecycleLock) { sosStaleGuard } != null) {

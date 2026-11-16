@@ -236,6 +236,14 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }
 
   @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) {
+    return _methodChannel.invokeMethod<void>(
+      'reportOwnTagSosStopWritten',
+      <String, dynamic>{'success': success},
+    );
+  }
+
+  @override
   Future<String> answerOwnTagSosPrompt(String choice) async {
     final raw = await _methodChannel.invokeMapMethod<Object?, Object?>(
       'answerOwnTagSosPrompt',

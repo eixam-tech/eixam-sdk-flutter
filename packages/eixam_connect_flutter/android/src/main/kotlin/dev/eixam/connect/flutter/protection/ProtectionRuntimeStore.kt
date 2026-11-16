@@ -1040,7 +1040,7 @@ internal class ProtectionRuntimeStore(context: Context) {
                 "lastFrameAt" to preferences.getLong(keyStaleGuardLastFrameAt, 0L).takeIf { it > 0L },
                 "linkDroppedSinceLastFrame" to preferences.getBoolean(keyStaleGuardLinkDropped, true),
                 "promptDeadlineAt" to preferences.getLong(keyStaleGuardPromptDeadlineAt, 0L).takeIf { it > 0L },
-                "stopConfirmedAt" to preferences.getLong(keyStaleGuardStopConfirmedAt, 0L).takeIf { it > 0L },
+                "stopOwed" to preferences.getBoolean(keyStaleGuardStopOwed, false),
             ),
         )
     }
@@ -1055,7 +1055,7 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .remove(keyStaleGuardLinkDropped)
                 .remove(keyStaleGuardNoticeShown)
                 .remove(keyStaleGuardPromptDeadlineAt)
-                .remove(keyStaleGuardStopConfirmedAt)
+                .remove(keyStaleGuardStopOwed)
         } else {
             editor.putString(keyStaleGuardTerminal, state.terminal.wire)
                 .putLong(keyStaleGuardArmedAt, state.armedAt)
@@ -1063,8 +1063,7 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .remove(keyStaleGuardNoticeShown)
             state.promptDeadlineAt?.let { editor.putLong(keyStaleGuardPromptDeadlineAt, it) }
                 ?: editor.remove(keyStaleGuardPromptDeadlineAt)
-            state.stopConfirmedAt?.let { editor.putLong(keyStaleGuardStopConfirmedAt, it) }
-                ?: editor.remove(keyStaleGuardStopConfirmedAt)
+            editor.putBoolean(keyStaleGuardStopOwed, state.stopOwed)
             if (state.nodeId == null) editor.remove(keyStaleGuardNodeId) else editor.putInt(keyStaleGuardNodeId, state.nodeId)
             if (state.lastFrameAt == null) {
                 editor.remove(keyStaleGuardLastFrameAt)
@@ -1676,7 +1675,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyStaleGuardLinkDropped = "sos_stale_guard_link_dropped"
         private const val keyStaleGuardNoticeShown = "sos_stale_guard_notice_shown"
         private const val keyStaleGuardPromptDeadlineAt = "sos_stale_guard_prompt_deadline_at"
-        private const val keyStaleGuardStopConfirmedAt = "sos_stale_guard_stop_confirmed_at"
+        private const val keyStaleGuardStopOwed = "sos_stale_guard_stop_owed"
         private const val keyObservedCycleFirstAt = "sos_observed_cycle_first_at"
         private const val keyObservedCycleLastAt = "sos_observed_cycle_last_at"
         private const val keyObservedCycleNodeId = "sos_observed_cycle_node_id"

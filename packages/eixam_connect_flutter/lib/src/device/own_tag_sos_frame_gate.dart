@@ -56,6 +56,35 @@ final class OwnTagSosFrameGate {
   OwnTagSosFrameClassifier? _classifier;
   Future<void> _tail = Future<void>.value();
   OwnTagSosFrameVerdict? _admitting;
+  bool _admittingAfterTerminalSync = false;
+  int _terminalsRequested = 0;
+  int _terminalsSynced = 0;
+
+  /// F17c: native knew every SDK terminal before the frame being handled was
+  /// classified (set only while its handler runs). Then a `proceed` is native's
+  /// judgement after that terminal (no unconfirmed stop, or classifier
+  /// unreachable: fail open), so the device SOS admission must not drop it.
+  bool get admittingAfterTerminalSync => _admittingAfterTerminalSync;
+
+  /// F17c: tells native about an SDK terminal ([closeNative]) in arrival
+  /// order with the frames: a frame received after the terminal is classified
+  /// only once native recorded it. Bounded by [timeout]; a failure or timeout
+  /// still releases the chain (fail open).
+  void syncTerminal(
+    Future<void> Function() closeNative, {
+    Duration timeout = const Duration(seconds: 1),
+  }) {
+    final target = ++_terminalsRequested;
+    _enqueue('terminal', () async {
+      try {
+        await closeNative().timeout(timeout);
+      } finally {
+        if (target > _terminalsSynced) {
+          _terminalsSynced = target;
+        }
+      }
+    });
+  }
 
   /// F17c: the native verdict of the start frame being handled right now
   /// (set only while its handler runs). `newSos` is native's proof of a new
@@ -78,6 +107,7 @@ final class OwnTagSosFrameGate {
       return;
     }
     _enqueue('start', () async {
+      final syncedAtClassify = _terminalsSynced;
       var verdict = OwnTagSosFrameVerdict.proceed;
       try {
         verdict = await classifier(frame);
@@ -92,10 +122,12 @@ final class OwnTagSosFrameGate {
         return;
       }
       _admitting = verdict;
+      _admittingAfterTerminalSync = syncedAtClassify >= _terminalsRequested;
       try {
         _runHandler('start', process);
       } finally {
         _admitting = null;
+        _admittingAfterTerminalSync = false;
       }
     });
   }

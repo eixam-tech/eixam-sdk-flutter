@@ -6,8 +6,9 @@ package dev.eixam.connect.flutter.protection
  * firmware episode id, a non-burst frame under it is AMBIGUOUS (the closed SOS
  * still running, or a genuine SOS pressed out of range): the user is asked
  * (prompt, native 30 s timeout sends the SOS). It never stops the TAG and never
- * drops a frame without the user's answer; after the user's "No" (consent for
- * [consentMs]) the matching stop is written again on the next retry.
+ * drops a frame without the user's answer. After the user's "No" the stop is
+ * OWED until a GATT write of it succeeded ([onStopWritten]): a retry meanwhile
+ * re-attempts it; once written, a retry asks again.
  *
  * Firmware facts: every BLE SOS push is sent twice (SOS notify, then TEL
  * notify, ms apart). COUNTDOWN pushes every 500 ms in its first 2 s (4 pushes);
@@ -19,10 +20,9 @@ package dev.eixam.connect.flutter.protection
  *   within [burstWindowMs] = COUNTDOWN = a genuine new SOS (always admitted);
  * - [decideAfterMs] after the first push, fewer pushes = ambiguous: prompt
  *   (once; a later retry while it is open never re-prompts).
- * The record ends on the TAG's close frame (`0xE1/0xE2/0xE3`), a countdown
- * burst, the user's send / the timeout, a frame gap over [gapMs] while the link
- * stayed up, [capMs] after arming, a new SDK SOS or a session change. A link
- * drop does not end it (A1).
+ * The record ends only on the TAG's close frame (`0xE1/0xE2/0xE3`), a
+ * countdown burst, the user's send / the timeout, a new SDK SOS or a session
+ * change (Roger 16/11/2026: no gap, no time cap; a stray retry always asks).
  */
 internal enum class ProtectionSosStaleTerminal(
     val wire: String,
@@ -48,8 +48,8 @@ internal data class ProtectionSosStaleGuardState(
     val linkDroppedSinceLastFrame: Boolean,
     /** F17c prompt: open until this time (the native timeout then sends the SOS). */
     val promptDeadlineAt: Long? = null,
-    /** F17c prompt: the user's "No" (stop the TAG), consent for [ProtectionSosStaleGuard.consentMs]. */
-    val stopConfirmedAt: Long? = null,
+    /** F17c prompt: the user's "No" whose stop was not written to the TAG yet. */
+    val stopOwed: Boolean = false,
     /** Open candidate window (not persisted). */
     val candidateFirstAt: Long? = null,
     val candidatePushes: Int = 0,
@@ -64,7 +64,7 @@ internal data class ProtectionSosStaleGuardState(
             "lastFrameAt" to lastFrameAt,
             "linkDroppedSinceLastFrame" to linkDroppedSinceLastFrame,
             "promptDeadlineAt" to promptDeadlineAt,
-            "stopConfirmedAt" to stopConfirmedAt,
+            "stopOwed" to stopOwed,
         )
 
     companion object {
@@ -79,7 +79,7 @@ internal data class ProtectionSosStaleGuardState(
                 lastFrameAt = (values["lastFrameAt"] as? Number)?.toLong() ?: armedAt,
                 linkDroppedSinceLastFrame = values["linkDroppedSinceLastFrame"] as? Boolean ?: true,
                 promptDeadlineAt = (values["promptDeadlineAt"] as? Number)?.toLong(),
-                stopConfirmedAt = (values["stopConfirmedAt"] as? Number)?.toLong(),
+                stopOwed = values["stopOwed"] as? Boolean ?: false,
             )
         }
     }
@@ -104,7 +104,7 @@ internal enum class ProtectionSosStaleAction {
     /** COUNTDOWN burst: a genuine new SOS starting at [ProtectionSosStaleOutcome.startedAt]. */
     newSos,
 
-    /** The user already answered "No" (within [ProtectionSosStaleGuard.consentMs]): stop it again. */
+    /** The user's "No" is still owed (not written yet): re-attempt the stop. */
     stale,
 
     /** F17c: ambiguous: ask the user ([ProtectionSosStaleOutcome.openPrompt] when newly opened). */
@@ -147,14 +147,8 @@ internal data class ProtectionSosStaleOutcome(
 internal object ProtectionSosStaleGuard {
     const val gapMs = 90_000L
 
-    /** F17c: the record asks instead of stopping, so it lives up to a day (a TAG long out of range). */
-    const val capMs = 86_400_000L
-
     /** F17c: the native prompt timeout; no answer sends the SOS. */
     const val promptMs = 30_000L
-
-    /** F17c: the user's "No" lets later retries be stopped without asking for this long. */
-    const val consentMs = 600_000L
 
     /** F17c: an SOS Dart forwarded frames of this recently was seen (arms the record). */
     const val observedRecentMs = 600_000L
@@ -334,9 +328,6 @@ internal object ProtectionSosStaleGuard {
     fun onLinkDropped(state: ProtectionSosStaleGuardState): ProtectionSosStaleGuardState =
         state.copy(linkDroppedSinceLastFrame = true, candidateFirstAt = null, candidatePushes = 0)
 
-    fun isExpired(state: ProtectionSosStaleGuardState, now: Long): Boolean =
-        now - state.armedAt > capMs
-
     /** The TAG sent its own close: it got the stop (or closed the SOS itself). */
     @Suppress("UNUSED_PARAMETER")
     fun onTagClose(state: ProtectionSosStaleGuardState?): ProtectionSosStaleGuardState? = null
@@ -361,14 +352,6 @@ internal object ProtectionSosStaleGuard {
             normalize(frameNodeId) != normalize(state.nodeId)
         ) {
             return ProtectionSosStaleOutcome(ProtectionSosStaleAction.ignored, state)
-        }
-        if (isExpired(state, now)) {
-            return ProtectionSosStaleOutcome(
-                ProtectionSosStaleAction.disarmed,
-                null,
-                reason = "cap",
-                closePrompt = state.promptDeadlineAt != null,
-            )
         }
         val lastPush = state.lastPushAt
         if (lastPush != null && now - lastPush in 0 until duplicateMs) {
@@ -401,14 +384,6 @@ internal object ProtectionSosStaleGuard {
             sendStop = resolved.sendStop
             openPrompt = resolved.openPrompt
         }
-        if (!current.linkDroppedSinceLastFrame && now - current.lastFrameAt > gapMs) {
-            return ProtectionSosStaleOutcome(
-                ProtectionSosStaleAction.disarmed,
-                null,
-                reason = "gap",
-                closePrompt = current.promptDeadlineAt != null,
-            )
-        }
         return ProtectionSosStaleOutcome(
             action = ProtectionSosStaleAction.pending,
             state = current.copy(candidateFirstAt = now, candidatePushes = 1, lastPushAt = now),
@@ -439,8 +414,8 @@ internal object ProtectionSosStaleGuard {
 
     /**
      * F17c: no countdown burst followed: ambiguous. Ask the user (once: an
-     * open prompt is never re-opened), unless the user already answered "No"
-     * within [consentMs]: then the stop is written again.
+     * open prompt is never re-opened), unless the user's "No" is still owed
+     * (its stop not written yet): then the stop is re-attempted.
      */
     private fun resolveDecision(
         state: ProtectionSosStaleGuardState,
@@ -452,8 +427,7 @@ internal object ProtectionSosStaleGuard {
             candidateFirstAt = null,
             candidatePushes = 0,
         )
-        val consent = state.stopConfirmedAt
-        if (state.promptDeadlineAt == null && consent != null && now - consent in 0..consentMs) {
+        if (state.promptDeadlineAt == null && state.stopOwed) {
             return ProtectionSosStaleOutcome(
                 action = ProtectionSosStaleAction.stale,
                 state = decided,
@@ -465,10 +439,18 @@ internal object ProtectionSosStaleGuard {
         }
         return ProtectionSosStaleOutcome(
             action = ProtectionSosStaleAction.prompt,
-            state = decided.copy(promptDeadlineAt = now + promptMs, stopConfirmedAt = null),
+            state = decided.copy(promptDeadlineAt = now + promptMs),
             openPrompt = true,
         )
     }
+
+    /**
+     * F17c: the result of a GATT write of the record's stop (native write
+     * callback, or Dart's report when Dart owns the link). Success clears an
+     * owed stop: the next retry asks again. A failure keeps it owed.
+     */
+    fun onStopWritten(state: ProtectionSosStaleGuardState?, success: Boolean): ProtectionSosStaleGuardState? =
+        if (state != null && success) state.copy(stopOwed = false) else state
 
     /**
      * F17c: the user's answer ([choice] `sendSos` / `stopTag`) or the native
@@ -503,7 +485,7 @@ internal object ProtectionSosStaleGuard {
             } else {
                 ProtectionSosStaleOutcome(
                     action = ProtectionSosStaleAction.stop,
-                    state = state.copy(promptDeadlineAt = null, stopConfirmedAt = now),
+                    state = state.copy(promptDeadlineAt = null, stopOwed = true),
                     sendStop = true,
                     closePrompt = true,
                     reason = "prompt_stop_tag",

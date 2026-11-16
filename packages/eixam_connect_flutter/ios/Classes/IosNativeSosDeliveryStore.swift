@@ -66,12 +66,8 @@ final class IosNativeSosDeliveryStore {
   static let staleBurstPushes = 3
   static let staleDecisionMs = 2_000
   static let staleGapMs = 90_000
-  /// F17c: the record asks instead of stopping, so it lives up to a day.
-  static let staleGuardMaxMs = 86_400_000
   /// F17c: the native prompt timeout; no answer sends the SOS.
   static let promptMs = 30_000
-  /// F17c: the user's "No" lets later retries be stopped without asking.
-  static let consentMs = 600_000
   /// F17c: an SOS Dart forwarded frames of this recently was seen.
   static let observedRecentMs = 600_000
   /// F17c M-C: a Dart receive time older than this (or in the future) is
@@ -104,7 +100,7 @@ final class IosNativeSosDeliveryStore {
     static let staleGuardLastPushAt = "native_sos_stale_guard_last_push_at"
     static let staleGuardNoticeShown = "native_sos_stale_guard_notice_shown"
     static let staleGuardPromptDeadlineAt = "native_sos_stale_guard_prompt_deadline_at"
-    static let staleGuardStopConfirmedAt = "native_sos_stale_guard_stop_confirmed_at"
+    static let staleGuardStopOwed = "native_sos_stale_guard_stop_owed"
     static let lastSosFrameAt = "native_sos_last_frame_at"
     static let dartCycleFirstSeenAt = "native_sos_dart_cycle_first_seen_at"
     static let dartCycleLastSeenAt = "native_sos_dart_cycle_last_seen_at"
@@ -401,9 +397,23 @@ final class IosNativeSosDeliveryStore {
     staleGuardKind == nil ? nil : defaults.object(forKey: Keys.staleGuardPromptDeadlineAt) as? Int
   }
 
+  /// F17c: the user's "No" whose stop was not written to the TAG yet.
+  var stopOwed: Bool {
+    staleGuardKind != nil && defaults.bool(forKey: Keys.staleGuardStopOwed)
+  }
+
+  /// F17c: the result of a GATT write of the record's stop (native write
+  /// callback, or Dart's report when Dart owns the link). Success: no longer
+  /// owed, the next retry asks again. Failure: still owed (re-attempted).
+  func noteStopWritten(success: Bool) {
+    if success, staleGuardKind != nil {
+      defaults.set(false, forKey: Keys.staleGuardStopOwed)
+    }
+  }
+
   /// No countdown burst followed the guarded frame: AMBIGUOUS. Ask the user
-  /// (once: an open prompt is never re-opened), unless the user already
-  /// answered "No" within the consent window: then the stop is written again.
+  /// (once: an open prompt is never re-opened), unless the user's "No" is
+  /// still owed (not written yet): then the stop is re-attempted.
   func evaluateStaleCandidate() -> IosNativeSosTransition {
     var transition = IosNativeSosTransition()
     guard let kind = staleGuardKind,
@@ -415,9 +425,7 @@ final class IosNativeSosDeliveryStore {
     defaults.removeObject(forKey: Keys.staleGuardCandidateAt)
     defaults.removeObject(forKey: Keys.staleGuardCandidatePushes)
     let timestamp = now()
-    if promptDeadlineAt == nil,
-       let consent = defaults.object(forKey: Keys.staleGuardStopConfirmedAt) as? Int,
-       timestamp - consent >= 0, timestamp - consent <= Self.consentMs {
+    if promptDeadlineAt == nil, stopOwed {
       lastStaleAction = "stale"
       transition.stopTag = kind
       return transition
@@ -426,7 +434,6 @@ final class IosNativeSosDeliveryStore {
     if promptDeadlineAt == nil {
       let deadline = timestamp + Self.promptMs
       defaults.set(deadline, forKey: Keys.staleGuardPromptDeadlineAt)
-      defaults.removeObject(forKey: Keys.staleGuardStopConfirmedAt)
       transition.openPromptDeadlineAt = deadline
     }
     return transition
@@ -465,7 +472,7 @@ final class IosNativeSosDeliveryStore {
     }
     lastStaleAction = "stop"
     defaults.removeObject(forKey: Keys.staleGuardPromptDeadlineAt)
-    defaults.set(timestamp, forKey: Keys.staleGuardStopConfirmedAt)
+    defaults.set(true, forKey: Keys.staleGuardStopOwed)
     transition.stopTag = kind
     return transition
   }
@@ -490,7 +497,7 @@ final class IosNativeSosDeliveryStore {
                 Keys.staleGuardLastFrameAt, Keys.staleGuardLinkDropped,
                 Keys.staleGuardCandidateAt, Keys.staleGuardCandidatePushes,
                 Keys.staleGuardLastPushAt, Keys.staleGuardNoticeShown,
-                Keys.staleGuardPromptDeadlineAt, Keys.staleGuardStopConfirmedAt] {
+                Keys.staleGuardPromptDeadlineAt, Keys.staleGuardStopOwed] {
       defaults.removeObject(forKey: key)
     }
   }
@@ -508,21 +515,13 @@ final class IosNativeSosDeliveryStore {
       return nil
     }
     let timestamp = at ?? now()
-    let armedAt = defaults.object(forKey: Keys.staleGuardArmedAt) as? Int ?? timestamp
-    let lastFrameAt = defaults.object(forKey: Keys.staleGuardLastFrameAt) as? Int ?? armedAt
-    let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
     let guardNode = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
     if guardNode != nil && nodeId != nil && guardNode != nodeId {
       lastStaleAction = "ignored"
       return nil  // another TAG: not this guard's business (never disarms it)
     }
-    if timestamp - armedAt > Self.staleGuardMaxMs ||
-       (!linkDropped && timestamp - lastFrameAt > Self.staleGapMs) {
-      // Cap, or the TAG went idle (gap without a link drop).
-      disarmStaleGuard()
-      lastStaleAction = "disarmed"
-      return nil
-    }
+    // F17c (Roger 16/11/2026): no gap and no time cap: a stray retry after
+    // any silence is still ambiguous and asks the user.
     if let lastPush = defaults.object(forKey: Keys.staleGuardLastPushAt) as? Int,
        timestamp - lastPush < Self.staleDuplicateMs {
       // The TEL copy of the same push, or (F17c) the same push through the

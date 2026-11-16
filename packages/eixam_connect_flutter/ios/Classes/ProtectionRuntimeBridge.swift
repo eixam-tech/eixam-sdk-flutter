@@ -349,6 +349,12 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         return
       }
       result(["action": answerOwnTagSosPrompt(choice, source: "app")])
+    case "reportOwnTagSosStopWritten":
+      // F17c: Dart wrote (or failed to write) the record's stop.
+      let success = (call.arguments as? [String: Any])?["success"] as? Bool ?? false
+      sosDelivery.noteStopWritten(success: success)
+      logSosDelivery("NATIVE_SOS_STALE_STOP_WRITTEN success=\(success) source=dart")
+      result(nil)
     case "getOwnTagSosPrompt":
       expirePromptIfDue()
       if let kind = sosDelivery.staleGuardKind, let deadline = sosDelivery.promptDeadlineAt {
@@ -1793,6 +1799,8 @@ extension ProtectionRuntimeBridge: CBPeripheralDelegate {
       guard let self else { return }
       let ok = (value as? [String: Any])?["success"] as? Bool ?? false
       self.logSosDelivery("NATIVE_SOS_STALE_STOP_SENT terminal=\(kind.rawValue) reason=\(reason) accepted=\(ok)")
+      // F17c: a written stop is no longer owed (the next retry asks again).
+      self.sosDelivery.noteStopWritten(success: ok)
       if !ok && dartFallback && self.sosDelivery.staleGuardKind == kind {
         self.requestDartStaleStop(kind, reason: "\(reason)_native_write_failed")
       }

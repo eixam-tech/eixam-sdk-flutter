@@ -336,6 +336,12 @@ internal object ProtectionRuntimeBridge {
                     )
                 }
             }
+            "reportOwnTagSosStopWritten" -> {
+                // F17c: Dart wrote (or failed to write) the record's stop.
+                val success = (call.arguments as? Map<*, *>)?.get("success") as? Boolean ?: false
+                ensureRuntimeOwner(context).noteOwnTagSosStopWritten(success, source = "dart")
+                result.success(null)
+            }
             "getOwnTagSosPrompt" -> {
                 result.success(ensureRuntimeOwner(context).currentOwnTagSosPrompt())
             }

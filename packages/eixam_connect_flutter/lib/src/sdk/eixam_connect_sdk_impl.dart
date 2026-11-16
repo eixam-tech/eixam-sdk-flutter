@@ -17627,14 +17627,21 @@ class EixamConnectSdkImpl
         // F17c: native (the single classifier) saw a new TAG countdown burst
         // after a stop the TAG never confirmed: a genuine new SOS, never
         // dropped by this closure fence.
+        final gate = deviceSosController.ownTagSosFrameGate;
         final nativeNewCountdown =
-            deviceSosController.ownTagSosFrameGate.admittingVerdict ==
-            OwnTagSosFrameVerdict.newSos;
+            gate.admittingVerdict == OwnTagSosFrameVerdict.newSos;
+        // F17c (Roger 16/11/2026): native is the single classifier. A frame it
+        // let through after it knew this terminal is not ambiguous (or native
+        // was unreachable: fail open); it is never dropped silently here.
+        // Native asks the user about every ambiguous one.
+        final nativeAdmittedAfterTerminal =
+            gate.admittingVerdict != null && gate.admittingAfterTerminalSync;
         final canAccept =
             freshReceiveAfterTerminal ||
             terminalFromPreviousProcess ||
             backendOnlyAppGeneration ||
-            nativeNewCountdown;
+            nativeNewCountdown ||
+            nativeAdmittedAfterTerminal;
         if (canAccept) {
           admission = PhysicalSosStartAdmission(
             decision: PhysicalSosStartAdmissionDecision.acceptNewGeneration,
@@ -17646,6 +17653,8 @@ class EixamConnectSdkImpl
                 ? 'backend_only_generation_then_physical_start'
                 : nativeNewCountdown
                 ? 'native_classifier_new_countdown'
+                : nativeAdmittedAfterTerminal
+                ? 'native_classifier_admitted_after_terminal'
                 : 'unconsumed_physical_start_after_terminal',
             allowFreshStartAfterTerminal: true,
           );
@@ -19154,18 +19163,23 @@ class EixamConnectSdkImpl
       return;
     }
     _nativeSosCycleClosedGeneration = lifecycle.generation;
-    unawaited(
-      protectionPlatformAdapter
-          .closeNativeSosCycle(
-            nodeId: lifecycle.nodeId,
-            terminal: nativeSosCycleTerminalFor(lifecycle.stage),
-          )
-          .catchError(
-            (Object error) => sdkReleaseLog(
-              'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
-            ),
+    Future<void> closeNative() => protectionPlatformAdapter
+        .closeNativeSosCycle(
+          nodeId: lifecycle.nodeId,
+          terminal: nativeSosCycleTerminalFor(lifecycle.stage),
+        )
+        .catchError(
+          (Object error) => sdkReleaseLog(
+            'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
           ),
-    );
+        );
+    if (_nativeOwnTagSosClassifierAvailable) {
+      // F17c: native records the (unconfirmed) stop before any later own-TAG
+      // frame is classified, in arrival order with the frames.
+      deviceSosController.ownTagSosFrameGate.syncTerminal(closeNative);
+    } else {
+      unawaited(closeNative());
+    }
   }
 
   // MARK: F17c single stale-SOS decision point (native classifies, Dart acts).
@@ -19294,12 +19308,32 @@ class EixamConnectSdkImpl
         command: command,
       );
       sdkReleaseLog('SOS_OUTBOX_STALE_STOP_WRITTEN terminal=$wire');
+      _reportOwnTagSosStopWritten(true);
     } catch (error) {
       sdkReleaseLog(
         'SOS_OUTBOX_STALE_STOP_FAILED terminal=$wire '
         'errorType=${error.runtimeType}',
       );
+      // F17c: still owed; native re-attempts it on the next retry.
+      _reportOwnTagSosStopWritten(false);
     }
+  }
+
+  /// F17c: the user's "No" stays owed natively until a write of it succeeded.
+  void _reportOwnTagSosStopWritten(bool success) {
+    unawaited(() async {
+      try {
+        await protectionPlatformAdapter.reportOwnTagSosStopWritten(
+          success: success,
+        );
+      } catch (error) {
+        // Not reported: the stop stays owed natively (re-attempted), never
+        // a silent window.
+        sdkReleaseLog(
+          'SOS_OUTBOX_STALE_STOP_REPORT_FAILED errorType=${error.runtimeType}',
+        );
+      }
+    }());
   }
 
   /// Sign-out / account change clears everything, an open SOS included.
