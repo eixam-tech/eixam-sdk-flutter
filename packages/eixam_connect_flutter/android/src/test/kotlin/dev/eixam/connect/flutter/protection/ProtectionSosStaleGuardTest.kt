@@ -368,6 +368,7 @@ class ProtectionSosStaleGuardTest {
             when (event[1]) {
                 "seen" -> when (args["source"]) {
                     "native" -> lifecycle = ProtectionSosLifecycleState.createPending
+                    "countdown" -> lifecycle = ProtectionSosLifecycleState.preConfirmSeen
                     "dart" -> {
                         val age = args["age"]!!.toLong()
                         val sos = ProtectionSosForwardedFrame(close = false, nodeId = node)
