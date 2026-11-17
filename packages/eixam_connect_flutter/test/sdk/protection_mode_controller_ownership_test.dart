@@ -452,6 +452,7 @@ final class _OrderingProtectionPlatformAdapter extends Fake
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {}
 
   @override

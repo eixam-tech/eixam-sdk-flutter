@@ -6,7 +6,9 @@ enum SosStopKind {
   tagStop,
 
   /// Ask native to close its TAG cycle (native writes the stop if it still
-  /// holds the cycle).
+  /// holds the cycle). F17c item 1: an automated close must name the exact
+  /// native cycle ([SosStopRequest.nativeCycleId]); only the user's own action
+  /// may target the cycle running now without one.
   nativeCycleClose,
 
   /// Move the current SOS to cancelled / resolved from a backend event.
@@ -60,6 +62,7 @@ final class SosStopRequest {
     this.incidentId,
     this.occurredAt,
     this.currentPublishedAt,
+    this.nativeCycleId,
   });
 
   final SosStopKind kind;
@@ -76,6 +79,10 @@ final class SosStopRequest {
 
   /// Publish timestamp of the current SOS (for [SosStopBasis.exactOccurredAt]).
   final DateTime? currentPublishedAt;
+
+  /// F17c item 1 ([SosStopKind.nativeCycleClose]): the native SOS cycle id
+  /// the stop is for, as native reported it for this SOS. Never logged.
+  final String? nativeCycleId;
 }
 
 final class SosStopDecision {
@@ -403,6 +410,20 @@ final class SosStopGuard {
   }
 
   SosStopDecision _decide(SosStopRequest request) {
+    if (request.kind == SosStopKind.nativeCycleClose) {
+      // F17c item 1 (Roger 17/11/2026): the user's own action targets the
+      // native cycle running now, by definition (the user must always be able
+      // to stop what rings in front of them). Every automated close must name
+      // the exact native cycle it is for: without it native could apply it to
+      // a newer SOS Dart has not seen, so it is never sent.
+      if (request.basis == SosStopBasis.userAction) {
+        return const SosStopDecision._(true, 'user_action_current_cycle');
+      }
+      final id = request.nativeCycleId?.trim();
+      if (id == null || id.isEmpty) {
+        return const SosStopDecision._(false, 'unknown_native_cycle');
+      }
+    }
     switch (request.basis) {
       case SosStopBasis.userAction:
         return const SosStopDecision._(true, 'user_action');

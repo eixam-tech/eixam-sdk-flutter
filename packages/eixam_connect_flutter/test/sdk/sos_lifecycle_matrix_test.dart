@@ -1446,6 +1446,9 @@ void main() {
             preSosOwner: 'device',
             preSosCycleKey: 'F11-native-countdown',
             preSosOriginatorNodeId: 0x1234,
+            // F17c item 1: native reports its cycle id.
+            nativeSosCycleId: 'native-cycle-f11',
+            nativeSosCycleOpen: true,
             preSosStartedAt: startedAt,
             preSosExpectedActivationAt: startedAt.add(
               const Duration(seconds: 20),
@@ -1464,6 +1467,9 @@ void main() {
             preSosOwner: 'device',
             preSosCycleKey: 'F11-native-countdown',
             preSosOriginatorNodeId: 0x1234,
+            // F17c item 1: native reports its cycle id.
+            nativeSosCycleId: 'native-cycle-f11',
+            nativeSosCycleOpen: true,
             preSosStartedAt: startedAt,
             preSosExpectedActivationAt: startedAt.add(
               const Duration(seconds: 20),
@@ -1494,6 +1500,11 @@ void main() {
             reason: 'the close targets the TAG that started the countdown',
           );
           expect(adapter.closeNativeSosCycleArgs.last.force, isFalse);
+          expect(
+            adapter.closeNativeSosCycleArgs.last.targetCycleId,
+            'native-cycle-f11',
+            reason: 'F17c item 1: the close names the kept native cycle',
+          );
           expect(
             adapter.closeNativeSosCycleArgs.last.terminal,
             'cancel',
@@ -17818,6 +17829,7 @@ class _SnapshotProtectionPlatformAdapter extends Fake
       String? terminal,
       DateTime? issuedAt,
       String? targetCycleId,
+      bool targetCurrentCycle,
     })
   >
   closeNativeSosCycleArgs =
@@ -17828,6 +17840,7 @@ class _SnapshotProtectionPlatformAdapter extends Fake
           String? terminal,
           DateTime? issuedAt,
           String? targetCycleId,
+          bool targetCurrentCycle,
         })
       >[];
 
@@ -17838,6 +17851,7 @@ class _SnapshotProtectionPlatformAdapter extends Fake
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {
     closeNativeSosCycleCalls++;
     closeNativeSosCycleArgs.add((
@@ -17846,6 +17860,7 @@ class _SnapshotProtectionPlatformAdapter extends Fake
       terminal: terminal,
       issuedAt: issuedAt,
       targetCycleId: targetCycleId,
+      targetCurrentCycle: targetCurrentCycle,
     ));
   }
 
@@ -20761,6 +20776,14 @@ void _sosStabilizationTests() {
             const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
           );
           await harness.setSession();
+          // F17c item 1: native reports the cycle open for this SOS; an
+          // automated close names it (without it the close is never sent).
+          adapter.snapshot = const ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.ios,
+            backgroundCapabilityReady: true,
+            nativeSosCycleId: 'native-cycle-1',
+            nativeSosCycleOpen: true,
+          );
           final beforeFailure = adapter.closeNativeSosCycleCalls;
           harness.sosRepository.triggerError = const SosException(
             'E_SOS_TEST_REJECTED',
@@ -20776,6 +20799,14 @@ void _sosStabilizationTests() {
             reason: 'precondition',
           );
           expect(adapter.closeNativeSosCycleCalls, greaterThan(beforeFailure));
+          expect(
+            adapter.closeNativeSosCycleArgs.last.targetCycleId,
+            'native-cycle-1',
+          );
+          expect(
+            adapter.closeNativeSosCycleArgs.last.targetCurrentCycle,
+            false,
+          );
 
           final beforeLogout = adapter.closeNativeSosCycleCalls;
           await harness.sdk.clearSession();
@@ -20994,8 +21025,126 @@ final class _RegistryGatedRealtime extends _OnDemandOperationalRealtimeClient {
 /// F17c: the native single classifier, as seen through the channel contract.
 /// Verdicts are scripted per test (the store itself is covered by the Swift and
 /// Kotlin replays of test/fixtures/stale_sos_guard_scenarios.txt).
+/// F17c item 1: [snapshot] as the native store reports it with its current
+/// SOS cycle id (all other fields unchanged).
+ProtectionPlatformSnapshot _withNativeSosCycle(
+  ProtectionPlatformSnapshot snapshot, {
+  required String? id,
+  required bool open,
+}) => ProtectionPlatformSnapshot(
+  backgroundCapabilityReady: snapshot.backgroundCapabilityReady,
+  platformRuntimeConfigured: snapshot.platformRuntimeConfigured,
+  foregroundServiceConfigured: snapshot.foregroundServiceConfigured,
+  serviceRunning: snapshot.serviceRunning,
+  runtimeActive: snapshot.runtimeActive,
+  bluetoothEnabled: snapshot.bluetoothEnabled,
+  notificationsGranted: snapshot.notificationsGranted,
+  lastFailureReason: snapshot.lastFailureReason,
+  lastPlatformEvent: snapshot.lastPlatformEvent,
+  lastPlatformEventAt: snapshot.lastPlatformEventAt,
+  runtimeState: snapshot.runtimeState,
+  coverageLevel: snapshot.coverageLevel,
+  lastWakeAt: snapshot.lastWakeAt,
+  lastWakeReason: snapshot.lastWakeReason,
+  platform: snapshot.platform,
+  backgroundCapabilityState: snapshot.backgroundCapabilityState,
+  restorationConfigured: snapshot.restorationConfigured,
+  bleOwner: snapshot.bleOwner,
+  serviceBleConnected: snapshot.serviceBleConnected,
+  serviceBleReady: snapshot.serviceBleReady,
+  nativeCommandServiceReady: snapshot.nativeCommandServiceReady,
+  nativeCommandEa04Ready: snapshot.nativeCommandEa04Ready,
+  nativeCommandIdentityReady: snapshot.nativeCommandIdentityReady,
+  nativeCommandQueueHealthy: snapshot.nativeCommandQueueHealthy,
+  nativeCommandReady: snapshot.nativeCommandReady,
+  pendingSosCount: snapshot.pendingSosCount,
+  pendingTelemetryCount: snapshot.pendingTelemetryCount,
+  pendingNativeSosCreateCount: snapshot.pendingNativeSosCreateCount,
+  pendingNativeSosCancelCount: snapshot.pendingNativeSosCancelCount,
+  pendingNativeSosCancelCreatedAt: snapshot.pendingNativeSosCancelCreatedAt,
+  lastRestorationEvent: snapshot.lastRestorationEvent,
+  lastRestorationEventAt: snapshot.lastRestorationEventAt,
+  lastBleServiceEvent: snapshot.lastBleServiceEvent,
+  lastBleServiceEventAt: snapshot.lastBleServiceEventAt,
+  reconnectAttemptCount: snapshot.reconnectAttemptCount,
+  lastReconnectAttemptAt: snapshot.lastReconnectAttemptAt,
+  lastNativeBackendHandoffResult: snapshot.lastNativeBackendHandoffResult,
+  lastNativeBackendHandoffError: snapshot.lastNativeBackendHandoffError,
+  protectedDeviceId: snapshot.protectedDeviceId,
+  activeDeviceId: snapshot.activeDeviceId,
+  bleHardwareId: snapshot.bleHardwareId,
+  degradationReason: snapshot.degradationReason,
+  expectedBleServiceUuid: snapshot.expectedBleServiceUuid,
+  expectedBleCharacteristicUuids: snapshot.expectedBleCharacteristicUuids,
+  discoveredBleServicesSummary: snapshot.discoveredBleServicesSummary,
+  readinessFailureReason: snapshot.readinessFailureReason,
+  nativeBackendBaseUrl: snapshot.nativeBackendBaseUrl,
+  nativeBackendConfigValid: snapshot.nativeBackendConfigValid,
+  nativeBackendConfigIssue: snapshot.nativeBackendConfigIssue,
+  debugLocalhostBackendAllowed: snapshot.debugLocalhostBackendAllowed,
+  debugCleartextBackendAllowed: snapshot.debugCleartextBackendAllowed,
+  lastCommandRoute: snapshot.lastCommandRoute,
+  lastCommandResult: snapshot.lastCommandResult,
+  lastCommandError: snapshot.lastCommandError,
+  preSosLifecycleState: snapshot.preSosLifecycleState,
+  preSosCycleKey: snapshot.preSosCycleKey,
+  preSosOwner: snapshot.preSosOwner,
+  preSosStartedAt: snapshot.preSosStartedAt,
+  preSosExpectedActivationAt: snapshot.preSosExpectedActivationAt,
+  preSosRemainingSeconds: snapshot.preSosRemainingSeconds,
+  preSosOriginatorNodeId: snapshot.preSosOriginatorNodeId,
+  preSosPacketId: snapshot.preSosPacketId,
+  iosBleSosSnapshotKind: snapshot.iosBleSosSnapshotKind,
+  iosBleSosPayloadHex: snapshot.iosBleSosPayloadHex,
+  iosBleSosSource: snapshot.iosBleSosSource,
+  iosBleSosCharacteristicUuid: snapshot.iosBleSosCharacteristicUuid,
+  iosBleSosReceivedAt: snapshot.iosBleSosReceivedAt,
+  iosBleSosDeadlineAt: snapshot.iosBleSosDeadlineAt,
+  iosBleSosNodeId: snapshot.iosBleSosNodeId,
+  iosBleSosPacketId: snapshot.iosBleSosPacketId,
+  iosBleSosCycleKey: snapshot.iosBleSosCycleKey,
+  nativeSosCycleId: id,
+  nativeSosCycleOpen: open,
+);
+
 final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
   _F17cNativeAdapter(super.snapshot);
+
+  /// F17c item 1: the native store's current SOS cycle (null: none reported,
+  /// as before), whether it is open, and its close rule: an automated close
+  /// applies only to the cycle it names; the user's own action (and the
+  /// session change) to the current one.
+  String? nativeCycleId;
+  bool nativeCycleOpen = false;
+  bool failSnapshotReads = false;
+
+  /// As production native does: a forwarded own-TAG start frame it admits
+  /// opens a cycle (new id) unless one is open; a close frame closes it.
+  /// False: native reports no cycle for Dart-path frames.
+  bool reportsNativeCycles = true;
+  var _nativeCycleSeq = 0;
+
+  void openNativeCycle() {
+    if (!nativeCycleOpen || nativeCycleId == null) {
+      nativeCycleId = 'native-cycle-auto-${++_nativeCycleSeq}';
+    }
+    nativeCycleOpen = true;
+  }
+
+  /// Per close call: `applied` or `ignored:<reason>` (native's decision).
+  final List<String> nativeCloseOutcomes = <String>[];
+
+  @override
+  Future<ProtectionPlatformSnapshot> getPlatformSnapshot() async {
+    if (failSnapshotReads) {
+      throw StateError('native snapshot unavailable');
+    }
+    final base = await super.getPlatformSnapshot();
+    final id = nativeCycleId;
+    return id == null
+        ? base
+        : _withNativeSosCycle(base, id: id, open: nativeCycleOpen);
+  }
 
   bool classifies = true;
   OwnTagSosFrameVerdict Function(OwnTagSosFrameReport frame) verdictFor = (_) =>
@@ -21011,6 +21160,7 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {
     await super.closeNativeSosCycle(
       nodeId: nodeId,
@@ -21018,7 +21168,22 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
       terminal: terminal,
       issuedAt: issuedAt,
       targetCycleId: targetCycleId,
+      targetCurrentCycle: targetCurrentCycle,
     );
+    final String outcome;
+    if (force || targetCurrentCycle) {
+      outcome = 'applied';
+    } else if (targetCycleId == null || targetCycleId.isEmpty) {
+      outcome = 'ignored:no_cycle_id';
+    } else if (targetCycleId != nativeCycleId) {
+      outcome = 'ignored:cycle_id_mismatch';
+    } else {
+      outcome = 'applied';
+    }
+    nativeCloseOutcomes.add(outcome);
+    if (outcome == 'applied') {
+      nativeCycleOpen = false;
+    }
     final hang = closeHang;
     if (hang != null && !force) {
       await hang.future;
@@ -21061,7 +21226,15 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
     if (hang != null) {
       await hang.future;
     }
-    return verdictFor(frame);
+    final verdict = verdictFor(frame);
+    if (reportsNativeCycles) {
+      if (frame.isClose) {
+        nativeCycleOpen = false;
+      } else if (verdict != OwnTagSosFrameVerdict.suppress) {
+        openNativeCycle();
+      }
+    }
+    return verdict;
   }
 
   @override
@@ -21817,6 +21990,8 @@ final class _PromptNativeAdapter extends _F17cNativeAdapter {
   void openSosThroughNativeCreate(String reason) {
     recordArmed = false;
     closePrompt(reason);
+    // Native opens (or keeps) the cycle of the SOS it creates.
+    openNativeCycle();
     final now = DateTime.now().toUtc();
     final n = ++_creates;
     pendingNativeSosCreate = ProtectionPendingNativeSosCreate(
@@ -23603,26 +23778,29 @@ void _ambiguousSosPromptTests() {
     }, timeout: const Timeout(Duration(minutes: 2)));
 
     for (final tagAcks in <bool>[true, false]) {
-      test('r7 positive: the user cancels B from the app: 0x04 and the MQTT '
-          'cancel, B closed; ${tagAcks ? 'the TAG confirms (0xE2): B\'s '
-                    'backend cancelled writes nothing' : 'the TAG never '
-                    'confirms: B\'s backend cancelled writes a second 0x04'}',
-          () async {
-        final adapter = _PromptNativeAdapter();
-        final written = <int>[];
-        final r7 = await r7AThenB(adapter, written, aConfirmed: true);
-        try {
-          await r7AppCancelB(
-            r7.phone,
-            r7,
-            written,
-            'app cancel of B',
-            tagAcks: tagAcks,
-          );
-        } finally {
-          await r7.phone.dispose();
-        }
-      }, timeout: const Timeout(Duration(minutes: 2)));
+      test(
+        'r7 positive: the user cancels B from the app: 0x04 and the MQTT '
+        'cancel, B closed; ${tagAcks ? 'the TAG confirms (0xE2): B\'s '
+                  'backend cancelled writes nothing' : 'the TAG never '
+                  'confirms: B\'s backend cancelled writes a second 0x04'}',
+        () async {
+          final adapter = _PromptNativeAdapter();
+          final written = <int>[];
+          final r7 = await r7AThenB(adapter, written, aConfirmed: true);
+          try {
+            await r7AppCancelB(
+              r7.phone,
+              r7,
+              written,
+              'app cancel of B',
+              tagAcks: tagAcks,
+            );
+          } finally {
+            await r7.phone.dispose();
+          }
+        },
+        timeout: const Timeout(Duration(minutes: 2)),
+      );
     }
 
     for (final guarded in <bool>[false, true]) {
@@ -23725,20 +23903,25 @@ void _ambiguousSosPromptTests() {
           occurredAt: r7.bPublishedAt,
         );
         await settle(500);
-        await r8ExpectBClosed(phone, r7, SosLifecycleStage.resolved, 'resolved');
+        await r8ExpectBClosed(
+          phone,
+          r7,
+          SosLifecycleStage.resolved,
+          'resolved',
+        );
         expect(
           written.where((o) => o == 0x07),
           hasLength(1),
           reason: 'B\'s portal resolve -> exactly one 0x07',
         );
         expect(written, isNot(contains(0x04)));
-        // F17c Phase 2: B's native cycle close names B and when it was issued.
+        // F17c Phase 2 / item 1: B's native cycle close names B's native
+        // cycle (native applies it) and when it was issued.
         final close = adapter.closeNativeSosCycleArgs.last;
         expect(close.terminal, 'resolve');
-        expect(
-          close.targetCycleId,
-          (await phone.harness.sdk.getSosLifecycle()).lifecycleId,
-        );
+        expect(close.targetCurrentCycle, isFalse);
+        expect(close.targetCycleId, startsWith('native-cycle-'));
+        expect(adapter.nativeCloseOutcomes.last, 'applied');
         expect(close.issuedAt, isNotNull);
         expect(close.issuedAt!.isAfter(r7.bPublishedAt), isTrue);
       } finally {
@@ -23783,12 +23966,12 @@ void _ambiguousSosPromptTests() {
           nativeBefore + 1,
           reason: 'the native cycle of B closed after the user cancel',
         );
-        // F17c Phase 2: the close carries B's lifecycle and the user's
-        // action time (issued after B's countdown began: native applies it).
+        // F17c Phase 2 / item 1: the user's own cancel targets the native
+        // cycle running now (native applies it) with the action time.
         final close = adapter.closeNativeSosCycleArgs.last;
-        final b = await phone.harness.sdk.getSosLifecycle();
         expect(close.terminal, 'cancel');
-        expect(close.targetCycleId, b.lifecycleId);
+        expect(close.targetCurrentCycle, isTrue);
+        expect(adapter.nativeCloseOutcomes.last, 'applied');
         expect(close.issuedAt, isNotNull);
         expect(close.issuedAt!.isAfter(r7.bPublishedAt), isTrue);
         expect(close.issuedAt!.isAfter(DateTime.now().toUtc()), isFalse);
@@ -23984,6 +24167,383 @@ void _ambiguousSosPromptTests() {
           await phone.dispose();
         }
       }, timeout: const Timeout(Duration(minutes: 2)));
+    }
+
+    // F17c item 2 (Roger 17/11): A closed on the TAG (0xE1, seen by Dart's
+    // link); B opened natively (native owned the link, Dart never saw B's
+    // frames) and reached Dart through the native snapshot / create path as
+    // production delivers it (iOS: snapshot kind preSos -> active with a
+    // pending create, then acked; Android: preSosLifecycleState
+    // createPending, then acked). The public state (getSosState and
+    // watchSosState, what the app UI reads) shows B active, never idle while
+    // B's lifecycle is open; the user can cancel B.
+    // Reproduced before the fix: Dart's device mirror still held A's 0xE1
+    // (cancelled); that stale terminal projection was rejected for B's newer
+    // generation but also blocked B's own repository state: getSosState idle,
+    // nothing emitted.
+    for (final platform in <ProtectionPlatform>[
+      ProtectionPlatform.ios,
+      ProtectionPlatform.android,
+    ]) {
+      ProtectionPlatformSnapshot nativeB({
+        required DateTime startedAt,
+        required bool pendingCreate,
+      }) => platform == ProtectionPlatform.ios
+          ? ProtectionPlatformSnapshot(
+              platform: platform,
+              backgroundCapabilityReady: true,
+              runtimeActive: true,
+              serviceRunning: true,
+              bleOwner: ProtectionBleOwner.iosPlugin,
+              pendingNativeSosCreateCount: pendingCreate ? 1 : 0,
+              pendingSosCount: pendingCreate ? 1 : 0,
+              iosBleSosSnapshotKind: 'active',
+              iosBleSosReceivedAt: startedAt,
+              iosBleSosNodeId: 0x1234,
+              iosBleSosPacketId: 9,
+              iosBleSosCycleKey: '4660:9',
+              preSosLifecycleState: pendingCreate ? 'createPending' : null,
+              preSosCycleKey: '4660:9@${startedAt.millisecondsSinceEpoch}',
+            )
+          : ProtectionPlatformSnapshot(
+              platform: platform,
+              backgroundCapabilityReady: true,
+              runtimeActive: true,
+              serviceRunning: true,
+              bleOwner: ProtectionBleOwner.androidService,
+              pendingNativeSosCreateCount: pendingCreate ? 1 : 0,
+              pendingSosCount: pendingCreate ? 1 : 0,
+              preSosLifecycleState: pendingCreate ? 'createPending' : 'idle',
+              preSosCycleKey: '4660:9@${startedAt.millisecondsSinceEpoch}',
+              preSosOwner: 'device',
+              preSosStartedAt: startedAt,
+              preSosOriginatorNodeId: 0x1234,
+              preSosPacketId: 9,
+            );
+
+      test('item 2 (${platform.name}): B opened natively after A\'s '
+          'Dart-seen 0xE1, delivered through the native snapshot path: '
+          'getSosState / watchSosState show B active, never idle; B '
+          'cancellable', () async {
+        final adapter = _PromptNativeAdapter();
+        adapter.snapshot = ProtectionPlatformSnapshot(
+          platform: platform,
+          backgroundCapabilityReady: true,
+        );
+        final written = <int>[];
+        final (phone, closed) = await sosClosedByTag(adapter, written, 0xE1);
+        final states = <SosState>[];
+        final sub = phone.harness.sdk.watchSosState().listen(states.add);
+        try {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          // Native owns the link: B's countdown ran and elapsed natively.
+          final startedAt = DateTime.now().toUtc().subtract(
+            const Duration(seconds: 20),
+          );
+          adapter.snapshot = nativeB(startedAt: startedAt, pendingCreate: true);
+          adapter.openSosThroughNativeCreate('native_owned_link');
+          await settle(800);
+          // Dart claimed and acked the native create.
+          adapter.snapshot = nativeB(
+            startedAt: startedAt,
+            pendingCreate: false,
+          );
+          expect(phone.realtime.publishedSos, hasLength(2));
+          final b = await phone.harness.sdk.getSosLifecycle();
+          expect(b.generation, closed.generation + 1);
+          expect(b.isOpen, isTrue);
+          expect(
+            await phone.harness.sdk.getSosState(),
+            isNot(anyOf(SosState.idle, SosState.cancelled, SosState.resolved)),
+            reason: 'B is open: never shown idle',
+          );
+          const bId = '4e6a8c1d-7425-40de-944b-e07fc1f90ab3';
+          await backendProcessed(phone, incidentId: bId);
+          expect(
+            (await phone.harness.sdk.getSosLifecycle()).stage,
+            SosLifecycleStage.active,
+          );
+          expect(await phone.harness.sdk.getSosState(), SosState.sent);
+          await settle(50);
+          expect(states, isNotEmpty);
+          expect(states.last, SosState.sent, reason: 'the UI stream shows B');
+          // B stays cancellable by the user.
+          final cancels = phone.realtime.publishedSosCancels.length;
+          await phone.harness.sdk.cancelSosAuthoritatively();
+          await settle(100);
+          expect(phone.realtime.publishedSosCancels.length, cancels + 1);
+          expect(
+            (await phone.harness.sdk.getSosLifecycle()).stage,
+            anyOf(SosLifecycleStage.cancelling, SosLifecycleStage.cancelled),
+          );
+        } finally {
+          await sub.cancel();
+          await phone.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 2)));
+    }
+
+    // F17c item 1 (Roger 17/11/2026): every SDK stop to native names the
+    // native cycle it is for. The fake native store (`_F17cNativeAdapter`)
+    // reports its current cycle id in the snapshot and applies production's
+    // close rule: an automated close only to the cycle it names, the user's
+    // own action to the current one.
+    Future<_MqttSosPhone> nativeCyclePhone(
+      _PromptNativeAdapter adapter,
+      List<int> written, {
+      MemorySharedPrefsSdkStore? store,
+      SdkSessionStore? sessionStore,
+      InMemorySecureKeyValueStore? secureStore,
+      bool restore = false,
+      SosIncidentDto? remoteActive,
+    }) {
+      final local = store ?? MemorySharedPrefsSdkStore();
+      return mqttPhone(
+        adapter,
+        written,
+        localStore: local,
+        sessionStore: sessionStore ?? SdkSessionStore(localStore: local),
+        secureStore: secureStore ?? InMemorySecureKeyValueStore(),
+        restore: restore,
+        remoteActive: remoteActive,
+      );
+    }
+
+    /// A TAG SOS seen through Dart's link (native: [cycleId], open) and
+    /// delivered; returns its lifecycle.
+    Future<SosLifecycleSnapshot> dartSeenSos(
+      _MqttSosPhone phone,
+      _PromptNativeAdapter adapter, {
+      required String? cycleId,
+      bool processed = true,
+    }) async {
+      adapter
+        ..reportsNativeCycles = cycleId != null
+        ..nativeCycleId = cycleId
+        ..nativeCycleOpen = cycleId != null;
+      for (var push = 0; push < 4; push++) {
+        await frame(phone.harness, active: false, packetId: 1);
+      }
+      await settle(countdown.inMilliseconds + 500);
+      if (processed) {
+        await backendProcessed(phone);
+      }
+      final a = await phone.harness.sdk.getSosLifecycle();
+      expect(a.isOpen, isTrue);
+      return a;
+    }
+
+    test('item 1: B started natively unseen by Dart, then A\'s late portal '
+        'resolve: no stop reaches B, B\'s countdown continues; B stays '
+        'cancellable', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final phone = await nativeCyclePhone(adapter, written);
+      try {
+        await dartSeenSos(phone, adapter, cycleId: 'native-cycle-a');
+        // Native owns the link now: A closed on the TAG (unseen by Dart) and
+        // B's countdown opened natively.
+        adapter
+          ..nativeCycleId = 'native-cycle-b'
+          ..nativeCycleOpen = true;
+        final before = adapter.closeNativeSosCycleArgs.length;
+        await portalResolved(phone);
+        await settle(300);
+        expect(
+          (await phone.harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.resolved,
+          reason: 'A is resolved',
+        );
+        final closes = adapter.closeNativeSosCycleArgs.skip(before).toList();
+        expect(closes, isNotEmpty, reason: 'A\'s close is decided');
+        for (final close in closes) {
+          expect(close.targetCurrentCycle, isFalse, reason: 'automated');
+          expect(close.targetCycleId, 'native-cycle-a', reason: 'names A');
+        }
+        expect(
+          adapter.nativeCloseOutcomes.skip(before),
+          everyElement('ignored:cycle_id_mismatch'),
+          reason: 'never applied to B',
+        );
+        expect(adapter.nativeCycleOpen, isTrue, reason: 'B continues');
+        // B reaches Dart through the native create; the user cancels it: the
+        // stop targets the cycle running now and closes it.
+        adapter.openSosThroughNativeCreate('native_owned_link');
+        await settle(800);
+        final b = await phone.harness.sdk.getSosLifecycle();
+        expect(b.isOpen, isTrue);
+        await phone.harness.sdk.cancelSosAuthoritatively();
+        await settle(300);
+        final userClose = adapter.closeNativeSosCycleArgs.last;
+        expect(userClose.terminal, 'cancel');
+        expect(userClose.targetCurrentCycle, isTrue);
+        expect(userClose.targetCycleId, 'native-cycle-b');
+        expect(adapter.nativeCloseOutcomes.last, 'applied');
+        expect(adapter.nativeCycleOpen, isFalse, reason: 'B stopped natively');
+      } finally {
+        await phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('item 1: an automated stop whose native cycle id is unknown is '
+        'refused by the guard and never sent; the SOS still closes', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final phone = await nativeCyclePhone(adapter, written);
+      try {
+        // Native reports no cycle for this SOS (e.g. an older native build).
+        await dartSeenSos(phone, adapter, cycleId: null);
+        final before = adapter.closeNativeSosCycleArgs.length;
+        await portalResolved(phone);
+        await settle(300);
+        expect(
+          (await phone.harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.resolved,
+        );
+        expect(
+          adapter.closeNativeSosCycleArgs.skip(before),
+          isEmpty,
+          reason: 'no native stop without the cycle id',
+        );
+      } finally {
+        await phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    for (final idKnown in <bool>[true, false]) {
+      test('item 1: user cancel with the native cycle id '
+          '${idKnown ? 'known: exact-id path' : 'unknown and the snapshot '
+                    'refresh failing: stop-current-cycle'}; native closes '
+          'the current cycle and the TAG gets the stop', () async {
+        final adapter = _PromptNativeAdapter();
+        final written = <int>[];
+        final phone = await nativeCyclePhone(adapter, written);
+        try {
+          await dartSeenSos(
+            phone,
+            adapter,
+            cycleId: idKnown ? 'native-cycle-a' : null,
+          );
+          if (!idKnown) {
+            // Native runs a cycle Dart never learned the id of, and the
+            // refresh at the user's action fails.
+            adapter
+              ..nativeCycleId = 'native-cycle-x'
+              ..nativeCycleOpen = true
+              ..failSnapshotReads = true;
+          }
+          written.clear();
+          final before = adapter.closeNativeSosCycleArgs.length;
+          await phone.harness.sdk.cancelSosAuthoritatively();
+          await settle(300);
+          adapter.failSnapshotReads = false;
+          final closes = adapter.closeNativeSosCycleArgs.skip(before).toList();
+          expect(closes, hasLength(1));
+          // The harness backend reports no open incident during the cancel,
+          // so the lifecycle may end resolved (backend absence) first.
+          expect(closes.single.terminal, isIn(<String>['cancel', 'resolve']));
+          expect(closes.single.targetCurrentCycle, isTrue);
+          expect(
+            closes.single.targetCycleId,
+            idKnown ? 'native-cycle-a' : isNull,
+          );
+          expect(adapter.nativeCloseOutcomes.last, 'applied');
+          expect(adapter.nativeCycleOpen, isFalse);
+          expect(written, contains(0x04), reason: 'the TAG gets the stop');
+          expect(
+            (await phone.harness.sdk.getSosLifecycle()).stage,
+            anyOf(SosLifecycleStage.cancelling, SosLifecycleStage.cancelled),
+          );
+        } finally {
+          await phone.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 2)));
+    }
+
+    // Review r8 B1 (probe Q1d, reproduced on 569e065): A (backend-unconfirmed,
+    // or confirmed: Q1c control) closed by the TAG (0xE1 seen by Dart), the
+    // app killed, B's countdown opened natively before Dart restored; at the
+    // restore A's lifecycle closes. No stop reaches B: A's close names A's
+    // native cycle (native ignores it) or, with A's cycle unknown, is never
+    // sent.
+    for (final aConfirmed in <bool>[false, true]) {
+      for (final aBound in <bool>[true, false]) {
+        for (final type in <String>['cancelled', 'resolved']) {
+          test('item 1 / B1 ${aConfirmed ? 'Q1c' : 'Q1d'}: A '
+              '${aConfirmed ? 'confirmed' : 'unconfirmed'} closed by 0xE1, '
+              'app restart, B opened natively, A late $type '
+              '(A\'s cycle ${aBound ? 'known' : 'unknown'}): no stop reaches '
+              'B', () async {
+            final adapter = _PromptNativeAdapter();
+            final written = <int>[];
+            final store = MemorySharedPrefsSdkStore();
+            final sessionStore = SdkSessionStore(localStore: store);
+            final secureStore = InMemorySecureKeyValueStore();
+            final phone = await nativeCyclePhone(
+              adapter,
+              written,
+              store: store,
+              sessionStore: sessionStore,
+              secureStore: secureStore,
+            );
+            await dartSeenSos(
+              phone,
+              adapter,
+              cycleId: aBound ? 'native-cycle-a' : null,
+              processed: aConfirmed,
+            );
+            final aPub = phone.realtime.publishedSos.first.timestamp.toUtc();
+            phone.remote!.active = r7RestA(aPub);
+            await tagClose(phone.harness, 0xE1);
+            await settle(300);
+            await phone.dispose();
+            // B's press: native opens B's countdown before Dart restores.
+            adapter
+              ..nativeCycleId = 'native-cycle-b'
+              ..nativeCycleOpen = true;
+            final before = adapter.closeNativeSosCycleArgs.length;
+            written.clear();
+            final restarted = await nativeCyclePhone(
+              adapter,
+              written,
+              store: store,
+              sessionStore: sessionStore,
+              secureStore: secureStore,
+              restore: true,
+              remoteActive: r7RestA(aPub),
+            );
+            try {
+              await settle(500);
+              restarted.remote!.active = null;
+              await r7Event(restarted, type);
+              await settle(500);
+              final closes = adapter.closeNativeSosCycleArgs
+                  .skip(before)
+                  .toList();
+              for (final close in closes) {
+                expect(close.force, isFalse);
+                expect(close.targetCurrentCycle, isFalse, reason: 'automated');
+                expect(
+                  close.targetCycleId,
+                  'native-cycle-a',
+                  reason: 'only ever names A',
+                );
+              }
+              if (!aBound) {
+                expect(closes, isEmpty, reason: 'unknown cycle: never sent');
+              }
+              expect(
+                adapter.nativeCloseOutcomes.skip(before),
+                everyElement(startsWith('ignored')),
+              );
+              expect(adapter.nativeCycleOpen, isTrue, reason: 'B continues');
+              expect(written.where((o) => o == 0x04 || o == 0x07), isEmpty);
+            } finally {
+              await restarted.dispose();
+            }
+          }, timeout: const Timeout(Duration(minutes: 2)));
+        }
+      }
     }
 
     // F17c review r6 LOW-1: the TAG close evidence survives an app restart and
@@ -24257,11 +24817,11 @@ void _ambiguousSosPromptTests() {
         }
         await settle(countdown.inMilliseconds + 500);
         expect(phone.realtime.publishedSos, hasLength(2));
-        expect(
-          phone.realtime.publishOrder,
-          <String>['trigger', 'cancel', 'trigger'],
-          reason: "exact wire order: A's trigger, A's cancel, B's trigger",
-        );
+        expect(phone.realtime.publishOrder, <String>[
+          'trigger',
+          'cancel',
+          'trigger',
+        ], reason: "exact wire order: A's trigger, A's cancel, B's trigger");
         expect(
           adapter.closeNativeSosCycleArgs,
           hasLength(nativeCloses),

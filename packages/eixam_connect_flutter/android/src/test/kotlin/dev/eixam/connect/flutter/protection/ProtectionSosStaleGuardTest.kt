@@ -416,6 +416,29 @@ class ProtectionSosStaleGuardTest {
         var dartFrames = 0
         var nativeFrames = 0
         var phase2Terminals = 0
+        var cycleTargets = 0
+        // F17c item 1: the native cycle id, opened by the owner's rule.
+        var cycleId: String? = null
+        var idSeq = 0
+        val cycleIds = mutableMapOf<String, String>()
+        fun openCycle(alreadyOpen: Boolean) {
+            cycleId = ProtectionSosNativeDecision.cycleIdOnOpen(cycleId, alreadyOpen) { "cycle-${++idSeq}" }
+        }
+        fun forwarded(
+            previous: ProtectionSosObservedCycle?,
+            next: ProtectionSosObservedCycle?,
+            node: Int,
+            now: Long,
+            lifecycle: ProtectionSosLifecycleState,
+            lifecycleNodeId: Int?,
+        ) {
+            if (ProtectionSosNativeDecision.dartCycleOpened(previous, next)) {
+                openCycle(
+                    ProtectionSosNativeDecision.nativeCycleOpen(lifecycle, lifecycleNodeId, node) ||
+                        ProtectionSosNativeDecision.dartCycleOpen(previous, node, now),
+                )
+            }
+        }
         val failures = mutableListOf<String>()
         val base = 5_000_000L
         for (raw in fixture!!.readLines()) {
@@ -429,6 +452,8 @@ class ProtectionSosStaleGuardTest {
                 lifecycleNodeId = null
                 unclaimed = false
                 countdownStartedAt = null
+                cycleId = null
+                cycleIds.clear()
                 continue
             }
             val (eventPart, expectPart) = line.split(" => ")
@@ -448,15 +473,18 @@ class ProtectionSosStaleGuardTest {
             when (event[1]) {
                 "seen" -> when (args["source"]) {
                     "native" -> {
+                        openCycle(ProtectionSosNativeDecision.dartCycleOpen(observed, node, t))
                         lifecycle = ProtectionSosLifecycleState.createPending
                         lifecycleNodeId = node
                     }
                     "native_unclaimed" -> {
+                        openCycle(ProtectionSosNativeDecision.dartCycleOpen(observed, node, t))
                         lifecycle = ProtectionSosLifecycleState.createPending
                         lifecycleNodeId = node
                         unclaimed = true
                     }
                     "countdown" -> {
+                        openCycle(ProtectionSosNativeDecision.dartCycleOpen(observed, node, t))
                         lifecycle = ProtectionSosLifecycleState.preConfirmSeen
                         lifecycleNodeId = node
                         countdownStartedAt = t - args["age"]!!.toLong()
@@ -464,8 +492,12 @@ class ProtectionSosStaleGuardTest {
                     "dart" -> {
                         val age = args["age"]!!.toLong()
                         val sos = ProtectionSosForwardedFrame.parse(sosFrame(node))!!
+                        var previous = observed
                         observed = guard.onForwardedFrame(null, observed, sos, t - age).observed
+                        forwarded(previous, observed, node, t - age, lifecycle, lifecycleNodeId)
+                        previous = observed
                         observed = guard.onForwardedFrame(null, observed, sos, t - 1).observed
+                        forwarded(previous, observed, node, t - 1, lifecycle, lifecycleNodeId)
                     }
                     else -> Unit
                 }
@@ -481,9 +513,23 @@ class ProtectionSosStaleGuardTest {
                         observed = observed,
                         now = t,
                         issuedAt = args["issued"]?.let { base + it.toLong() },
+                        // F17c item 1: the stop's target, as the bridge maps it.
+                        target = when (val target = args["target"]) {
+                            "user" -> ProtectionSosStopTarget.CurrentCycle
+                            "none" -> ProtectionSosStopTarget.Missing
+                            null -> cycleId?.let { ProtectionSosStopTarget.Cycle(it) }
+                                ?: ProtectionSosStopTarget.Missing
+                            else -> ProtectionSosStopTarget.Cycle(
+                                cycleIds[target] ?: throw AssertionError("$label: unknown cycle $target"),
+                            )
+                        },
+                        currentCycleId = cycleId,
                     )
                     if (args["issued"] != null) {
                         phase2Terminals++
+                    }
+                    if (args["target"] != null) {
+                        cycleTargets++
                     }
                     if (step.nextLifecycle != lifecycle) {
                         countdownStartedAt = null
@@ -510,6 +556,7 @@ class ProtectionSosStaleGuardTest {
                         receivedAt = t,
                     )
                     outcome = decision.outcome
+                    forwarded(observed, decision.observed, node, delivered, lifecycle, lifecycleNodeId)
                     observed = decision.observed
                     state = outcome.state
                     val wantVerdict = when (expect[0]) {
@@ -523,6 +570,12 @@ class ProtectionSosStaleGuardTest {
                     val step = ProtectionSosNativeDecision.onSosFrame(state, lifecycle, sosFrame(node), t)
                     outcome = step.outcome
                     state = outcome.state
+                    if (step.countdownObservedAt != null) {
+                        openCycle(
+                            step.outcome.action != ProtectionSosStaleAction.newSos &&
+                                ProtectionSosNativeDecision.dartCycleOpen(observed, node, t),
+                        )
+                    }
                     step.countdownObservedAt?.let {
                         countdownStartedAt = it
                         lifecycleNodeId = node
@@ -579,6 +632,7 @@ class ProtectionSosStaleGuardTest {
                         val step = ProtectionSosNativeDecision.onPromptSos(lifecycle)
                         assertEquals("$label: create only when opened", step.opensNativeSos, step.queuesCreate)
                         assertTrue("$label: the SOS is opened natively", step.opensNativeSos)
+                        openCycle(alreadyOpen = false)
                         lifecycle = ProtectionSosLifecycleState.createPending
                     }
                 }
@@ -628,6 +682,17 @@ class ProtectionSosStaleGuardTest {
                     if (lifecycle == ProtectionSosLifecycleState.idle) "idle" else "running",
                 )
             }
+            want["cycleid"]?.let { cycleName ->
+                val id = cycleId
+                assertNotNull("$label: no native cycle id", id)
+                val known = cycleIds[cycleName]
+                if (known != null) {
+                    assertEquals("$label: cycle id changed ($cycleName)", known, id)
+                } else {
+                    assertTrue("$label: cycle id $cycleName not unique", id !in cycleIds.values)
+                    cycleIds[cycleName] = id!!
+                }
+            }
             } catch (failure: AssertionError) {
                 // Every failing step is reported, not only the first one.
                 failures.add(failure.message ?: label)
@@ -638,6 +703,7 @@ class ProtectionSosStaleGuardTest {
         assertTrue("dart frames replayed ($dartFrames)", dartFrames > 20)
         assertTrue("native frames replayed ($nativeFrames)", nativeFrames > 20)
         assertTrue("stops with an issue time replayed ($phase2Terminals)", phase2Terminals >= 4)
+        assertTrue("stops with a cycle target replayed ($cycleTargets)", cycleTargets >= 7)
     }
 
     /** F17c M2: "Send SOS" / the timeout queue a create only when native opened the SOS. */

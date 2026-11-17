@@ -3912,6 +3912,7 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {}
 
   @override

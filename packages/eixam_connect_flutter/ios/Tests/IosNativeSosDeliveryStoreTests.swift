@@ -1029,12 +1029,15 @@ struct IosNativeSosDeliveryStoreTests {
     var steps = 0
     var dartFrames = 0
     var phase2Terminals = 0
+    var cycleTargets = 0
+    var cycleIds: [String: String] = [:]
     for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
       let line = raw.trimmingCharacters(in: .whitespaces)
       if line.isEmpty || line.hasPrefix("#") { continue }
       if line.hasPrefix("scenario ") {
         name = String(line.dropFirst("scenario ".count))
         store = makeStore().0
+        cycleIds = [:]
         clock += 10_000_000
         base = clock
         continue
@@ -1086,9 +1089,23 @@ struct IosNativeSosDeliveryStoreTests {
       case "terminal":
         clock = base + t
         if args["connected"] == "false" { store.noteLinkDropped() } else { store.noteLinkUp() }
+        // F17c item 1: the stop's target, as the bridge maps it.
+        let target: IosSosStopTarget
+        switch args["target"] {
+        case "user": target = .currentCycle
+        case "none": target = .missing
+        case nil: target = store.currentCycleId.map { .cycle($0) } ?? .missing
+        case let name?:
+          check(cycleIds[name] != nil, "\(label): unknown cycle \(name)")
+          target = .cycle(cycleIds[name] ?? "?")
+        }
+        if args["target"] != nil {
+          cycleTargets += 1
+        }
         _ = store.closeDeliveredCycle(
           nodeId: node, terminal: IosSosTerminalKind(rawValue: args["kind"] ?? "cancel"),
-          issuedAtMs: args["issued"].flatMap(Int.init).map { base + $0 })
+          issuedAtMs: args["issued"].flatMap(Int.init).map { base + $0 },
+          target: target)
         if args["issued"] != nil {
           phase2Terminals += 1
         }
@@ -1176,9 +1193,20 @@ struct IosNativeSosDeliveryStoreTests {
         let got = store.cycleState == .idle ? "idle" : "running"
         check(got == cycle, "\(label): native cycle \(got) != \(cycle)")
       }
+      if let name = want["cycleid"] {
+        let id = store.currentCycleId
+        check(id != nil, "\(label): no native cycle id")
+        if let known = cycleIds[name] {
+          check(id == known, "\(label): cycle id changed (\(name))")
+        } else {
+          check(!cycleIds.values.contains(id ?? ""), "\(label): cycle id \(name) not unique")
+          cycleIds[name] = id
+        }
+      }
     }
     check(steps > 100, "fixture replayed (\(steps) steps)")
     check(dartFrames > 20, "dart frames replayed (\(dartFrames))")
     check(phase2Terminals >= 4, "stops with an issue time replayed (\(phase2Terminals))")
+    check(cycleTargets >= 7, "stops with a cycle target replayed (\(cycleTargets))")
   }
 }

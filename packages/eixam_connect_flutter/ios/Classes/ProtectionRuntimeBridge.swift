@@ -281,18 +281,35 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         updateSosBackgroundHold(reason: "sdk_session_changed")
       }
       let terminal = IosSosTerminalKind(rawValue: arguments?["terminal"] as? String ?? "")
+      // F17c item 1: an automated stop names the native cycle it is for; the
+      // user's own action (and the session change) targets the current one.
+      let targetCycleId = arguments?["targetCycleId"] as? String
+      let target: IosSosStopTarget
+      if arguments?["force"] as? Bool == true || arguments?["targetCurrentCycle"] as? Bool == true {
+        target = .currentCycle
+        logSosDelivery(
+          "NATIVE_SOS_STOP_CURRENT_CYCLE " +
+            "source=\(arguments?["force"] as? Bool == true ? "session_changed" : "user_action") " +
+            "terminal=\(terminal?.rawValue ?? "none") " +
+            "idKnown=\(targetCycleId != nil) " +
+            "idMatches=\(targetCycleId != nil && targetCycleId == sosDelivery.currentCycleId)")
+      } else if let targetCycleId, !targetCycleId.isEmpty {
+        target = .cycle(targetCycleId)
+      } else {
+        target = .missing
+      }
       let closed = sosDelivery.closeDeliveredCycle(
         nodeId: (arguments?["nodeId"] as? NSNumber)?.intValue,
         terminal: terminal,
-        issuedAtMs: (arguments?["issuedAtMs"] as? NSNumber)?.intValue
+        issuedAtMs: (arguments?["issuedAtMs"] as? NSNumber)?.intValue,
+        target: target
       )
-      if sosDelivery.lastSdkStopIgnoredAsStale {
-        // F17c Phase 2: a stop issued before the current countdown began
-        // targets an older SOS: the running countdown is never touched.
+      if let reason = sosDelivery.lastSdkStopIgnoredReason {
+        // F17c item 1 / Phase 2: an automated stop for another (older) SOS,
+        // or naming none: the running cycle is never touched.
         logSosDelivery(
-          "NATIVE_SOS_STALE_STOP_IGNORED reason=issued_before_current_cycle " +
-            "terminal=\(terminal?.rawValue ?? "none") " +
-            "target=\(arguments?["targetCycleId"] != nil)")
+          "NATIVE_SOS_STALE_STOP_IGNORED reason=\(reason) " +
+            "terminal=\(terminal?.rawValue ?? "none")")
       }
       if closed {
         sosCountdownTimer?.invalidate()
@@ -344,7 +361,15 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       }
       applyStaleGuardTransition(decision.transition)
       reconcilePrompt(reason: "dart_frame_\(sosDelivery.lastStaleAction)")
-      result(["verdict": decision.verdict])
+      // F17c item 1: the native cycle this frame belongs to (Dart binds the
+      // SOS it runs to it).
+      var reply: [String: Any] = ["verdict": decision.verdict]
+      if parsed.kind == .preSos || parsed.kind == .active,
+         decision.verdict != "suppress",
+         let cycleId = sosDelivery.currentCycleId {
+        reply["cycleId"] = cycleId
+      }
+      result(reply)
     case "disarmSosStaleGuard":
       // F17c (M3): the SDK opened a new SOS; no pending decision may stop it.
       if sosDelivery.staleGuardKind != nil {
@@ -872,6 +897,9 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       "iosBleSosPacketId": defaults.object(forKey: Keys.iosBleSosPacketId) as? Int,
       "iosBleSosCycleKey": defaults.string(forKey: Keys.iosBleSosCycleKey),
       "preSosLifecycleState": preSosLifecycleStateFromSnapshot(),
+      // F17c item 1: the current native SOS cycle (id kept after it closed).
+      "nativeSosCycleId": sosDelivery.currentCycleId,
+      "nativeSosCycleOpen": sosDelivery.cycleOpen(nodeId: nil),
       "preSosCycleKey": (sosDelivery.peekPendingCreate()?["cycleKey"] as? String)
         ?? defaults.string(forKey: Keys.iosBleSosCycleKey),
       "preSosOwner": "device",

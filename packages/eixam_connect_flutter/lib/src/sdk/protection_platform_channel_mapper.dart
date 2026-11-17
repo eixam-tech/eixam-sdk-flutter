@@ -112,6 +112,8 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     iosBleSosNodeId: snapshot['iosBleSosNodeId'] as int?,
     iosBleSosPacketId: snapshot['iosBleSosPacketId'] as int?,
     iosBleSosCycleKey: snapshot['iosBleSosCycleKey'] as String?,
+    nativeSosCycleId: snapshot['nativeSosCycleId'] as String?,
+    nativeSosCycleOpen: snapshot['nativeSosCycleOpen'] as bool? ?? false,
   );
 }
 
@@ -223,6 +225,8 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
     preSosRemainingSeconds: snapshot['preSosRemainingSeconds'] as int?,
     preSosOriginatorNodeId: snapshot['preSosOriginatorNodeId'] as int?,
     preSosPacketId: snapshot['preSosPacketId'] as int?,
+    nativeSosCycleId: snapshot['nativeSosCycleId'] as String?,
+    nativeSosCycleOpen: snapshot['nativeSosCycleOpen'] as bool? ?? false,
   );
 }
 

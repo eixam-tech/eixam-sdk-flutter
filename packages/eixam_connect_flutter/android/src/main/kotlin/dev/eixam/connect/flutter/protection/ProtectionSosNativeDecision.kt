@@ -72,11 +72,15 @@ internal object ProtectionSosNativeDecision {
         /** Arm the "unconfirmed stop" record. */
         val arm: Boolean,
         /**
-         * F17c Phase 2: the stop was issued before the current countdown
-         * began (it targets an older SOS): ignored, nothing changes.
+         * F17c Phase 2 / item 1: why the stop was ignored (nothing changes):
+         * `cycle_id_mismatch` (it names another, older cycle), `no_cycle_id`
+         * (an automated stop naming none), `issued_before_current_cycle`.
+         * Null: applied.
          */
-        val staleIgnored: Boolean = false,
-    )
+        val ignoredReason: String? = null,
+    ) {
+        val staleIgnored: Boolean get() = ignoredReason != null
+    }
 
     /**
      * The SDK ended an own-TAG SOS (Dart `closeNativeSosCycle`). F17c-cdc: the
@@ -94,19 +98,38 @@ internal object ProtectionSosNativeDecision {
         observed: ProtectionSosObservedCycle?,
         now: Long,
         issuedAt: Long? = null,
+        target: ProtectionSosStopTarget = ProtectionSosStopTarget.CurrentCycle,
+        currentCycleId: String? = null,
     ): TerminalStep {
         val sameTag = sameTag(terminalNodeId, lifecycleNodeId)
-        val currentStart = currentCycleStartedAt(
-            lifecycle = lifecycle,
-            countdownStartedAt = countdownStartedAt.takeIf { sameTag },
-            observed = observed,
-            terminalNodeId = terminalNodeId,
-            now = now,
-        )
-        if (issuedAt != null && currentStart != null && issuedAt < currentStart) {
-            // F17c Phase 2: a stop issued before the current countdown began
-            // targets an older SOS: the running countdown is never touched.
-            return TerminalStep(nextLifecycle = lifecycle, arm = false, staleIgnored = true)
+        when (target) {
+            // The user's own action: the cycle running now, by definition.
+            ProtectionSosStopTarget.CurrentCycle -> Unit
+            ProtectionSosStopTarget.Missing ->
+                return TerminalStep(lifecycle, arm = false, ignoredReason = "no_cycle_id")
+            is ProtectionSosStopTarget.Cycle -> {
+                if (target.id != currentCycleId) {
+                    // F17c item 1: an older SOS's stop, delivered after a newer
+                    // cycle opened: the running cycle is never touched.
+                    return TerminalStep(lifecycle, arm = false, ignoredReason = "cycle_id_mismatch")
+                }
+                val currentStart = currentCycleStartedAt(
+                    lifecycle = lifecycle,
+                    countdownStartedAt = countdownStartedAt.takeIf { sameTag },
+                    observed = observed,
+                    terminalNodeId = terminalNodeId,
+                    now = now,
+                )
+                if (issuedAt != null && currentStart != null && issuedAt < currentStart) {
+                    // F17c Phase 2: a stop issued before the current countdown
+                    // began targets an older SOS.
+                    return TerminalStep(
+                        lifecycle,
+                        arm = false,
+                        ignoredReason = "issued_before_current_cycle",
+                    )
+                }
+            }
         }
         val nextLifecycle =
             if (ProtectionSosStaleGuard.cancelsRunningCountdown(
@@ -174,6 +197,38 @@ internal object ProtectionSosNativeDecision {
         return starts.maxOrNull()
     }
 
+    /**
+     * F17c item 1 (iOS `openCycleId`): the cycle id after a cycle opens for a
+     * TAG. It joins the cycle already open for that TAG on the other path (the
+     * same SOS seen by Dart and native, e.g. a BLE owner handover); otherwise
+     * it is a new SOS: [newId].
+     */
+    fun cycleIdOnOpen(currentId: String?, alreadyOpen: Boolean, newId: () -> String): String =
+        if (alreadyOpen && currentId != null) currentId else newId()
+
+    /** F17c item 1: the native countdown / SOS runs for [nodeId]. */
+    fun nativeCycleOpen(
+        lifecycle: ProtectionSosLifecycleState,
+        lifecycleNodeId: Int?,
+        nodeId: Int?,
+    ): Boolean = lifecycle != ProtectionSosLifecycleState.idle && sameTag(nodeId, lifecycleNodeId)
+
+    /** F17c item 1: Dart forwarded [nodeId]'s SOS frames recently. */
+    fun dartCycleOpen(observed: ProtectionSosObservedCycle?, nodeId: Int?, now: Long): Boolean =
+        observed != null && ProtectionSosStaleGuard.observedRecently(observed, now) &&
+            sameTag(nodeId, observed.nodeId)
+
+    /**
+     * F17c item 1: a Dart-forwarded frame moved the observed cycle from
+     * [previous] to [next]: a fresh episode opens a cycle (joining the native
+     * one of that TAG, or the recent Dart one of the same TAG).
+     */
+    fun dartCycleOpened(
+        previous: ProtectionSosObservedCycle?,
+        next: ProtectionSosObservedCycle?,
+    ): Boolean = next != null && next.firstSeenAt == next.lastSeenAt &&
+        (previous == null || previous.firstSeenAt != next.firstSeenAt)
+
     /** Same TAG unless both ids are known and differ (iOS `sameNode`). */
     fun sameTag(a: Int?, b: Int?): Boolean =
         a == null || b == null || (a.toLong() and 0xFFFF_FFFFL) == (b.toLong() and 0xFFFF_FFFFL)
@@ -184,5 +239,27 @@ internal object ProtectionSosNativeDecision {
             ((payload[offset + 1] and 0xFF) shl 8) or
             ((payload[offset + 2] and 0xFF) shl 16) or
             ((payload[offset + 3] and 0xFF) shl 24)
+    }
+}
+
+/** F17c item 1: which native cycle an SDK stop / close targets. */
+internal sealed class ProtectionSosStopTarget {
+    /** The user's own action (or the session change): the cycle running now. */
+    object CurrentCycle : ProtectionSosStopTarget()
+
+    /** An automated stop: only the native cycle with this id. */
+    data class Cycle(val id: String) : ProtectionSosStopTarget()
+
+    /** An automated stop naming no cycle: never applied. */
+    object Missing : ProtectionSosStopTarget()
+
+    companion object {
+        /** The channel arguments (`targetCurrentCycle`, `targetCycleId`). */
+        fun fromArguments(targetCurrentCycle: Boolean, targetCycleId: String?): ProtectionSosStopTarget =
+            when {
+                targetCurrentCycle -> CurrentCycle
+                !targetCycleId.isNullOrEmpty() -> Cycle(targetCycleId)
+                else -> Missing
+            }
     }
 }

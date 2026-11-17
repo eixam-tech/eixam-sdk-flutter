@@ -23,6 +23,11 @@ class SharedPrefsSdkStore {
   static const String sosTagCloseEvidenceKey = 'eixam.sos.tag_close.v1';
   static const String sosTagStopConfirmationKey =
       'eixam.sos.tag_stop_confirmed.v1';
+  // F17c item 1: the native SOS cycle id bound to each SOS generation, so an
+  // automated stop of that SOS names its own native cycle (also after a
+  // restart).
+  static const String sosNativeCycleBindingsKey =
+      'eixam.sos.native_cycle_binding.v1';
   static const String trackingPositionKey = 'eixam.tracking.last_position';
   static const String resolvedLocationKey = 'eixam.location.resolved';
   static const int resolvedLocationHandoffVersion = 2;
@@ -77,6 +82,7 @@ class SharedPrefsSdkStore {
     sosStopGuardKey,
     sosTagCloseEvidenceKey,
     sosTagStopConfirmationKey,
+    sosNativeCycleBindingsKey,
     sosStateKey,
     sosClosedIncidentKey,
     trackingPositionKey,

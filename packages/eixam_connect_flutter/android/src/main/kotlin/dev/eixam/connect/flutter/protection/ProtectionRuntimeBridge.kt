@@ -316,9 +316,15 @@ internal object ProtectionRuntimeBridge {
                     ?.mapNotNull { (it as? Number)?.toInt() }
                     .orEmpty()
                 val receivedAtMs = (arguments?.get("receivedAtMs") as? Number)?.toLong()
-                val verdict = ensureRuntimeOwner(context)
+                val (verdict, cycleId) = ensureRuntimeOwner(context)
                     .observeForwardedOwnTagSosFrame(bytes, receivedAtMs)
-                result.success(mapOf("verdict" to verdict.name))
+                result.success(
+                    if (cycleId == null) {
+                        mapOf("verdict" to verdict.name)
+                    } else {
+                        mapOf("verdict" to verdict.name, "cycleId" to cycleId)
+                    },
+                )
             }
             "disarmSosStaleGuard" -> {
                 val reason = (call.arguments as? Map<*, *>)?.get("reason") as? String ?: "sdk"
@@ -361,7 +367,13 @@ internal object ProtectionRuntimeBridge {
                     // F17c Phase 2: when the SDK issued this stop (absent =
                     // today's behaviour).
                     issuedAtMs = (arguments?.get("issuedAtMs") as? Number)?.toLong(),
-                    targetPresent = arguments?.get("targetCycleId") != null,
+                    // F17c item 1: an automated stop names its native cycle; the
+                    // user's own action targets the current one.
+                    target = ProtectionSosStopTarget.fromArguments(
+                        targetCurrentCycle = arguments?.get("targetCurrentCycle") as? Boolean == true,
+                        targetCycleId = arguments?.get("targetCycleId") as? String,
+                    ),
+                    targetCycleId = arguments?.get("targetCycleId") as? String,
                 )
                 result.success(null)
             }

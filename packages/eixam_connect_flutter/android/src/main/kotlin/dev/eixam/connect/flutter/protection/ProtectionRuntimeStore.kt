@@ -152,7 +152,24 @@ internal class ProtectionRuntimeStore(context: Context) {
             "preSosRemainingSeconds" to preSosRemainingSeconds,
             "preSosOriginatorNodeId" to preferences.getIntOrNull(keyPreSosOriginatorNodeId),
             "preSosPacketId" to preferences.getIntOrNull(keyPreSosPacketId),
+            // F17c item 1: the current native SOS cycle (id kept after it closed).
+            "nativeSosCycleId" to sosCycleId(),
+            "nativeSosCycleOpen" to (
+                preferences.getString(keyPreSosLifecycleState, "idle") != "idle" ||
+                    ProtectionSosNativeDecision.dartCycleOpen(
+                        loadSosObservedCycle(),
+                        null,
+                        System.currentTimeMillis(),
+                    )
+                ),
         )
+    }
+
+    /** F17c item 1: the id of the newest native SOS cycle; survives process death. */
+    fun sosCycleId(): String? = preferences.getString(keySosCycleId, null)
+
+    fun saveSosCycleId(id: String) {
+        preferences.edit().putString(keySosCycleId, id).apply()
     }
 
     fun markStartRequest(
@@ -1742,6 +1759,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyPreSosExpectedActivationAt = "pre_sos_expected_activation_at"
         private const val keyPreSosOriginatorNodeId = "pre_sos_originator_node_id"
         private const val keyPreSosPacketId = "pre_sos_packet_id"
+        private const val keySosCycleId = "native_sos_cycle_id"
         private const val expectedBleServiceUuid = "6ba1b218-15a8-461f-9fa8-5dcae273ea00"
         private val expectedBleCharacteristicUuids = listOf(
             "6ba1b218-15a8-461f-9fa8-5dcae273ea01",

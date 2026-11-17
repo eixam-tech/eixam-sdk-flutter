@@ -43,7 +43,20 @@
 #                         (scenario time). A stop issued before the current
 #                         countdown began (native countdown or Dart-forwarded
 #                         burst) targets an older SOS: ignored and logged (no
-#                         close, no record). Absent: today's behaviour
+#                         close, no record). Absent: today's behaviour.
+#                         target (F17c item 1, Roger 17/11/2026): which native
+#                         cycle the stop names. An automated stop (backend
+#                         event, portal resolve, reconciliation) carries the
+#                         exact native cycle id: target=NAME (an id captured by
+#                         cycleid=NAME), default the native cycle id current at
+#                         this step. Native applies it only to that cycle: any
+#                         other id is ignored and logged
+#                         (NATIVE_SOS_STALE_STOP_IGNORED reason=cycle_id_mismatch,
+#                         no close, no record) and so is target=none (no id:
+#                         the SDK's guard never sends it; reason=no_cycle_id).
+#                         target=user: the user's own action (cancel / resolve
+#                         button) targets the cycle running now, by definition:
+#                         never ignored, no id or issued check
 #   frame node=N source=native|dart [delivered=MS]
 #                         one BLE SOS push as delivered by that path; for a
 #                         dart frame t is Dart's receivedAtMs and delivered
@@ -79,7 +92,10 @@
 # this step; kind = the prompt's terminal; opened (default false); prompt = the
 # prompt state after the step; owed = the user's stop still owed after the
 # step; armed = the record after the step; cycle=running|idle = the native
-# TAG cycle (countdown / handed-over SOS) after the step; countdown=T (native-path frames
+# TAG cycle (countdown / handed-over SOS) after the step; cycleid=NAME (F17c
+# item 1) = the native cycle id after the step: the first use of NAME captures
+# it (it must differ from every id captured before in the scenario: unique per
+# cycle), a later use asserts it is unchanged; countdown=T (native-path frames
 # only) = after this push the native TAG countdown runs, counted from T (the
 # scenario time of the burst's first push: never later, never earlier). A
 # platform may start it at the first push or at the push that completes the
@@ -812,3 +828,55 @@ scenario stop_for_the_dart_seen_sos_issued_after_it_began_arms
 1000 seen source=dart node=7 age=500 => -
 1500 terminal kind=resolve node=7 connected=true issued=1400 => - armed=true
 2000 frame node=7 source=dart => pending armed=true
+
+# F17c item 1 (Roger 17/11/2026): every SDK stop names the native cycle it is
+# for. A = an SOS seen through Dart's link and closed on the TAG (0xE1); B = a
+# genuine new TAG SOS whose countdown native opened right after, unseen by
+# Dart. A's late automated terminal (portal resolve / backend event decided
+# after B's countdown began) names A's cycle: never applied to B, B's countdown
+# continues (the issue time alone would not catch it: decided after B began).
+scenario a_late_portal_resolve_after_b_started_natively_unseen_never_reaches_b
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=resolve node=7 connected=true target=A issued=1400 => - armed=false cycle=running countdown=1000 cycleid=B
+2000 frame node=7 source=native => pass armed=false countdown=1000
+
+scenario stop_with_an_old_cycle_id_is_ignored
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=A => - armed=false cycle=running countdown=1000
+
+scenario stop_with_the_current_cycle_id_cancels_the_countdown
+1000 seen source=countdown node=7 age=0 => - cycleid=A
+1500 terminal kind=cancel node=7 connected=true target=A => - armed=true cycle=idle cycleid=A
+
+scenario stop_with_the_current_cycle_id_closes_the_handed_over_sos
+0 seen source=native node=7 age=30000 => - cycleid=A
+0 terminal kind=resolve node=7 connected=true target=A => - armed=true cycle=idle
+
+scenario stop_without_cycle_id_is_never_applied
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true target=none => - armed=false cycle=running countdown=1000
+
+scenario user_cancel_of_b_targets_the_current_cycle
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user => - armed=true cycle=idle
+
+# Review N2: the user cancelled at 500; native opened a countdown for the same
+# TAG's frames at 1000 (BLE owner handover) before the stop arrived. The
+# user's stop targets the cycle running now: applied, never dropped by its
+# issue time.
+scenario user_cancel_issued_before_the_current_countdown_still_stops_it
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true target=user issued=500 => - armed=true cycle=idle
+
+# The same SOS seen by Dart and then by native (owner handover): one cycle,
+# one id: a stop naming it applies.
+scenario dart_seen_sos_continued_natively_keeps_its_cycle_id
+0 seen source=dart node=7 age=5000 => - cycleid=A
+1000 frame node=7 source=native => pass cycle=running cycleid=A
+1500 terminal kind=cancel node=7 connected=true target=A => - armed=true cycle=idle

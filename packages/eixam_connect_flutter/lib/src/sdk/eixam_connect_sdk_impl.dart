@@ -545,6 +545,7 @@ class EixamConnectSdkImpl
           .listen(_handleRejectedTerminalReconciliationRequest);
     }
     _sosCapabilityLifecycleSub = _sosLifecycle.stream.listen((lifecycle) {
+      _bindNativeSosCycleIfLive(lifecycle, trigger: 'lifecycle_opened');
       _disarmNativeStaleGuardOnNewSdkSos(lifecycle);
       _closeNativeSosCycleOnLifecycleTerminal(lifecycle);
       final silenceTarget = _physicalSosSilenceTarget;
@@ -1267,6 +1268,7 @@ class EixamConnectSdkImpl
       _session = await _bootstrapSessionIfNeeded(_session);
     }
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
+    await _restoreNativeSosCycleBindings();
     await _localStore.remove(SharedPrefsSdkStore.legacyWebAckSosVolumeKey);
     _recordRestoredTerminalBoundaryFromPreviousProcess();
     await _refreshBackgroundTelemetryDiagnostics();
@@ -2054,6 +2056,7 @@ class EixamConnectSdkImpl
           );
     }
     await _sosLifecycle.restoreFor(_session, emitToStream: false);
+    await _restoreNativeSosCycleBindings();
     _recordRestoredTerminalBoundaryFromPreviousProcess();
     if (sessionContext != null) {
       sessionContext!.currentSession = _session;
@@ -3142,6 +3145,7 @@ class EixamConnectSdkImpl
     // F17c: the previous account's prompt is never shown or answered.
     _ambiguousSosPrompt.clear('session_changed');
     _forgetTagCloseEvidence();
+    _forgetNativeSosCycleBindings();
     try {
       // The user ended the session (logout / account change).
       if (_sosStopGuard
@@ -18000,7 +18004,8 @@ class EixamConnectSdkImpl
   ) {
     final started = lifecycle.activationTimestamp;
     final frameAt = status.lastPacketAt;
-    return status.lastEvent == DeviceSosController.commandChannelAttachedEvent &&
+    return status.lastEvent ==
+            DeviceSosController.commandChannelAttachedEvent &&
         status.derivedFromBlePacket &&
         _isDeviceSosCycleClosed(status.state) &&
         lifecycle.isOpen &&
@@ -19793,6 +19798,132 @@ class EixamConnectSdkImpl
 
   int? _nativeSosCycleClosedGeneration;
 
+  // MARK: F17c item 1: native SOS cycle id per SOS generation.
+
+  /// The native SOS cycle id bound to each SOS generation opened in this
+  /// process (bounded, persisted): an automated stop of that SOS names it, so
+  /// native never applies it to a newer cycle Dart has not seen.
+  final Map<String, String> _nativeSosCycleBindings = <String, String>{};
+
+  /// Generations at or below this were restored from a previous process:
+  /// never bound from a live snapshot (the native cycle running now may be a
+  /// newer SOS that started while the app was not running).
+  int _nativeSosCycleBindingFloor = 0;
+
+  static const int _maxNativeSosCycleBindings = 8;
+
+  static const Duration _nativeSosCycleReadTimeout = Duration(
+    milliseconds: 300,
+  );
+
+  String _nativeSosCycleBindingKey(SosLifecycleSnapshot lifecycle) =>
+      '${lifecycle.generation}|${lifecycle.lifecycleId}';
+
+  /// An SOS generation opened live (in this process) is bound to the native
+  /// cycle open at that moment (native countdown / handed-over SOS, or the
+  /// burst Dart forwarded): that cycle is this SOS, or joins it (native gives
+  /// the same SOS seen on both paths one id). Restored generations and
+  /// generations already bound are left alone.
+  void _bindNativeSosCycleIfLive(
+    SosLifecycleSnapshot lifecycle, {
+    required String trigger,
+  }) {
+    if (_disposed ||
+        !lifecycle.isOpen ||
+        lifecycle.externalOnly ||
+        lifecycle.generation <= _nativeSosCycleBindingFloor ||
+        _nativeSosCycleBindings.containsKey(
+          _nativeSosCycleBindingKey(lifecycle),
+        )) {
+      return;
+    }
+    unawaited(_bindNativeSosCycle(lifecycle, trigger: trigger));
+  }
+
+  Future<void> _bindNativeSosCycle(
+    SosLifecycleSnapshot lifecycle, {
+    required String trigger,
+  }) async {
+    final key = _nativeSosCycleBindingKey(lifecycle);
+    ProtectionPlatformSnapshot snapshot;
+    try {
+      snapshot = await protectionPlatformAdapter.getPlatformSnapshot().timeout(
+        _nativeSosCycleReadTimeout,
+      );
+    } catch (_) {
+      return;
+    }
+    final id = snapshot.nativeSosCycleId?.trim();
+    final current = _sosLifecycle.current;
+    if (_disposed ||
+        id == null ||
+        id.isEmpty ||
+        !snapshot.nativeSosCycleOpen ||
+        !current.isOpen ||
+        _nativeSosCycleBindingKey(current) != key ||
+        _nativeSosCycleBindings.containsKey(key)) {
+      return;
+    }
+    _nativeSosCycleBindings[key] = id;
+    while (_nativeSosCycleBindings.length > _maxNativeSosCycleBindings) {
+      _nativeSosCycleBindings.remove(_nativeSosCycleBindings.keys.first);
+    }
+    sdkReleaseLog('SOS_OUTBOX_NATIVE_CYCLE_BOUND trigger=$trigger');
+    unawaited(
+      _localStore
+          .saveJson(
+            SharedPrefsSdkStore.sosNativeCycleBindingsKey,
+            Map<String, dynamic>.from(_nativeSosCycleBindings),
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  /// The user's own action: the native cycle running now (null when the
+  /// snapshot read fails or native reports none).
+  Future<String?> _refreshNativeSosCycleIdForUserAction() async {
+    try {
+      final snapshot = await protectionPlatformAdapter
+          .getPlatformSnapshot()
+          .timeout(_nativeSosCycleReadTimeout);
+      final id = snapshot.nativeSosCycleId?.trim();
+      return id == null || id.isEmpty ? null : id;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _restoreNativeSosCycleBindings() async {
+    _nativeSosCycleBindingFloor = _sosLifecycle.current.generation;
+    _nativeSosCycleBindings.clear();
+    try {
+      final json = await _localStore.readJson(
+        SharedPrefsSdkStore.sosNativeCycleBindingsKey,
+      );
+      if (json != null) {
+        for (final entry in json.entries) {
+          final value = entry.value;
+          if (value is String && value.isNotEmpty) {
+            _nativeSosCycleBindings[entry.key] = value;
+          }
+        }
+      }
+    } catch (_) {
+      // Unreadable: no binding, so an automated close of a restored SOS is
+      // refused (never applied to another cycle).
+    }
+  }
+
+  void _forgetNativeSosCycleBindings() {
+    _nativeSosCycleBindings.clear();
+    _nativeSosCycleBindingFloor = _sosLifecycle.current.generation;
+    unawaited(
+      _localStore
+          .remove(SharedPrefsSdkStore.sosNativeCycleBindingsKey)
+          .catchError((Object _) {}),
+    );
+  }
+
   /// Latest cancelled lifecycle, kept after a newer generation opens (M5).
   SosLifecycleSnapshot? _lastCancelledSosLifecycle;
 
@@ -19830,6 +19961,10 @@ class EixamConnectSdkImpl
     // user's action (allowed even if the incident id was once another SOS's).
     final userActionAt = _userActionTerminalGenerations[lifecycle.generation];
     final userAction = userActionAt != null;
+    // F17c item 1: an automated close names the native cycle bound to this
+    // SOS; without one it is never sent (the guard refuses it).
+    final boundCycleId =
+        _nativeSosCycleBindings[_nativeSosCycleBindingKey(lifecycle)];
     if (!_sosStopGuard
         .authorize(
           SosStopRequest(
@@ -19841,28 +19976,53 @@ class EixamConnectSdkImpl
                 ? 'lifecycle_terminal_user_action'
                 : 'lifecycle_terminal',
             incidentId: lifecycle.backendIncidentId,
+            nativeCycleId: boundCycleId,
           ),
         )
         .allowed) {
       return;
     }
-    // F17c Phase 2: the stop names its SOS and when it was issued (the
-    // user's action, else this decision): native ignores and logs a stop
-    // issued before its current countdown began (an older SOS's, delivered
-    // late), so it never ends a newer SOS's countdown.
+    // F17c Phase 2: issued at the user's action, else at this decision
+    // (native checks it for automated stops only).
     final issuedAt = userActionAt ?? DateTime.now().toUtc();
-    Future<void> closeNative() => protectionPlatformAdapter
-        .closeNativeSosCycle(
-          nodeId: lifecycle.nodeId,
-          terminal: nativeSosCycleTerminalFor(lifecycle.stage),
-          issuedAt: issuedAt,
-          targetCycleId: lifecycle.lifecycleId,
-        )
-        .catchError(
-          (Object error) => sdkReleaseLog(
-            'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
-          ),
+    final nodeId = lifecycle.nodeId;
+    final terminal = nativeSosCycleTerminalFor(lifecycle.stage);
+    Future<void> closeNative() async {
+      try {
+        if (!userAction) {
+          await protectionPlatformAdapter.closeNativeSosCycle(
+            nodeId: nodeId,
+            terminal: terminal,
+            issuedAt: issuedAt,
+            targetCycleId: boundCycleId,
+          );
+          return;
+        }
+        // F17c item 1 (Roger 17/11/2026): the user's own cancel / resolve
+        // targets the cycle running now. Its id is refreshed first (sent for
+        // the exact-id log); if the refresh fails or native reports none, the
+        // stop still goes to the current cycle: the user is never left unable
+        // to stop what rings in front of them.
+        final currentCycleId =
+            await _refreshNativeSosCycleIdForUserAction() ?? boundCycleId;
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_USER_ACTION '
+          'target=${currentCycleId == null ? 'current_cycle' : 'exact_id'}',
         );
+        await protectionPlatformAdapter.closeNativeSosCycle(
+          nodeId: nodeId,
+          terminal: terminal,
+          issuedAt: issuedAt,
+          targetCycleId: currentCycleId,
+          targetCurrentCycle: true,
+        );
+      } catch (error) {
+        sdkReleaseLog(
+          'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_FAILED errorType=${error.runtimeType}',
+        );
+      }
+    }
+
     if (_nativeOwnTagSosClassifierAvailable) {
       // F17c: native records the (unconfirmed) stop before any later own-TAG
       // frame is classified, in arrival order with the frames.
@@ -19906,6 +20066,11 @@ class EixamConnectSdkImpl
           .timeout(_ownTagSosClassifierTimeout);
       if (verdict == OwnTagSosFrameVerdict.newSos) {
         sdkReleaseLog('SOS_OUTBOX_STALE_GUARD_NEW_SOS_ADMITTED source=dart');
+      }
+      if (verdict != OwnTagSosFrameVerdict.suppress && !frame.isClose) {
+        // F17c item 1: a frame of the SOS Dart runs (an app SOS the TAG
+        // mirrors after it opened): native now has its cycle.
+        _bindNativeSosCycleIfLive(_sosLifecycle.current, trigger: 'dart_frame');
       }
       return verdict;
     } on TimeoutException {
@@ -20049,6 +20214,56 @@ class EixamConnectSdkImpl
         current.generation > watermark.generation;
   }
 
+  /// A terminal public state for an open lifecycle that is not the current
+  /// generation's own terminal (e.g. the device mirror still holding the
+  /// previous SOS's TAG close while a newer SOS is open).
+  bool _isStaleTerminalProjection(SosState nextState) {
+    final authoritativeLifecycle = _sosLifecycle.current;
+    if (!_isTerminalPublicSosState(nextState) ||
+        !authoritativeLifecycle.isOpen) {
+      return false;
+    }
+    final terminalProjectionIncident =
+        _publicSosFallbackIncident ?? _lastKnownActiveSosIncident;
+    final terminalProjectionMatchesCurrentGeneration =
+        _publicSosStateGeneration == authoritativeLifecycle.generation &&
+        (_publicSosClosureInFlight != null ||
+            (terminalProjectionIncident != null &&
+                sosIncidentEvidenceMatchesLifecycle(
+                  authoritativeLifecycle,
+                  terminalProjectionIncident,
+                )));
+    return !terminalProjectionMatchesCurrentGeneration;
+  }
+
+  /// F17c item 2: a device-mirror override that is a stale terminal (an older
+  /// SOS's TAG close, the mirror never saw the newer SOS opened natively) is
+  /// no override: the open SOS's own state is projected instead, so the
+  /// public state never shows idle while the SOS is open.
+  SosState? _currentGenerationDeviceOverride(
+    SosState? deviceOverride, {
+    required String source,
+  }) {
+    if (deviceOverride == null ||
+        !_alignedStaleTerminalProjection(deviceOverride, source: source)) {
+      return deviceOverride;
+    }
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_DEVICE_OVERRIDE_STALE_TERMINAL_SKIPPED source=$source '
+      'incoming=${deviceOverride.name} '
+      'generation=${_sosLifecycle.current.generation}',
+    );
+    return null;
+  }
+
+  bool _alignedStaleTerminalProjection(
+    SosState nextState, {
+    required String source,
+  }) {
+    _alignPublicSosProjectionWithCurrentGeneration(source: source);
+    return _isStaleTerminalProjection(nextState);
+  }
+
   bool _applyPublicSosState(
     SosState nextState, {
     required String source,
@@ -20075,19 +20290,7 @@ class EixamConnectSdkImpl
       );
       return false;
     }
-    final terminalProjectionIncident =
-        _publicSosFallbackIncident ?? _lastKnownActiveSosIncident;
-    final terminalProjectionMatchesCurrentGeneration =
-        _publicSosStateGeneration == authoritativeLifecycle.generation &&
-        (_publicSosClosureInFlight != null ||
-            (terminalProjectionIncident != null &&
-                sosIncidentEvidenceMatchesLifecycle(
-                  authoritativeLifecycle,
-                  terminalProjectionIncident,
-                )));
-    if (_isTerminalPublicSosState(nextState) &&
-        authoritativeLifecycle.isOpen &&
-        !terminalProjectionMatchesCurrentGeneration) {
+    if (_isStaleTerminalProjection(nextState)) {
       BleDebugRegistry.instance.recordEvent(
         'SOS_STALE_TERMINAL_PROJECTION_REJECTED '
         'incoming=${nextState.name} source=$source '
@@ -21433,9 +21636,12 @@ class EixamConnectSdkImpl
         }
       }
     }
-    final deviceOverride = await _rehydrateDeviceSosPublicState(
-      trigger: 'repository_stream:${state.name}',
-      emitResolvedState: false,
+    final deviceOverride = _currentGenerationDeviceOverride(
+      await _rehydrateDeviceSosPublicState(
+        trigger: 'repository_stream:${state.name}',
+        emitResolvedState: false,
+      ),
+      source: 'sos_state_stream:device_override',
     );
     if (deviceOverride != null) {
       _emitPublicSosState(
@@ -24404,10 +24610,13 @@ class EixamConnectSdkImpl
       return _publicSosState;
     }
     final deviceSosStatus = await deviceSosController.getStatus();
-    final deviceOverride = await _rehydrateDeviceSosPublicState(
-      trigger: 'getSosState',
-      deviceStatus: deviceSosStatus,
-      emitResolvedState: false,
+    final deviceOverride = _currentGenerationDeviceOverride(
+      await _rehydrateDeviceSosPublicState(
+        trigger: 'getSosState',
+        deviceStatus: deviceSosStatus,
+        emitResolvedState: false,
+      ),
+      source: 'fetch_sos_state:device_override',
     );
     if (deviceOverride != null) {
       final effectiveState = _applyPublicSosRuntimePrecedence(

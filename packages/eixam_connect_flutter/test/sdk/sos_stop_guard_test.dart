@@ -44,6 +44,92 @@ void main() {
       )
       .allowed;
 
+  // F17c item 1 (Roger 17/11/2026): an automated native cycle close must name
+  // the exact native cycle; only the user's own action targets the current
+  // cycle without one.
+  group('nativeCycleClose', () {
+    SosStopDecision close(
+      SosStopGuard guard,
+      SosStopBasis basis, {
+      String? nativeCycleId,
+      String? incidentId,
+    }) => guard.authorize(
+      SosStopRequest(
+        kind: SosStopKind.nativeCycleClose,
+        basis: basis,
+        source: 'test',
+        nativeCycleId: nativeCycleId,
+        incidentId: incidentId,
+      ),
+    );
+
+    test('an automated close without the native cycle id is refused, '
+        'logged, never sent', () {
+      for (final basis in <SosStopBasis>[
+        SosStopBasis.authorizedUpstream,
+        SosStopBasis.exactIncident,
+        SosStopBasis.exactOccurredAt,
+        SosStopBasis.userScoped,
+        SosStopBasis.owedStop,
+      ]) {
+        for (final id in <String?>[null, '', '  ']) {
+          final decision = close(SosStopGuard(), basis, nativeCycleId: id);
+          expect(decision.allowed, isFalse, reason: '${basis.name} "$id"');
+          expect(decision.reason, 'unknown_native_cycle');
+        }
+      }
+      expect(
+        lines.where(
+          (line) =>
+              line.contains('SOS_OUTBOX_STOP_GUARD_REFUSED') &&
+              line.contains('kind=nativeCycleClose') &&
+              line.contains('reason=unknown_native_cycle') &&
+              line.contains('action=keep_sos_active'),
+        ),
+        hasLength(15),
+      );
+      // The id itself is never logged.
+      close(SosStopGuard(), SosStopBasis.userScoped, nativeCycleId: null);
+      expect(lines.join('\n'), isNot(contains('cycle-')));
+    });
+
+    test('an automated close with the native cycle id follows the usual '
+        'rules', () {
+      expect(
+        close(
+          SosStopGuard(),
+          SosStopBasis.authorizedUpstream,
+          nativeCycleId: 'cycle-a',
+        ).allowed,
+        isTrue,
+      );
+      // A superseded SOS's identity is still refused, id or not.
+      expect(
+        close(
+          guardWithA(),
+          SosStopBasis.authorizedUpstream,
+          nativeCycleId: 'cycle-a',
+          incidentId: 'incident-a',
+        ).allowed,
+        isFalse,
+      );
+    });
+
+    test('the user\'s own action targets the current cycle without an id', () {
+      final decision = close(guardWithA(), SosStopBasis.userAction);
+      expect(decision.allowed, isTrue);
+      expect(decision.reason, 'user_action_current_cycle');
+      expect(
+        close(
+          SosStopGuard(),
+          SosStopBasis.userAction,
+          nativeCycleId: 'cycle-b',
+        ).allowed,
+        isTrue,
+      );
+    });
+  });
+
   test('the user and owed stops are always allowed', () {
     final guard = guardWithA();
     expect(allowed(guard, SosStopBasis.userAction), isTrue);

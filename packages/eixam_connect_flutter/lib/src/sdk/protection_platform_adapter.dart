@@ -200,6 +200,8 @@ class ProtectionPlatformSnapshot {
     this.iosBleSosNodeId,
     this.iosBleSosPacketId,
     this.iosBleSosCycleKey,
+    this.nativeSosCycleId,
+    this.nativeSosCycleOpen = false,
   });
 
   final bool backgroundCapabilityReady;
@@ -275,6 +277,15 @@ class ProtectionPlatformSnapshot {
   final int? iosBleSosNodeId;
   final int? iosBleSosPacketId;
   final String? iosBleSosCycleKey;
+
+  /// F17c item 1: the id of the newest SOS cycle native opened (native
+  /// countdown / handed-over SOS, or a Dart-forwarded burst); kept after it
+  /// closed until the next one opens.
+  final String? nativeSosCycleId;
+
+  /// F17c item 1: that cycle is still open (running, handed over, or Dart
+  /// forwarded its frames recently).
+  final bool nativeSosCycleOpen;
 }
 
 class ProtectionPlatformCommandRequest {
@@ -489,16 +500,22 @@ abstract class ProtectionPlatformAdapter {
   /// F17b): the SDK's terminal of a handed-over SOS; when the TAG never
   /// confirmed closing it, native writes the matching TAG command itself and
   /// stops (never re-opens) the SOS if the TAG keeps sending it.
-  /// [issuedAt] (F17c Phase 2): when the SDK decided this stop; native
-  /// ignores (and logs) a stop issued before its current countdown began (it
-  /// targets an older SOS). [targetCycleId]: the SDK lifecycle the stop is
-  /// for (diagnostics only). Both absent: today's behaviour.
+  /// [targetCycleId] (F17c item 1): the native SOS cycle id (snapshot
+  /// `nativeSosCycleId`) the stop is for. An automated stop (backend event,
+  /// portal resolve, reconciliation) carries it and native applies it only to
+  /// that cycle: another id, or none, is ignored and logged
+  /// (`NATIVE_SOS_STALE_STOP_IGNORED`). [targetCurrentCycle]: the user's own
+  /// action targets the cycle running now, by definition (native applies it
+  /// to the current cycle; [targetCycleId] is then informational). [issuedAt]
+  /// (F17c Phase 2, automated stops only): native also ignores a stop issued
+  /// before its current countdown began. [force]: session change.
   Future<void> closeNativeSosCycle({
     int? nodeId,
     bool force = false,
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   });
 
   /// F17c: whether this platform's native store classifies own-TAG SOS frames
@@ -626,6 +643,7 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {}
 
   @override

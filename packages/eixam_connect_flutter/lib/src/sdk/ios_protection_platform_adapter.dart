@@ -260,6 +260,7 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     String? terminal,
     DateTime? issuedAt,
     String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) {
     return _methodChannel.invokeMethod<void>(
       'closeNativeSosCycle',
@@ -267,16 +268,19 @@ class IosProtectionPlatformAdapter implements ProtectionPlatformAdapter {
               !force &&
               terminal == null &&
               issuedAt == null &&
-              targetCycleId == null
+              targetCycleId == null &&
+              !targetCurrentCycle
           ? null
           : <String, dynamic>{
               if (nodeId != null) 'nodeId': nodeId,
               if (force) 'force': true,
               if (terminal != null) 'terminal': terminal,
-              // F17c Phase 2: absent for older callers (today's behaviour).
               if (issuedAt != null)
                 'issuedAtMs': issuedAt.toUtc().millisecondsSinceEpoch,
+              // F17c item 1: the native cycle the stop is for, or the
+              // current one (the user's own action).
               if (targetCycleId != null) 'targetCycleId': targetCycleId,
+              if (targetCurrentCycle) 'targetCurrentCycle': true,
             },
     );
   }

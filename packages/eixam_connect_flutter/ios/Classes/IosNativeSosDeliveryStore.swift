@@ -27,6 +27,19 @@ enum IosSosTerminalKind: String {
   case resolve
 }
 
+/// F17c item 1: which native cycle an SDK stop / close targets.
+enum IosSosStopTarget: Equatable {
+  /// The user's own action (cancel / resolve button, logout): the cycle
+  /// running now, by definition. No cycle id or issue time check.
+  case currentCycle
+  /// An automated stop (backend event, portal resolve, reconciliation):
+  /// applied only when [id] is the current native cycle id (and, when given,
+  /// issued after that cycle began).
+  case cycle(String)
+  /// An automated stop without a cycle id: never applied.
+  case missing
+}
+
 struct IosNativeSosTransition: Equatable {
   /// A new pending create was stored: emit `nativeBackendSyncQueued(create)`.
   var queuedCreate = false
@@ -106,6 +119,9 @@ final class IosNativeSosDeliveryStore {
     static let dartCycleFirstSeenAt = "native_sos_dart_cycle_first_seen_at"
     static let dartCycleLastSeenAt = "native_sos_dart_cycle_last_seen_at"
     static let dartCycleNodeId = "native_sos_dart_cycle_node_id"
+    /// F17c item 1: the id of the newest native SOS cycle (native countdown /
+    /// handed-over SOS, or a Dart-forwarded burst), persisted with the cycle.
+    static let cycleId = "native_sos_cycle_id"
   }
 
   private let defaults: UserDefaults
@@ -127,6 +143,33 @@ final class IosNativeSosDeliveryStore {
   var cycleNodeId: Int? { defaults.object(forKey: Keys.cycleNodeId) as? Int }
 
   var cycleDeadlineAt: Int? { defaults.object(forKey: Keys.cycleDeadlineAt) as? Int }
+
+  /// F17c item 1: the id of the newest SOS cycle native opened (kept after it
+  /// closed, until the next one opens). Unique per cycle, persisted.
+  var currentCycleId: String? { defaults.string(forKey: Keys.cycleId) }
+
+  /// F17c item 1: a cycle (native countdown / SOS, or a recent Dart-forwarded
+  /// burst) is open for [nodeId] now.
+  func cycleOpen(nodeId: Int?) -> Bool {
+    nativeCycleOpen(nodeId: nodeId) || dartCycleOpen(nodeId: nodeId)
+  }
+
+  private func nativeCycleOpen(nodeId: Int?) -> Bool {
+    cycleState != .idle && (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId)
+  }
+
+  private func dartCycleOpen(nodeId: Int?) -> Bool {
+    dartCycleSeenRecently &&
+      (nodeId == nil || dartCycleNodeId == nil || nodeId == dartCycleNodeId)
+  }
+
+  /// F17c item 1: a cycle opens for [nodeId]. It joins the cycle already open
+  /// for that TAG on the other path (the same SOS seen by Dart and native,
+  /// e.g. a BLE owner handover); otherwise it is a new SOS: new id.
+  private func openCycleId(nodeId: Int?, alreadyOpen: Bool) {
+    if alreadyOpen, currentCycleId != nil { return }
+    defaults.set(UUID().uuidString.lowercased(), forKey: Keys.cycleId)
+  }
 
   /// Applies one classified TAG SOS frame. `deviceId` is the protected
   /// device identity used when the frame carries no node id.
@@ -158,6 +201,7 @@ final class IosNativeSosDeliveryStore {
         // the running countdown (preConfirmSeen) and changes nothing.
         let start = now()
         let deadline = start + Self.countdownMs
+        openCycleId(nodeId: nodeId, alreadyOpen: dartCycleOpen(nodeId: nodeId))
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
         defaults.set(start, forKey: Keys.cycleStartedAt)
         transition.countdownDeadlineAt = deadline
@@ -218,9 +262,12 @@ final class IosNativeSosDeliveryStore {
   /// itself: an ambiguous frame asks the user.
   /// F17c-cdc: the SDK cancel of this TAG's running countdown ends it: it is
   /// never promoted into a native create at its deadline.
-  /// F17c Phase 2: the SDK's last stop was ignored because it was issued
-  /// before the current countdown began (it targets an older SOS).
-  private(set) var lastSdkStopIgnoredAsStale = false
+  /// F17c Phase 2 / item 1: why the SDK's last stop was ignored
+  /// (`cycle_id_mismatch`, `no_cycle_id`, `issued_before_current_cycle`), nil
+  /// when it was applied.
+  private(set) var lastSdkStopIgnoredReason: String?
+
+  var lastSdkStopIgnoredAsStale: Bool { lastSdkStopIgnoredReason != nil }
 
   /// F17c Phase 2: when the countdown native or Dart is running for [nodeId]
   /// began (the newest of the native cycle and the Dart-forwarded burst), nil
@@ -240,19 +287,35 @@ final class IosNativeSosDeliveryStore {
     return starts.max()
   }
 
-  /// [issuedAtMs] (F17c Phase 2): when the SDK decided this stop. A stop
-  /// issued before the current countdown began targets an older SOS: it is
-  /// ignored (no close, no record) and the countdown continues. Nil (older
-  /// callers): today's behaviour.
+  /// [target] (F17c item 1): an automated stop (`.cycle(id)`) is applied
+  /// only to the native cycle it names: another id (an older SOS's stop
+  /// delivered late, after a newer cycle opened) or no id is ignored (no
+  /// close, no record) and the running cycle continues. [issuedAtMs] (F17c
+  /// Phase 2, automated stops only): a stop issued before the current
+  /// countdown began targets an older SOS: ignored too. A user action
+  /// (`.currentCycle`) targets the cycle running now: never ignored.
   func closeDeliveredCycle(
     nodeId: Int? = nil,
     terminal: IosSosTerminalKind? = nil,
-    issuedAtMs: Int? = nil
+    issuedAtMs: Int? = nil,
+    target: IosSosStopTarget = .currentCycle
   ) -> Bool {
-    lastSdkStopIgnoredAsStale = false
-    if let issuedAtMs, let started = currentCycleStartedAt(nodeId: nodeId), issuedAtMs < started {
-      lastSdkStopIgnoredAsStale = true
+    lastSdkStopIgnoredReason = nil
+    switch target {
+    case .currentCycle:
+      break
+    case .missing:
+      lastSdkStopIgnoredReason = "no_cycle_id"
       return false
+    case .cycle(let id):
+      guard id == currentCycleId else {
+        lastSdkStopIgnoredReason = "cycle_id_mismatch"
+        return false
+      }
+      if let issuedAtMs, let started = currentCycleStartedAt(nodeId: nodeId), issuedAtMs < started {
+        lastSdkStopIgnoredReason = "issued_before_current_cycle"
+        return false
+      }
     }
     let unclaimed = pendingCreateRecord != nil
     let sameNode = nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId
@@ -364,6 +427,11 @@ final class IosNativeSosDeliveryStore {
     let sameTag = node == nil || nodeId == nil || node == nodeId
     if defaults.object(forKey: Keys.dartCycleFirstSeenAt) == nil || !sameTag ||
        last == nil || timestamp - last! < 0 || timestamp - last! > Self.staleGapMs {
+      // A Dart-seen burst joins the native cycle of that TAG (or the Dart
+      // cycle seen recently: same SOS after a gap); otherwise a new SOS.
+      openCycleId(
+        nodeId: nodeId,
+        alreadyOpen: nativeCycleOpen(nodeId: nodeId) || (sameTag && dartCycleSeenRecently))
       defaults.set(timestamp, forKey: Keys.dartCycleFirstSeenAt)
       set(nodeId, forKey: Keys.dartCycleNodeId)
     } else if node == nil, let nodeId {
@@ -498,6 +566,7 @@ final class IosNativeSosDeliveryStore {
       let node = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
       disarmStaleGuard()
       if cycleState == .idle {
+        openCycleId(nodeId: node, alreadyOpen: false)
         setCycle(.preConfirmSeen, key: nil, nodeId: node, deadlineAt: timestamp)
         defaults.set(timestamp, forKey: Keys.cycleStartedAt)
         transition = promoteExpiredCountdown(deviceId: nil)
@@ -586,6 +655,7 @@ final class IosNativeSosDeliveryStore {
         return IosNativeSosTransition()
       }
       let deadline = candidateAt + Self.countdownMs
+      openCycleId(nodeId: nodeId, alreadyOpen: false)
       setCycle(.preConfirmSeen, key: nil, nodeId: nodeId, deadlineAt: deadline)
       defaults.set(candidateAt, forKey: Keys.cycleStartedAt)
       var transition = IosNativeSosTransition()
