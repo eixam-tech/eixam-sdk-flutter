@@ -17811,20 +17811,41 @@ class _SnapshotProtectionPlatformAdapter extends Fake
   }
 
   int closeNativeSosCycleCalls = 0;
-  final List<({int? nodeId, bool force, String? terminal})>
-  closeNativeSosCycleArgs = <({int? nodeId, bool force, String? terminal})>[];
+  final List<
+    ({
+      int? nodeId,
+      bool force,
+      String? terminal,
+      DateTime? issuedAt,
+      String? targetCycleId,
+    })
+  >
+  closeNativeSosCycleArgs =
+      <
+        ({
+          int? nodeId,
+          bool force,
+          String? terminal,
+          DateTime? issuedAt,
+          String? targetCycleId,
+        })
+      >[];
 
   @override
   Future<void> closeNativeSosCycle({
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   }) async {
     closeNativeSosCycleCalls++;
     closeNativeSosCycleArgs.add((
       nodeId: nodeId,
       force: force,
       terminal: terminal,
+      issuedAt: issuedAt,
+      targetCycleId: targetCycleId,
     ));
   }
 
@@ -20988,11 +21009,15 @@ final class _F17cNativeAdapter extends _SnapshotProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   }) async {
     await super.closeNativeSosCycle(
       nodeId: nodeId,
       force: force,
       terminal: terminal,
+      issuedAt: issuedAt,
+      targetCycleId: targetCycleId,
     );
     final hang = closeHang;
     if (hang != null && !force) {
@@ -23707,6 +23732,15 @@ void _ambiguousSosPromptTests() {
           reason: 'B\'s portal resolve -> exactly one 0x07',
         );
         expect(written, isNot(contains(0x04)));
+        // F17c Phase 2: B's native cycle close names B and when it was issued.
+        final close = adapter.closeNativeSosCycleArgs.last;
+        expect(close.terminal, 'resolve');
+        expect(
+          close.targetCycleId,
+          (await phone.harness.sdk.getSosLifecycle()).lifecycleId,
+        );
+        expect(close.issuedAt, isNotNull);
+        expect(close.issuedAt!.isAfter(r7.bPublishedAt), isTrue);
       } finally {
         await phone.dispose();
       }
@@ -23749,6 +23783,15 @@ void _ambiguousSosPromptTests() {
           nativeBefore + 1,
           reason: 'the native cycle of B closed after the user cancel',
         );
+        // F17c Phase 2: the close carries B's lifecycle and the user's
+        // action time (issued after B's countdown began: native applies it).
+        final close = adapter.closeNativeSosCycleArgs.last;
+        final b = await phone.harness.sdk.getSosLifecycle();
+        expect(close.terminal, 'cancel');
+        expect(close.targetCycleId, b.lifecycleId);
+        expect(close.issuedAt, isNotNull);
+        expect(close.issuedAt!.isAfter(r7.bPublishedAt), isTrue);
+        expect(close.issuedAt!.isAfter(DateTime.now().toUtc()), isFalse);
       } finally {
         await phone.dispose();
       }
@@ -24330,6 +24373,73 @@ void _ambiguousSosPromptTests() {
         }, timeout: const Timeout(Duration(minutes: 2)));
       }
     }
+
+    // Accepted 1.0.6 known limitation (F17c Phase 2): the app cancel was
+    // PUBACKed by the broker but the backend dropped it (the incident stays
+    // open). Mitigation: what REST / realtime report wins: the still-open
+    // incident is shown active again and the user can cancel it once more.
+    test('known limitation mitigation: a cancel PUBACKed but dropped by the '
+        'backend leaves the incident open: shown active and cancellable '
+        'again', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, sent) = await sentSos(adapter, written);
+      try {
+        final open = SosIncidentDto(
+          id: backendIncidentId,
+          state: 'active',
+          createdAt: phone.realtime.publishedSos.last.timestamp
+              .toUtc()
+              .toIso8601String(),
+          triggerSource: 'ble_device_runtime_status',
+          owner: 'device',
+          originKind: SosOriginKind.ownDevice.name,
+          actionability: SosActionability.localActionable.name,
+          displaySurface: SosDisplaySurface.activeAndHistory.name,
+        );
+        phone.remote!.active = open;
+        // The user cancels: one MQTT cancel, PUBACKed, never processed.
+        await phone.harness.sdk.cancelSosAuthoritatively();
+        await settle(500);
+        // PUBACKed (the outbox may publish it again while the backend still
+        // reports the incident open).
+        expect(phone.realtime.publishedSosCancels, isNotEmpty);
+        // REST reports the incident still open (resume reconciliation).
+        await r7Resume(phone);
+        await settle(1500);
+        await r7Resume(phone);
+        await settle(500);
+        final shown = await phone.harness.sdk.getSosLifecycle();
+        expect(shown.generation, sent.generation, reason: 'same SOS');
+        expect(shown.isOpen, isTrue, reason: 'the open incident is active');
+        expect(
+          await phone.harness.sdk.getSosState(),
+          isNot(anyOf(SosState.idle, SosState.cancelled, SosState.resolved)),
+          reason: 'shown active to the user',
+        );
+        // Still cancellable: a second cancel reaches the backend, which now
+        // processes it.
+        final cancelsBefore = phone.realtime.publishedSosCancels.length;
+        phone.realtime.publishSosCancelHook = (_) async {
+          phone.realtime.publishSosCancelHook = null;
+          phone.remote!.active = null;
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          await backendCancelled(phone);
+        };
+        await phone.harness.sdk.cancelSosAuthoritatively();
+        await settle(800);
+        expect(
+          phone.realtime.publishedSosCancels.length,
+          greaterThan(cancelsBefore),
+          reason: 'the second cancel reached the broker',
+        );
+        final closed = await phone.harness.sdk.getSosLifecycle();
+        expect(closed.generation, sent.generation);
+        expect(closed.stage, SosLifecycleStage.cancelled);
+      } finally {
+        await phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
 
     test('sign-out clears the prompt at once and native drops the record '
         'first', () async {

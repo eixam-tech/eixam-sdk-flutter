@@ -71,6 +71,11 @@ internal object ProtectionSosNativeDecision {
         val nextLifecycle: ProtectionSosLifecycleState,
         /** Arm the "unconfirmed stop" record. */
         val arm: Boolean,
+        /**
+         * F17c Phase 2: the stop was issued before the current countdown
+         * began (it targets an older SOS): ignored, nothing changes.
+         */
+        val staleIgnored: Boolean = false,
     )
 
     /**
@@ -88,8 +93,21 @@ internal object ProtectionSosNativeDecision {
         countdownStartedAt: Long?,
         observed: ProtectionSosObservedCycle?,
         now: Long,
+        issuedAt: Long? = null,
     ): TerminalStep {
         val sameTag = sameTag(terminalNodeId, lifecycleNodeId)
+        val currentStart = currentCycleStartedAt(
+            lifecycle = lifecycle,
+            countdownStartedAt = countdownStartedAt.takeIf { sameTag },
+            observed = observed,
+            terminalNodeId = terminalNodeId,
+            now = now,
+        )
+        if (issuedAt != null && currentStart != null && issuedAt < currentStart) {
+            // F17c Phase 2: a stop issued before the current countdown began
+            // targets an older SOS: the running countdown is never touched.
+            return TerminalStep(nextLifecycle = lifecycle, arm = false, staleIgnored = true)
+        }
         val nextLifecycle =
             if (ProtectionSosStaleGuard.cancelsRunningCountdown(
                     terminal,
@@ -129,6 +147,31 @@ internal object ProtectionSosNativeDecision {
     fun onPromptSos(lifecycle: ProtectionSosLifecycleState): PromptSosStep {
         val opens = lifecycle == ProtectionSosLifecycleState.idle
         return PromptSosStep(opensNativeSos = opens, queuesCreate = opens)
+    }
+
+    /**
+     * F17c Phase 2: when the countdown running for the terminal's TAG began
+     * (the newest of the native cycle and the Dart-forwarded burst), null when
+     * none runs (iOS `currentCycleStartedAt`).
+     */
+    fun currentCycleStartedAt(
+        lifecycle: ProtectionSosLifecycleState,
+        countdownStartedAt: Long?,
+        observed: ProtectionSosObservedCycle?,
+        terminalNodeId: Int?,
+        now: Long,
+    ): Long? {
+        val starts = mutableListOf<Long>()
+        if (lifecycle != ProtectionSosLifecycleState.idle && countdownStartedAt != null) {
+            starts.add(countdownStartedAt)
+        }
+        if (observed != null &&
+            ProtectionSosStaleGuard.observedRecently(observed, now) &&
+            sameTag(terminalNodeId, observed.nodeId)
+        ) {
+            starts.add(observed.firstSeenAt)
+        }
+        return starts.maxOrNull()
     }
 
     /** Same TAG unless both ids are known and differ (iOS `sameNode`). */

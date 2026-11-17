@@ -281,10 +281,20 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
         updateSosBackgroundHold(reason: "sdk_session_changed")
       }
       let terminal = IosSosTerminalKind(rawValue: arguments?["terminal"] as? String ?? "")
-      if sosDelivery.closeDeliveredCycle(
+      let closed = sosDelivery.closeDeliveredCycle(
         nodeId: (arguments?["nodeId"] as? NSNumber)?.intValue,
-        terminal: terminal
-      ) {
+        terminal: terminal,
+        issuedAtMs: (arguments?["issuedAtMs"] as? NSNumber)?.intValue
+      )
+      if sosDelivery.lastSdkStopIgnoredAsStale {
+        // F17c Phase 2: a stop issued before the current countdown began
+        // targets an older SOS: the running countdown is never touched.
+        logSosDelivery(
+          "NATIVE_SOS_STALE_STOP_IGNORED reason=issued_before_current_cycle " +
+            "terminal=\(terminal?.rawValue ?? "none") " +
+            "target=\(arguments?["targetCycleId"] != nil)")
+      }
+      if closed {
         sosCountdownTimer?.invalidate()
         sosCountdownTimer = nil
         logSosDelivery("NATIVE_SOS_CYCLE_CLOSED_BY_SDK")

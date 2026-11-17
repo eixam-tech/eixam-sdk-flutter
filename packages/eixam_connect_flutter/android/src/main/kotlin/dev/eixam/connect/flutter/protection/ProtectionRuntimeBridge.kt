@@ -358,6 +358,10 @@ internal object ProtectionRuntimeBridge {
                     terminalWire = arguments?.get("terminal") as? String,
                     nodeId = (arguments?.get("nodeId") as? Number)?.toInt(),
                     force = arguments?.get("force") as? Boolean ?: false,
+                    // F17c Phase 2: when the SDK issued this stop (absent =
+                    // today's behaviour).
+                    issuedAtMs = (arguments?.get("issuedAtMs") as? Number)?.toLong(),
+                    targetPresent = arguments?.get("targetCycleId") != null,
                 )
                 result.success(null)
             }

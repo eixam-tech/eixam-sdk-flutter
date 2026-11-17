@@ -3910,6 +3910,8 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   }) async {}
 
   @override

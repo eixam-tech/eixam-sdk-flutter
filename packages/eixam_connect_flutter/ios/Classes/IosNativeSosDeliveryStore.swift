@@ -218,7 +218,42 @@ final class IosNativeSosDeliveryStore {
   /// itself: an ambiguous frame asks the user.
   /// F17c-cdc: the SDK cancel of this TAG's running countdown ends it: it is
   /// never promoted into a native create at its deadline.
-  func closeDeliveredCycle(nodeId: Int? = nil, terminal: IosSosTerminalKind? = nil) -> Bool {
+  /// F17c Phase 2: the SDK's last stop was ignored because it was issued
+  /// before the current countdown began (it targets an older SOS).
+  private(set) var lastSdkStopIgnoredAsStale = false
+
+  /// F17c Phase 2: when the countdown native or Dart is running for [nodeId]
+  /// began (the newest of the native cycle and the Dart-forwarded burst), nil
+  /// when none runs.
+  func currentCycleStartedAt(nodeId: Int?) -> Int? {
+    var starts: [Int] = []
+    let sameNode = nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId
+    if cycleState != .idle, sameNode,
+       let started = defaults.object(forKey: Keys.cycleStartedAt) as? Int {
+      starts.append(started)
+    }
+    let sameDartNode = nodeId == nil || dartCycleNodeId == nil || nodeId == dartCycleNodeId
+    if dartCycleSeenRecently, sameDartNode,
+       let first = defaults.object(forKey: Keys.dartCycleFirstSeenAt) as? Int {
+      starts.append(first)
+    }
+    return starts.max()
+  }
+
+  /// [issuedAtMs] (F17c Phase 2): when the SDK decided this stop. A stop
+  /// issued before the current countdown began targets an older SOS: it is
+  /// ignored (no close, no record) and the countdown continues. Nil (older
+  /// callers): today's behaviour.
+  func closeDeliveredCycle(
+    nodeId: Int? = nil,
+    terminal: IosSosTerminalKind? = nil,
+    issuedAtMs: Int? = nil
+  ) -> Bool {
+    lastSdkStopIgnoredAsStale = false
+    if let issuedAtMs, let started = currentCycleStartedAt(nodeId: nodeId), issuedAtMs < started {
+      lastSdkStopIgnoredAsStale = true
+      return false
+    }
     let unclaimed = pendingCreateRecord != nil
     let sameNode = nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId
     let keptCountdown = cycleState == .preConfirmSeen &&

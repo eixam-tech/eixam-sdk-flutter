@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 import 'package:eixam_connect_flutter/src/sdk/android_protection_platform_adapter.dart';
 import 'package:eixam_connect_flutter/src/sdk/eixam_connect_sdk_impl.dart';
@@ -53,6 +55,69 @@ void main() {
     ).closeNativeSosCycle(terminal: 'resolve');
     expect(calls.single.method, 'closeNativeSosCycle');
     expect(calls.single.arguments, <String, dynamic>{'terminal': 'resolve'});
+  });
+
+  // F17c Phase 2 (decided 16/11/2026): the SDK's stop carries when it was
+  // issued and its target lifecycle; native ignores a stop issued before its
+  // current countdown began. Dart's side of the shared fixture: every
+  // `terminal` step reaches both platforms with exactly that issue time (and
+  // without one when the step has none: today's behaviour).
+  test('shared fixture: every SDK stop reaches iOS and Android native with '
+      'its issue time and target (none when absent)', () async {
+    final base = DateTime.utc(2026, 11, 16).millisecondsSinceEpoch;
+    var withIssue = 0;
+    var without = 0;
+    for (final raw in File(
+      'test/fixtures/stale_sos_guard_scenarios.txt',
+    ).readAsLinesSync()) {
+      final line = raw.trim();
+      if (line.isEmpty || line.startsWith('#') || line.startsWith('scenario')) {
+        continue;
+      }
+      final event = line.split(' => ').first.split(' ');
+      if (event[1] != 'terminal') {
+        continue;
+      }
+      final args = <String, String>{
+        for (final token in event.skip(2))
+          if (token.contains('=')) token.split('=').first: token.split('=').last,
+      };
+      final issued = args['issued'] == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(
+              base + int.parse(args['issued']!),
+              isUtc: true,
+            );
+      final node = int.parse(args['node'] ?? '7');
+      for (final adapter in <ProtectionPlatformAdapter>[
+        IosProtectionPlatformAdapter(),
+        AndroidProtectionPlatformAdapter(methodChannel: androidChannel),
+      ]) {
+        calls.clear();
+        await adapter.closeNativeSosCycle(
+          nodeId: node,
+          terminal: args['kind'],
+          issuedAt: issued,
+          targetCycleId: issued == null ? null : 'lifecycle-b',
+        );
+        final sent = Map<String, dynamic>.from(
+          calls.single.arguments as Map<Object?, Object?>,
+        );
+        expect(sent['terminal'], args['kind'], reason: line);
+        expect(sent['nodeId'], node, reason: line);
+        if (issued == null) {
+          expect(sent.containsKey('issuedAtMs'), isFalse, reason: line);
+          expect(sent.containsKey('targetCycleId'), isFalse, reason: line);
+          without++;
+        } else {
+          expect(sent['issuedAtMs'], issued.millisecondsSinceEpoch, reason: line);
+          expect(sent['targetCycleId'], 'lifecycle-b', reason: line);
+          withIssue++;
+        }
+      }
+    }
+    expect(withIssue, greaterThanOrEqualTo(8), reason: '>= 4 steps x 2');
+    expect(without, greaterThan(20));
   });
 
   test('lifecycle terminal maps to the TAG command kind', () {

@@ -2082,7 +2082,13 @@ internal class ProtectionBleRuntimeOwner(
      * native GATT session writes the SDK's own terminal command at once. Never
      * depends on Dart's connection state.
      */
-    fun closeNativeSosCycle(terminalWire: String?, nodeId: Int?, force: Boolean) {
+    fun closeNativeSosCycle(
+        terminalWire: String?,
+        nodeId: Int?,
+        force: Boolean,
+        issuedAtMs: Long? = null,
+        targetPresent: Boolean = false,
+    ) {
         mainHandler.post {
             val now = System.currentTimeMillis()
             val stopNow = synchronized(sosLifecycleLock) {
@@ -2120,7 +2126,17 @@ internal class ProtectionBleRuntimeOwner(
                     countdownStartedAt = snapshot["preSosStartedAt"] as? Long,
                     observed = observed,
                     now = now,
+                    issuedAt = issuedAtMs,
                 )
+                if (step.staleIgnored) {
+                    Log.i(
+                        logTag,
+                        "NATIVE_SOS_STALE_STOP_IGNORED reason=issued_before_current_cycle " +
+                            "terminal=${terminalWire ?: "none"} lifecycle=${lifecycleState.name} " +
+                            "target=$targetPresent",
+                    )
+                    return@synchronized false
+                }
                 val nextState = step.nextLifecycle
                 if (nextState != lifecycleState) {
                     cancelSosActivationTimeout()

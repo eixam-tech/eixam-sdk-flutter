@@ -489,10 +489,16 @@ abstract class ProtectionPlatformAdapter {
   /// F17b): the SDK's terminal of a handed-over SOS; when the TAG never
   /// confirmed closing it, native writes the matching TAG command itself and
   /// stops (never re-opens) the SOS if the TAG keeps sending it.
+  /// [issuedAt] (F17c Phase 2): when the SDK decided this stop; native
+  /// ignores (and logs) a stop issued before its current countdown began (it
+  /// targets an older SOS). [targetCycleId]: the SDK lifecycle the stop is
+  /// for (diagnostics only). Both absent: today's behaviour.
   Future<void> closeNativeSosCycle({
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   });
 
   /// F17c: whether this platform's native store classifies own-TAG SOS frames
@@ -618,6 +624,8 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   }) async {}
 
   @override

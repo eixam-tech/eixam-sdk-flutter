@@ -450,6 +450,8 @@ final class _OrderingProtectionPlatformAdapter extends Fake
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   }) async {}
 
   @override

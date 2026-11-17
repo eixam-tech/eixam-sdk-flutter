@@ -289,15 +289,25 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
   }) {
     return _methodChannel.invokeMethod<void>(
       'closeNativeSosCycle',
-      nodeId == null && !force && terminal == null
+      nodeId == null &&
+              !force &&
+              terminal == null &&
+              issuedAt == null &&
+              targetCycleId == null
           ? null
           : <String, dynamic>{
               if (nodeId != null) 'nodeId': nodeId,
               if (force) 'force': true,
               if (terminal != null) 'terminal': terminal,
+              // F17c Phase 2: absent for older callers (today's behaviour).
+              if (issuedAt != null)
+                'issuedAtMs': issuedAt.toUtc().millisecondsSinceEpoch,
+              if (targetCycleId != null) 'targetCycleId': targetCycleId,
             },
     );
   }

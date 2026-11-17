@@ -10605,7 +10605,8 @@ class EixamConnectSdkImpl
         reason: 'public_cancel_acceptance',
       );
       final cancellationLifecycle = _sosLifecycle.current;
-      _userActionTerminalGenerations.add(cancellationLifecycle.generation);
+      _userActionTerminalGenerations[cancellationLifecycle.generation] ??=
+          DateTime.now().toUtc();
       if (cancellationLifecycle.isOpen &&
           cancellationLifecycle.stage != SosLifecycleStage.cancelling) {
         await _sosLifecycle.beginCancellation();
@@ -11196,7 +11197,8 @@ class EixamConnectSdkImpl
       final lifecycleAtResolveStart = _sosLifecycle.current;
       // r7 LOW-3: the generation the user resolved (captured at the action),
       // never the one current after an await.
-      _userActionTerminalGenerations.add(lifecycleAtResolveStart.generation);
+      _userActionTerminalGenerations[lifecycleAtResolveStart.generation] ??=
+          DateTime.now().toUtc();
       _rememberDeviceOriginatedClosureIntent(
         incident: activeIncident,
         intent: _SosClosureIntent.resolve,
@@ -17729,10 +17731,11 @@ class EixamConnectSdkImpl
 
   late final SosStopGuard _localSosStopGuard = SosStopGuard();
 
-  /// Generations the user cancelled or resolved from the app (bounded by the
-  /// lifecycle generations of this process): their terminal is the user's
-  /// action, so their native cycle close is too (r7 MEDIUM-1).
-  final Set<int> _userActionTerminalGenerations = <int>{};
+  /// Generations the user cancelled or resolved from the app, with the time
+  /// of that action (bounded by the lifecycle generations of this process):
+  /// their terminal is the user's action, so their native cycle close is too
+  /// (r7 MEDIUM-1), issued at the user's action (F17c Phase 2).
+  final Map<int, DateTime> _userActionTerminalGenerations = <int, DateTime>{};
 
   /// F17c review r7: the single stop / terminal guard. Owned by the MQTT
   /// repository (it persists the attribution state with its own).
@@ -17954,7 +17957,7 @@ class EixamConnectSdkImpl
         (opcode == EixamBleProtocol.sosEventAppCancelAckOpcode ||
             opcode == EixamBleProtocol.sosEventBackendResolvedOpcode) &&
         (stopRequested.contains(lifecycle.stage) ||
-            _userActionTerminalGenerations.contains(lifecycle.generation));
+            _userActionTerminalGenerations.containsKey(lifecycle.generation));
     if (lifecycle.externalOnly ||
         started == null ||
         !(tagOwnStop || stopAck) ||
@@ -19825,9 +19828,8 @@ class EixamConnectSdkImpl
     }
     // r7 MEDIUM-1: after the user's own cancel / resolve the close is the
     // user's action (allowed even if the incident id was once another SOS's).
-    final userAction = _userActionTerminalGenerations.contains(
-      lifecycle.generation,
-    );
+    final userActionAt = _userActionTerminalGenerations[lifecycle.generation];
+    final userAction = userActionAt != null;
     if (!_sosStopGuard
         .authorize(
           SosStopRequest(
@@ -19844,10 +19846,17 @@ class EixamConnectSdkImpl
         .allowed) {
       return;
     }
+    // F17c Phase 2: the stop names its SOS and when it was issued (the
+    // user's action, else this decision): native ignores and logs a stop
+    // issued before its current countdown began (an older SOS's, delivered
+    // late), so it never ends a newer SOS's countdown.
+    final issuedAt = userActionAt ?? DateTime.now().toUtc();
     Future<void> closeNative() => protectionPlatformAdapter
         .closeNativeSosCycle(
           nodeId: lifecycle.nodeId,
           terminal: nativeSosCycleTerminalFor(lifecycle.stage),
+          issuedAt: issuedAt,
+          targetCycleId: lifecycle.lifecycleId,
         )
         .catchError(
           (Object error) => sdkReleaseLog(

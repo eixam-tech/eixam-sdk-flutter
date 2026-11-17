@@ -1028,6 +1028,7 @@ struct IosNativeSosDeliveryStoreTests {
     var base = 0
     var steps = 0
     var dartFrames = 0
+    var phase2Terminals = 0
     for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
       let line = raw.trimmingCharacters(in: .whitespaces)
       if line.isEmpty || line.hasPrefix("#") { continue }
@@ -1086,7 +1087,11 @@ struct IosNativeSosDeliveryStoreTests {
         clock = base + t
         if args["connected"] == "false" { store.noteLinkDropped() } else { store.noteLinkUp() }
         _ = store.closeDeliveredCycle(
-          nodeId: node, terminal: IosSosTerminalKind(rawValue: args["kind"] ?? "cancel"))
+          nodeId: node, terminal: IosSosTerminalKind(rawValue: args["kind"] ?? "cancel"),
+          issuedAtMs: args["issued"].flatMap(Int.init).map { base + $0 })
+        if args["issued"] != nil {
+          phase2Terminals += 1
+        }
       case "frame":
         clock = base + t
         if args["source"] == "dart" {
@@ -1167,8 +1172,13 @@ struct IosNativeSosDeliveryStoreTests {
       if let armed = want["armed"] {
         check((store.staleGuardKind != nil) == (armed == "true"), "\(label): armed != \(armed)")
       }
+      if let cycle = want["cycle"] {
+        let got = store.cycleState == .idle ? "idle" : "running"
+        check(got == cycle, "\(label): native cycle \(got) != \(cycle)")
+      }
     }
     check(steps > 100, "fixture replayed (\(steps) steps)")
     check(dartFrames > 20, "dart frames replayed (\(dartFrames))")
+    check(phase2Terminals >= 4, "stops with an issue time replayed (\(phase2Terminals))")
   }
 }

@@ -36,9 +36,14 @@
 #                         before the terminal; dart = own-TAG frames that Dart
 #                         forwarded (observeOwnTagSosFrame), the first one age ms
 #                         before the terminal; none = nothing
-#   terminal kind=cancel|resolve node=N connected=true|false
+#   terminal kind=cancel|resolve node=N connected=true|false [issued=MS]
 #                         the SDK's cancel/resolve (closeNativeSosCycle); arms
-#                         the record when the SOS was seen on any path
+#                         the record when the SOS was seen on any path.
+#                         issued (F17c Phase 2): when the SDK decided that stop
+#                         (scenario time). A stop issued before the current
+#                         countdown began (native countdown or Dart-forwarded
+#                         burst) targets an older SOS: ignored and logged (no
+#                         close, no record). Absent: today's behaviour
 #   frame node=N source=native|dart [delivered=MS]
 #                         one BLE SOS push as delivered by that path; for a
 #                         dart frame t is Dart's receivedAtMs and delivered
@@ -73,7 +78,8 @@
 # Asserted keys (absent = default): stop (default none) = the stop written by
 # this step; kind = the prompt's terminal; opened (default false); prompt = the
 # prompt state after the step; owed = the user's stop still owed after the
-# step; armed = the record after the step; countdown=T (native-path frames
+# step; armed = the record after the step; cycle=running|idle = the native
+# TAG cycle (countdown / handed-over SOS) after the step; countdown=T (native-path frames
 # only) = after this push the native TAG countdown runs, counted from T (the
 # scenario time of the burst's first push: never later, never earlier). A
 # platform may start it at the first push or at the push that completes the
@@ -778,3 +784,31 @@ scenario lone_dart_push_is_decided_exactly_2000ms_after_it
 10000 frame node=7 source=dart => pending prompt=closed
 11999 decide => none prompt=closed
 12000 decide => prompt opened=true prompt=open
+
+# F17c Phase 2 (decided 16/11/2026): the SDK's stop / close carries when it
+# was issued. A late stop of an older SOS (A) reaching native after the new
+# SOS's (B) countdown began is ignored and logged: B's countdown continues,
+# nothing arms. A stop issued for B (after its countdown began) works as
+# before; a stop without the field keeps today's behaviour.
+scenario stale_stop_for_an_older_sos_after_the_native_countdown_began_is_ignored
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true issued=900 => - armed=false cycle=running countdown=1000
+2000 frame node=7 source=native => pass armed=false countdown=1000
+
+scenario stop_for_the_current_countdown_issued_after_it_began_cancels_it
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true issued=1400 => - armed=true cycle=idle
+
+scenario stop_without_issue_time_keeps_todays_behaviour_on_the_countdown
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true => - armed=true cycle=idle
+
+scenario stale_stop_for_an_older_sos_after_dart_forwarded_the_new_countdown_is_ignored
+1000 seen source=dart node=7 age=500 => -
+1500 terminal kind=cancel node=7 connected=true issued=400 => - armed=false
+2000 frame node=7 source=dart => pass armed=false
+
+scenario stop_for_the_dart_seen_sos_issued_after_it_began_arms
+1000 seen source=dart node=7 age=500 => -
+1500 terminal kind=resolve node=7 connected=true issued=1400 => - armed=true
+2000 frame node=7 source=dart => pending armed=true

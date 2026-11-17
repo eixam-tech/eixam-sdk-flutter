@@ -415,6 +415,7 @@ class ProtectionSosStaleGuardTest {
         var steps = 0
         var dartFrames = 0
         var nativeFrames = 0
+        var phase2Terminals = 0
         val failures = mutableListOf<String>()
         val base = 5_000_000L
         for (raw in fixture!!.readLines()) {
@@ -479,7 +480,11 @@ class ProtectionSosStaleGuardTest {
                         countdownStartedAt = countdownStartedAt,
                         observed = observed,
                         now = t,
+                        issuedAt = args["issued"]?.let { base + it.toLong() },
                     )
+                    if (args["issued"] != null) {
+                        phase2Terminals++
+                    }
                     if (step.nextLifecycle != lifecycle) {
                         countdownStartedAt = null
                     }
@@ -616,6 +621,13 @@ class ProtectionSosStaleGuardTest {
             }
             want["owed"]?.let { assertEquals("$label: owed", it == "true", state?.stopOwed == true) }
             want["armed"]?.let { assertEquals("$label: armed", it == "true", state != null) }
+            want["cycle"]?.let {
+                assertEquals(
+                    "$label: native cycle",
+                    it,
+                    if (lifecycle == ProtectionSosLifecycleState.idle) "idle" else "running",
+                )
+            }
             } catch (failure: AssertionError) {
                 // Every failing step is reported, not only the first one.
                 failures.add(failure.message ?: label)
@@ -625,6 +637,7 @@ class ProtectionSosStaleGuardTest {
         assertTrue("fixture replayed ($steps steps)", steps > 100)
         assertTrue("dart frames replayed ($dartFrames)", dartFrames > 20)
         assertTrue("native frames replayed ($nativeFrames)", nativeFrames > 20)
+        assertTrue("stops with an issue time replayed ($phase2Terminals)", phase2Terminals >= 4)
     }
 
     /** F17c M2: "Send SOS" / the timeout queue a create only when native opened the SOS. */
