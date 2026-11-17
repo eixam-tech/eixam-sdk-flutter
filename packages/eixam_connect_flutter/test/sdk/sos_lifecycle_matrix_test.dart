@@ -17513,6 +17513,7 @@ final class _OnDemandOperationalRealtimeClient extends FakeRealtimeClient
   @override
   Future<void> publishOperationalSosCancel({
     required DateTime timestamp,
+    int? ageMs,
   }) async {
     if (offlineError case final error?) throw error;
     publishedSosCancels.add(timestamp);

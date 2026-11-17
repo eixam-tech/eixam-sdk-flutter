@@ -310,10 +310,15 @@ class SdkMqttContract {
   /// SOS cancel on the alerts topic. User-scoped like the former REST cancel:
   /// no device identity, so the backend cancels the user's one open incident
   /// (a `deviceId` the backend cannot resolve would be rejected silently).
+  ///
+  /// [ageMs] (optional) is the milliseconds since the cancel was created on
+  /// the phone; the backend dates the cancel as receive time − ageMs.
+  /// Negative values are clamped to 0. `timestamp` is kept for older backends.
   static SdkMqttEnvelope buildOperationalSosCancelEnvelope({
     required String sdkUserId,
     String? legacyUserId,
     required DateTime timestamp,
+    int? ageMs,
   }) {
     final topicSDKUserId = sdkUserId.trim();
     final payloadUserId = legacyUserId?.trim();
@@ -326,6 +331,7 @@ class SdkMqttContract {
         'cancel': true,
         if (payloadUserId != null && payloadUserId.isNotEmpty)
           'userId': payloadUserId,
+        if (ageMs != null) 'ageMs': ageMs < 0 ? 0 : ageMs,
       }),
     );
   }

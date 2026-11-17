@@ -577,6 +577,7 @@ class _Realtime implements OperationalRealtimeClient {
   @override
   Future<void> publishOperationalSosCancel({
     required DateTime timestamp,
+    int? ageMs,
   }) async {
     publishedCancels.add(timestamp);
   }

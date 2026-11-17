@@ -37,6 +37,7 @@ class SosOutboxAction {
     this.lastAttemptAt,
     DateTime? observedAt,
     this.scope,
+    this.createdAtMonotonic,
   }) : observedAt = observedAt ?? createdAt;
 
   final String id;
@@ -57,6 +58,11 @@ class SosOutboxAction {
   /// Account scope the action belongs to; never delivered for another one.
   final String? scope;
 
+  /// Reading of the outbox monotonic clock when this action was created in
+  /// the current process. Never persisted: a restored action has none, so its
+  /// age falls back to the wall clock (see [SosDeliveryOutbox.ageMsOf]).
+  final Duration? createdAtMonotonic;
+
   SosOutboxAction copyWith({
     int? attempts,
     bool? published,
@@ -73,6 +79,7 @@ class SosOutboxAction {
       lastAttemptAt: lastAttemptAt ?? this.lastAttemptAt,
       observedAt: observedAt,
       scope: scope,
+      createdAtMonotonic: createdAtMonotonic,
     );
   }
 
@@ -199,6 +206,7 @@ class SosDeliveryOutbox {
     required SosOutboxBackendReader readBackend,
     SharedPrefsSdkStore? store,
     DateTime Function()? clock,
+    Duration Function()? monotonicClock,
     this.confirmationWindow = const Duration(seconds: 6),
     this.retryingAfter = const Duration(seconds: 10),
     List<Duration>? backoff,
@@ -214,7 +222,8 @@ class SosDeliveryOutbox {
        _publish = publish,
        _readBackend = readBackend,
        _store = store,
-       _clock = clock ?? DateTime.now;
+       _clock = clock ?? DateTime.now,
+       _monotonic = monotonicClock ?? _processMonotonicElapsed;
 
   static const String storeKey = SharedPrefsSdkStore.sosDeliveryOutboxKey;
 
@@ -238,6 +247,25 @@ class SosDeliveryOutbox {
   final SosOutboxBackendReader _readBackend;
   final SharedPrefsSdkStore? _store;
   final DateTime Function() _clock;
+  final Duration Function() _monotonic;
+
+  static final Stopwatch _processStopwatch = Stopwatch()..start();
+  static Duration _processMonotonicElapsed() => _processStopwatch.elapsed;
+
+  /// Milliseconds since [action] was created, for the cancel `ageMs` field.
+  /// Read at each publish attempt. In-process it uses the monotonic clock, so
+  /// wall-clock changes cannot skew it; after a restart (no monotonic
+  /// reference) it is wall-clock now − persisted `createdAt`. Clamped to
+  /// >= 0; not capped: an action older than [cancelMaxAge] expires instead
+  /// of being published.
+  int ageMsOf(SosOutboxAction action) {
+    final createdAtMonotonic = action.createdAtMonotonic;
+    final age = createdAtMonotonic != null
+        ? _monotonic() - createdAtMonotonic
+        : _clock().toUtc().difference(action.createdAt);
+    final ms = age.inMilliseconds;
+    return ms < 0 ? 0 : ms;
+  }
 
   /// After a PUBACK, how long to wait for the realtime confirmation before
   /// reading the backend.
@@ -440,6 +468,7 @@ class SosDeliveryOutbox {
       id: _nextId(SosOutboxActionKind.cancel),
       kind: SosOutboxActionKind.cancel,
       createdAt: _clock().toUtc(),
+      createdAtMonotonic: _monotonic(),
       observedAt: observed,
       cycleKey: cycleKey,
       scope: scope,

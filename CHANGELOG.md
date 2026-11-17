@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — SOS cancel carries `ageMs`
+
+- The operational SOS cancel on `sos/alerts/<sdkUserId>` now carries an
+  optional integer `ageMs`: milliseconds since the cancel was created on the
+  phone, recomputed at every publish attempt (outbox retries and after a
+  restart). Monotonic clock in-process; wall-clock difference to the persisted
+  creation time after a restart; clamped to >= 0. The backend dates the cancel
+  as receive time − `ageMs`. `timestamp` and `cancel: true` are unchanged for
+  older backends; triggers and HTTP are unchanged. No public API change; hosts
+  need no source changes. Details: `docs/ai_context/BACKEND_INTEGRATION.md`.
+
 ## Unreleased — ambiguous TAG SOS: ask the user (F17c prompt)
 
 - **Rule (one rule on iOS native, Android native and Dart, shared fixture `test/fixtures/stale_sos_guard_scenarios.txt`):** any SDK cancel/resolve of an own-TAG SOS seen on any path (handed-over native create, native countdown, or Dart-forwarded frames, at any age) records an "unconfirmed stop" natively (persisted; one record, no platform-specific arming rule). Native still owing an unclaimed create of that SOS records nothing. The record ends only on the TAG's close frame (`0xE1/E2/E3`, any path), a countdown burst (>= 3 pushes in 1.7 s: the normal new SOS), the user's Send / the timeout, a new SDK SOS or a session change. No gap and no time cap (Roger 16/11/2026): a stray retry after any silence still asks.

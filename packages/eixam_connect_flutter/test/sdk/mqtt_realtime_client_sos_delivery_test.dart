@@ -135,8 +135,41 @@ void main() {
       expect(payload['timestamp'], now.toIso8601String());
       expect(payload.containsKey('deviceId'), isFalse);
       expect(payload.containsKey('hardwareId'), isFalse);
+      expect(payload.containsKey('ageMs'), isFalse);
     },
   );
+
+  test('cancel carries a non-negative integer ageMs next to the unchanged '
+      'timestamp', () async {
+    await client.publishOperationalSosCancel(timestamp: now, ageMs: 1500);
+
+    final message = transports.single.published.single;
+    expect(message.topic, 'sos/alerts/$sdkUserId');
+    final payload = jsonDecode(message.payload) as Map<String, dynamic>;
+    expect(payload['cancel'], isTrue);
+    expect(payload['timestamp'], now.toIso8601String());
+    expect(payload['ageMs'], isA<int>());
+    expect(payload['ageMs'], 1500);
+  });
+
+  test('a negative ageMs is clamped to 0', () async {
+    await client.publishOperationalSosCancel(timestamp: now, ageMs: -250);
+
+    final payload =
+        jsonDecode(transports.single.published.single.payload)
+            as Map<String, dynamic>;
+    expect(payload['ageMs'], 0);
+  });
+
+  test('trigger publishes never carry ageMs', () async {
+    await client.publishOperationalSos(sos());
+
+    final payload =
+        jsonDecode(transports.single.published.single.payload)
+            as Map<String, dynamic>;
+    expect(payload.containsKey('ageMs'), isFalse);
+    expect(payload.containsKey('cancel'), isFalse);
+  });
 }
 
 final class _Transport implements SdkMqttTransport {

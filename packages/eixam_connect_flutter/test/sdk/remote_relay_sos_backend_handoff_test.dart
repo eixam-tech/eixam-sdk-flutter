@@ -4093,6 +4093,7 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   @override
   Future<void> publishOperationalSosCancel({
     required DateTime timestamp,
+    int? ageMs,
   }) async {
     publishedSosCancels.add(timestamp);
     await publishSosCancelHook?.call(timestamp);

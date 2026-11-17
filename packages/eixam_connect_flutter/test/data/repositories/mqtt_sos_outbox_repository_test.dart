@@ -205,6 +205,9 @@ void main() {
 
       expect(cancelled.state, SosState.cancelled);
       expect(realtime.publishedCancels, hasLength(1));
+      expect(realtime.publishedCancelAgesMs, hasLength(1));
+      expect(realtime.publishedCancelAgesMs.single, isNotNull);
+      expect(realtime.publishedCancelAgesMs.single, greaterThanOrEqualTo(0));
       expect(repository.deliveryStatus.pendingCancel, isFalse);
       expect(remote.restCancelCalls, 0);
       // Settled by the backend `cancelled` event (terminal, as before).
@@ -562,6 +565,7 @@ class _Realtime implements OperationalRealtimeClient {
   final List<MqttOperationalSosRequest> publishedSos =
       <MqttOperationalSosRequest>[];
   final List<DateTime> publishedCancels = <DateTime>[];
+  final List<int?> publishedCancelAgesMs = <int?>[];
   int failSosPublishes = 0;
   int failCancelPublishes = 0;
   int sosPublishAttempts = 0;
@@ -585,12 +589,14 @@ class _Realtime implements OperationalRealtimeClient {
   @override
   Future<void> publishOperationalSosCancel({
     required DateTime timestamp,
+    int? ageMs,
   }) async {
     cancelPublishAttempts++;
     if (cancelPublishAttempts <= failCancelPublishes) {
       throw const NetworkException('E_MQTT_NOT_CONNECTED', 'down');
     }
     publishedCancels.add(timestamp);
+    publishedCancelAgesMs.add(ageMs);
     onSosCancelPublished?.call();
   }
 

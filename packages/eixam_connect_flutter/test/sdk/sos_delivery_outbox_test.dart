@@ -570,6 +570,108 @@ void main() {
       },
     );
   });
+
+  group('SosDeliveryOutbox cancel ageMs', () {
+    test('recomputed per attempt from the monotonic clock; wall-clock jumps '
+        'do not affect it in-process', () async {
+      var wall = DateTime.utc(2026, 11, 16, 12);
+      var monotonic = const Duration(seconds: 5);
+      final harness = _Harness(failFirstPublishes: 1);
+      final schedule = <Duration>[
+        const Duration(seconds: 6), // T + 1 s
+        const Duration(seconds: 95), // T + 90 s
+      ];
+      harness.beforePublishAttempt = (attempt) {
+        monotonic = schedule[attempt - 1];
+        // The wall clock jumps back an hour between creation and retry.
+        wall = wall.subtract(const Duration(hours: 1));
+      };
+      final outbox = harness.build(
+        clock: () => wall,
+        monotonicClock: () => monotonic,
+      );
+      addTearDown(outbox.dispose);
+      harness.backendAfterPublish = SosOutboxBackendCheck.confirmed;
+
+      final cancel = (await outbox.enqueueCancel(cycleKey: 'sos:9:1'))!;
+      expect(
+        await outbox.waitForConfirmation(
+          cancel,
+          timeout: const Duration(seconds: 2),
+        ),
+        isTrue,
+      );
+      expect(harness.ageMsAtAttempt, <int>[1000, 90000]);
+    });
+
+    test('after a restart the wall-clock difference to the persisted '
+        'creation time is used', () async {
+      final store = MemorySharedPrefsSdkStore();
+      final created = DateTime.utc(2026, 11, 16, 12);
+      final first = _Harness(failFirstPublishes: 1000).build(
+        store: store,
+        clock: () => created,
+        monotonicClock: () => const Duration(hours: 3),
+      );
+      await first.enqueueCancel(cycleKey: 'sos:9:2');
+      await first.dispose();
+
+      final restarted = _Harness();
+      restarted.backendAfterPublish = SosOutboxBackendCheck.confirmed;
+      final second = restarted.build(
+        store: store,
+        clock: () => created.add(const Duration(seconds: 42)),
+        // A new process: the monotonic clock restarted near zero.
+        monotonicClock: () => const Duration(milliseconds: 10),
+      );
+      addTearDown(second.dispose);
+      await second.restore();
+      final cancel = second.pending.single;
+      expect(
+        await second.waitForConfirmation(
+          cancel,
+          timeout: const Duration(seconds: 2),
+        ),
+        isTrue,
+      );
+      expect(restarted.ageMsAtAttempt, <int>[42000]);
+      expect(
+        restarted.published.single.payload['timestamp'],
+        created.toIso8601String(),
+        reason: 'timestamp kept unchanged for older backends',
+      );
+    });
+
+    test(
+      'after a restart a wall clock moved backwards clamps ageMs to 0',
+      () async {
+        final store = MemorySharedPrefsSdkStore();
+        final created = DateTime.utc(2026, 11, 16, 12);
+        final first = _Harness(
+          failFirstPublishes: 1000,
+        ).build(store: store, clock: () => created);
+        await first.enqueueCancel(cycleKey: 'sos:9:3');
+        await first.dispose();
+
+        final restarted = _Harness();
+        restarted.backendAfterPublish = SosOutboxBackendCheck.confirmed;
+        final second = restarted.build(
+          store: store,
+          clock: () => created.subtract(const Duration(minutes: 5)),
+        );
+        addTearDown(second.dispose);
+        await second.restore();
+        expect(
+          await second.waitForConfirmation(
+            second.pending.single,
+            timeout: const Duration(seconds: 2),
+          ),
+          isTrue,
+        );
+        expect(restarted.ageMsAtAttempt, <int>[0]);
+      },
+    );
+  });
 }
 
 class _Harness {
@@ -587,17 +689,26 @@ class _Harness {
   SosOutboxDropAction? dropWith;
   bool _lastPublishFailed = false;
 
+  /// Called with the 1-based attempt number before each publish.
+  void Function(int attempt)? beforePublishAttempt;
+
+  /// `ageMsOf` read at each publish attempt (what the publisher would send).
+  final List<int> ageMsAtAttempt = <int>[];
+  late SosDeliveryOutbox _outbox;
+
   SosDeliveryOutbox build({
     MemorySharedPrefsSdkStore? store,
     Duration confirmationWindow = const Duration(milliseconds: 15),
     Duration retryingAfter = const Duration(seconds: 10),
     DateTime Function()? clock,
+    Duration Function()? monotonicClock,
     Duration triggerMaxAge = const Duration(hours: 6),
     void Function(SosOutboxAction action)? onExpired,
   }) {
-    return SosDeliveryOutbox(
+    return _outbox = SosDeliveryOutbox(
       store: store,
       clock: clock,
+      monotonicClock: monotonicClock,
       triggerMaxAge: triggerMaxAge,
       onExpired: onExpired,
       confirmationWindow: confirmationWindow,
@@ -609,6 +720,8 @@ class _Harness {
         if (hook != null) {
           await hook(action);
         }
+        beforePublishAttempt?.call(publishAttempts);
+        ageMsAtAttempt.add(_outbox.ageMsOf(action));
         final drop = dropWith;
         if (drop != null) {
           throw drop;
