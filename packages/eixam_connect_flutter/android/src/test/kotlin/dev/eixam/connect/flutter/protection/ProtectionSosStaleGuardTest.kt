@@ -515,16 +515,28 @@ class ProtectionSosStaleGuardTest {
                         issuedAt = args["issued"]?.let { base + it.toLong() },
                         // F17c item 1: the stop's target, as the bridge maps it.
                         target = when (val target = args["target"]) {
-                            "user" -> ProtectionSosStopTarget.CurrentCycle
+                            "user" -> ProtectionSosStopTarget.CurrentCycle()
                             "none" -> ProtectionSosStopTarget.Missing
                             null -> cycleId?.let { ProtectionSosStopTarget.Cycle(it) }
                                 ?: ProtectionSosStopTarget.Missing
-                            else -> ProtectionSosStopTarget.Cycle(
-                                cycleIds[target] ?: throw AssertionError("$label: unknown cycle $target"),
-                            )
+                            // F1: the user's action with the cycle id captured at the tap.
+                            else -> if (target.startsWith("user:")) {
+                                ProtectionSosStopTarget.CurrentCycle(
+                                    tapCycleId = cycleIds[target.removePrefix("user:")]
+                                        ?: throw AssertionError("$label: unknown cycle $target"),
+                                )
+                            } else {
+                                ProtectionSosStopTarget.Cycle(
+                                    cycleIds[target] ?: throw AssertionError("$label: unknown cycle $target"),
+                                )
+                            }
                         },
                         currentCycleId = cycleId,
                     )
+                    if (args["target"]?.startsWith("user") == true && step.ignoredReason != null) {
+                        // F1: the only reason a user's stop is ever ignored.
+                        assertEquals("$label: user stop ignored", "user_stop_for_older_cycle", step.ignoredReason)
+                    }
                     if (args["issued"] != null) {
                         phase2Terminals++
                     }

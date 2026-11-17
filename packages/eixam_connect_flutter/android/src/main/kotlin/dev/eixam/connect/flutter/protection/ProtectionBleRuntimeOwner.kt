@@ -2097,7 +2097,7 @@ internal class ProtectionBleRuntimeOwner(
         nodeId: Int?,
         force: Boolean,
         issuedAtMs: Long? = null,
-        target: ProtectionSosStopTarget = ProtectionSosStopTarget.CurrentCycle,
+        target: ProtectionSosStopTarget = ProtectionSosStopTarget.CurrentCycle(),
         targetCycleId: String? = null,
     ) {
         mainHandler.post {
@@ -2114,7 +2114,7 @@ internal class ProtectionBleRuntimeOwner(
                 }
                 val terminal = ProtectionSosStaleTerminal.fromWire(terminalWire)
                 val currentCycleId = runtimeStore.sosCycleId()
-                if (target == ProtectionSosStopTarget.CurrentCycle) {
+                if (target is ProtectionSosStopTarget.CurrentCycle) {
                     Log.i(
                         logTag,
                         "NATIVE_SOS_STOP_CURRENT_CYCLE source=user_action " +
@@ -2152,8 +2152,9 @@ internal class ProtectionBleRuntimeOwner(
                 )
                 step.ignoredReason?.let { reason ->
                     // F17c item 1 / Phase 2: an automated stop for another
-                    // (older) SOS, or naming none: the running cycle is never
-                    // touched.
+                    // (older) SOS, or naming none; F1: the user's stop of an
+                    // older cycle that arrived after a newer one began. The
+                    // running cycle is never touched.
                     Log.i(
                         logTag,
                         "NATIVE_SOS_STALE_STOP_IGNORED reason=$reason " +

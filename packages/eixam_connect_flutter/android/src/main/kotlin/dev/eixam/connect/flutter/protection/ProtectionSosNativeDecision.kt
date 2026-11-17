@@ -74,8 +74,9 @@ internal object ProtectionSosNativeDecision {
         /**
          * F17c Phase 2 / item 1: why the stop was ignored (nothing changes):
          * `cycle_id_mismatch` (it names another, older cycle), `no_cycle_id`
-         * (an automated stop naming none), `issued_before_current_cycle`.
-         * Null: applied.
+         * (an automated stop naming none), `issued_before_current_cycle`,
+         * `user_stop_for_older_cycle` (F1: the user's stop of the cycle seen
+         * at the tap, arrived after a newer one began). Null: applied.
          */
         val ignoredReason: String? = null,
     ) {
@@ -98,13 +99,33 @@ internal object ProtectionSosNativeDecision {
         observed: ProtectionSosObservedCycle?,
         now: Long,
         issuedAt: Long? = null,
-        target: ProtectionSosStopTarget = ProtectionSosStopTarget.CurrentCycle,
+        target: ProtectionSosStopTarget = ProtectionSosStopTarget.CurrentCycle(),
         currentCycleId: String? = null,
     ): TerminalStep {
         val sameTag = sameTag(terminalNodeId, lifecycleNodeId)
         when (target) {
-            // The user's own action: the cycle running now, by definition.
-            ProtectionSosStopTarget.CurrentCycle -> Unit
+            // The user's own action: the cycle running now, unless (F1) it
+            // names another cycle seen at the tap and the current one began
+            // after the tap (the user stopped an older SOS).
+            is ProtectionSosStopTarget.CurrentCycle -> {
+                val tapCycleId = target.tapCycleId
+                if (!tapCycleId.isNullOrEmpty() && tapCycleId != currentCycleId && issuedAt != null) {
+                    val currentStart = currentCycleStartedAt(
+                        lifecycle = lifecycle,
+                        countdownStartedAt = countdownStartedAt.takeIf { sameTag },
+                        observed = observed,
+                        terminalNodeId = terminalNodeId,
+                        now = now,
+                    )
+                    if (currentStart != null && issuedAt < currentStart) {
+                        return TerminalStep(
+                            lifecycle,
+                            arm = false,
+                            ignoredReason = "user_stop_for_older_cycle",
+                        )
+                    }
+                }
+            }
             ProtectionSosStopTarget.Missing ->
                 return TerminalStep(lifecycle, arm = false, ignoredReason = "no_cycle_id")
             is ProtectionSosStopTarget.Cycle -> {
@@ -244,8 +265,13 @@ internal object ProtectionSosNativeDecision {
 
 /** F17c item 1: which native cycle an SDK stop / close targets. */
 internal sealed class ProtectionSosStopTarget {
-    /** The user's own action (or the session change): the cycle running now. */
-    object CurrentCycle : ProtectionSosStopTarget()
+    /**
+     * The user's own action (or the session change): the cycle running now.
+     * F1 (Roger 17/11/2026): [tapCycleId] is the native cycle id the SDK
+     * captured at the user's tap (null: none known, and always for the session
+     * change); see [ProtectionSosNativeDecision.onSdkTerminal].
+     */
+    data class CurrentCycle(val tapCycleId: String? = null) : ProtectionSosStopTarget()
 
     /** An automated stop: only the native cycle with this id. */
     data class Cycle(val id: String) : ProtectionSosStopTarget()
@@ -257,7 +283,7 @@ internal sealed class ProtectionSosStopTarget {
         /** The channel arguments (`targetCurrentCycle`, `targetCycleId`). */
         fun fromArguments(targetCurrentCycle: Boolean, targetCycleId: String?): ProtectionSosStopTarget =
             when {
-                targetCurrentCycle -> CurrentCycle
+                targetCurrentCycle -> CurrentCycle(tapCycleId = targetCycleId?.takeIf { it.isNotEmpty() })
                 !targetCycleId.isNullOrEmpty() -> Cycle(targetCycleId)
                 else -> Missing
             }

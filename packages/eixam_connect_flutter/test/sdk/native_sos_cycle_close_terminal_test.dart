@@ -65,7 +65,8 @@ void main() {
   // names its native cycle (target=NAME, default the current one) and reaches
   // both platforms with that id and its issue time; target=none (no id) is
   // refused by the guard and never sent; target=user (the user's own action)
-  // reaches native as "the current cycle".
+  // reaches native as "the current cycle"; target=user:NAME (F1) also carries
+  // the native cycle id captured at the user's tap.
   test('shared fixture: every SDK stop is decided by the guard and reaches '
       'iOS and Android native with its cycle target and issue time', () async {
     final base = DateTime.utc(2026, 11, 16).millisecondsSinceEpoch;
@@ -74,6 +75,7 @@ void main() {
     var exact = 0;
     var current = 0;
     var refused = 0;
+    var tapIds = 0;
     for (final raw in File(
       'test/fixtures/stale_sos_guard_scenarios.txt',
     ).readAsLinesSync()) {
@@ -98,11 +100,14 @@ void main() {
             );
       final node = int.parse(args['node'] ?? '7');
       final target = args['target'];
-      final user = target == 'user';
-      // The id the SDK bound to the SOS it stops (native's cycle id).
+      final user = target == 'user' || (target?.startsWith('user:') ?? false);
+      // The id the SDK bound to the SOS it stops (native's cycle id); F1: for
+      // the user's action, the id captured at the tap.
       final cycleId = switch (target) {
         'user' || 'none' => null,
         null => 'native-cycle-current',
+        final name when name.startsWith('user:') =>
+          'native-cycle-${name.substring('user:'.length)}',
         final name => 'native-cycle-$name',
       };
       final decision = SosStopGuard().authorize(
@@ -141,7 +146,12 @@ void main() {
         expect(sent['nodeId'], node, reason: line);
         if (user) {
           expect(sent['targetCurrentCycle'], isTrue, reason: line);
-          expect(sent.containsKey('targetCycleId'), isFalse, reason: line);
+          if (cycleId == null) {
+            expect(sent.containsKey('targetCycleId'), isFalse, reason: line);
+          } else {
+            expect(sent['targetCycleId'], cycleId, reason: line);
+            tapIds++;
+          }
           current++;
         } else {
           expect(sent.containsKey('targetCurrentCycle'), isFalse, reason: line);
@@ -166,6 +176,7 @@ void main() {
     expect(exact, greaterThan(20));
     expect(current, greaterThanOrEqualTo(4), reason: '>= 2 user steps x 2');
     expect(refused, greaterThanOrEqualTo(1));
+    expect(tapIds, greaterThanOrEqualTo(6), reason: '>= 3 tap-id steps x 2');
   });
 
   test('F17c item 1: both platforms report the native SOS cycle id in the '

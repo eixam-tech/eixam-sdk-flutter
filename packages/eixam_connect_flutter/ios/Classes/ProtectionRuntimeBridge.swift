@@ -283,10 +283,13 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       let terminal = IosSosTerminalKind(rawValue: arguments?["terminal"] as? String ?? "")
       // F17c item 1: an automated stop names the native cycle it is for; the
       // user's own action (and the session change) targets the current one.
+      // F1: the user's action carries the cycle id captured at the tap; the
+      // session change stays an unconditional current-cycle close.
       let targetCycleId = arguments?["targetCycleId"] as? String
+      let force = arguments?["force"] as? Bool == true
       let target: IosSosStopTarget
-      if arguments?["force"] as? Bool == true || arguments?["targetCurrentCycle"] as? Bool == true {
-        target = .currentCycle
+      if force || arguments?["targetCurrentCycle"] as? Bool == true {
+        target = .currentCycle(tapCycleId: force ? nil : targetCycleId)
         logSosDelivery(
           "NATIVE_SOS_STOP_CURRENT_CYCLE " +
             "source=\(arguments?["force"] as? Bool == true ? "session_changed" : "user_action") " +
@@ -306,7 +309,8 @@ final class ProtectionRuntimeBridge: NSObject, FlutterPlugin, FlutterStreamHandl
       )
       if let reason = sosDelivery.lastSdkStopIgnoredReason {
         // F17c item 1 / Phase 2: an automated stop for another (older) SOS,
-        // or naming none: the running cycle is never touched.
+        // or naming none; F1: the user's stop of an older cycle that arrived
+        // after a newer one began. The running cycle is never touched.
         logSosDelivery(
           "NATIVE_SOS_STALE_STOP_IGNORED reason=\(reason) " +
             "terminal=\(terminal?.rawValue ?? "none")")

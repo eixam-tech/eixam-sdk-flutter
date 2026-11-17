@@ -56,7 +56,16 @@
 #                         the SDK's guard never sends it; reason=no_cycle_id).
 #                         target=user: the user's own action (cancel / resolve
 #                         button) targets the cycle running now, by definition:
-#                         never ignored, no id or issued check
+#                         never ignored, no id or issued check.
+#                         target=user:NAME (F1, Roger 17/11/2026): the user's
+#                         action carrying the native cycle id the SDK captured
+#                         at the tap (NAME, captured by cycleid=NAME). Ignored
+#                         (NATIVE_SOS_STALE_STOP_IGNORED
+#                         reason=user_stop_for_older_cycle, no close, no
+#                         record) ONLY when that id is not the current native
+#                         cycle id AND the current cycle began after issued:
+#                         the user stopped an older SOS, the stop arrived after
+#                         a new one began. Otherwise applied as target=user
 #   frame node=N source=native|dart [delivered=MS]
 #                         one BLE SOS push as delivered by that path; for a
 #                         dart frame t is Dart's receivedAtMs and delivered
@@ -880,3 +889,38 @@ scenario dart_seen_sos_continued_natively_keeps_its_cycle_id
 0 seen source=dart node=7 age=5000 => - cycleid=A
 1000 frame node=7 source=native => pass cycle=running cycleid=A
 1500 terminal kind=cancel node=7 connected=true target=A => - armed=true cycle=idle
+
+# F1 (review af2f32f, Roger 17/11/2026): the user's stop names the native
+# cycle in front of them AT THE TAP. The user cancelled A at 50 (0x04 written
+# at once, the TAG closed A at 100); B, a genuine new TAG SOS, began natively
+# at 1000, unseen by Dart; A's deferred native close lands at 1500. It names A
+# and was issued before B began: ignored, B's countdown continues.
+scenario user_stop_of_an_older_cycle_after_a_new_one_began_is_ignored
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user:A issued=50 => - armed=false cycle=running countdown=1000 cycleid=B
+2000 frame node=7 source=native => pass armed=false countdown=1000
+
+# The user's stop naming the cycle running now: applied, even issued before
+# that cycle's native countdown began (the same SOS continued natively keeps
+# its id: owner handover).
+scenario user_stop_with_the_current_cycle_id_is_applied
+0 seen source=dart node=7 age=5000 => - cycleid=A
+1000 frame node=7 source=native => pass cycle=running cycleid=A
+1500 terminal kind=cancel node=7 connected=true target=user:A issued=500 => - armed=true cycle=idle cycleid=A
+
+# No id captured at the tap: the user's stop goes to the cycle running now.
+scenario user_stop_without_a_tap_id_stops_the_current_cycle
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user issued=50 => - armed=true cycle=idle
+
+# The id the SDK held at the tap was stale (A), but B was already ringing when
+# the user tapped (issued after B began): the user saw B, the stop applies.
+scenario user_stop_with_a_stale_id_issued_after_the_current_cycle_began_is_applied
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user:A issued=1200 => - armed=true cycle=idle

@@ -30,8 +30,13 @@ enum IosSosTerminalKind: String {
 /// F17c item 1: which native cycle an SDK stop / close targets.
 enum IosSosStopTarget: Equatable {
   /// The user's own action (cancel / resolve button, logout): the cycle
-  /// running now, by definition. No cycle id or issue time check.
-  case currentCycle
+  /// running now, by definition. F1 (Roger 17/11/2026): [tapCycleId] is the
+  /// native cycle id the SDK captured at the user's tap (nil: none known, and
+  /// always for the session change). The stop is ignored only when that id
+  /// is not the current cycle's AND the current cycle began after the tap
+  /// (the user stopped an older SOS; a newer one began since). Otherwise it
+  /// applies to the current cycle.
+  case currentCycle(tapCycleId: String?)
   /// An automated stop (backend event, portal resolve, reconciliation):
   /// applied only when [id] is the current native cycle id (and, when given,
   /// issued after that cycle began).
@@ -293,17 +298,23 @@ final class IosNativeSosDeliveryStore {
   /// close, no record) and the running cycle continues. [issuedAtMs] (F17c
   /// Phase 2, automated stops only): a stop issued before the current
   /// countdown began targets an older SOS: ignored too. A user action
-  /// (`.currentCycle`) targets the cycle running now: never ignored.
+  /// (`.currentCycle`) targets the cycle running now, unless (F1) it names
+  /// another cycle at the tap and the current one began after the tap.
   func closeDeliveredCycle(
     nodeId: Int? = nil,
     terminal: IosSosTerminalKind? = nil,
     issuedAtMs: Int? = nil,
-    target: IosSosStopTarget = .currentCycle
+    target: IosSosStopTarget = .currentCycle(tapCycleId: nil)
   ) -> Bool {
     lastSdkStopIgnoredReason = nil
     switch target {
-    case .currentCycle:
-      break
+    case .currentCycle(let tapCycleId):
+      if let tapCycleId, !tapCycleId.isEmpty, tapCycleId != currentCycleId,
+         let issuedAtMs, let started = currentCycleStartedAt(nodeId: nodeId),
+         issuedAtMs < started {
+        lastSdkStopIgnoredReason = "user_stop_for_older_cycle"
+        return false
+      }
     case .missing:
       lastSdkStopIgnoredReason = "no_cycle_id"
       return false

@@ -3102,6 +3102,7 @@ class EixamConnectSdkImpl
     _devicePacketSignaturesByGeneration.clear();
     _deviceMirrorDispatchedGenerations.clear();
     _userActionTerminalGenerations.clear();
+    _userActionTapNativeCycleIds.clear();
     _forgetTagStopConfirmation();
     _clearPreSosSession(reason: 'session_cleared', emitIdleState: false);
     _clearPendingAppTriggeredSosBridge(reason: 'session_cleared');
@@ -10609,8 +10610,7 @@ class EixamConnectSdkImpl
         reason: 'public_cancel_acceptance',
       );
       final cancellationLifecycle = _sosLifecycle.current;
-      _userActionTerminalGenerations[cancellationLifecycle.generation] ??=
-          DateTime.now().toUtc();
+      _recordUserActionTap(cancellationLifecycle);
       if (cancellationLifecycle.isOpen &&
           cancellationLifecycle.stage != SosLifecycleStage.cancelling) {
         await _sosLifecycle.beginCancellation();
@@ -11201,8 +11201,7 @@ class EixamConnectSdkImpl
       final lifecycleAtResolveStart = _sosLifecycle.current;
       // r7 LOW-3: the generation the user resolved (captured at the action),
       // never the one current after an await.
-      _userActionTerminalGenerations[lifecycleAtResolveStart.generation] ??=
-          DateTime.now().toUtc();
+      _recordUserActionTap(lifecycleAtResolveStart);
       _rememberDeviceOriginatedClosureIntent(
         incident: activeIncident,
         intent: _SosClosureIntent.resolve,
@@ -17741,6 +17740,31 @@ class EixamConnectSdkImpl
   /// (r7 MEDIUM-1), issued at the user's action (F17c Phase 2).
   final Map<int, DateTime> _userActionTerminalGenerations = <int, DateTime>{};
 
+  /// F1 (Roger 17/11/2026): per generation in
+  /// [_userActionTerminalGenerations], the native cycle id in front of the
+  /// user AT THE TAP (the bound id, replaced by a best-effort snapshot read
+  /// started at the tap; null: none known). The deferred native close of that
+  /// terminal names it, so it never lands on a newer cycle that began after
+  /// the tap.
+  final Map<int, Future<String?>> _userActionTapNativeCycleIds =
+      <int, Future<String?>>{};
+
+  /// The user's own cancel / resolve of [lifecycle]: records the action time
+  /// and the native cycle the user is looking at (first tap wins).
+  void _recordUserActionTap(SosLifecycleSnapshot lifecycle) {
+    final generation = lifecycle.generation;
+    if (_userActionTerminalGenerations.containsKey(generation)) {
+      return;
+    }
+    _userActionTerminalGenerations[generation] = DateTime.now().toUtc();
+    final boundCycleId =
+        _nativeSosCycleBindings[_nativeSosCycleBindingKey(lifecycle)];
+    _userActionTapNativeCycleIds[generation] =
+        _refreshNativeSosCycleIdForUserAction().then(
+          (fresh) => fresh ?? boundCycleId,
+        );
+  }
+
   /// F17c review r7: the single stop / terminal guard. Owned by the MQTT
   /// repository (it persists the attribution state with its own).
   SosStopGuard get _sosStopGuard {
@@ -19879,8 +19903,8 @@ class EixamConnectSdkImpl
     );
   }
 
-  /// The user's own action: the native cycle running now (null when the
-  /// snapshot read fails or native reports none).
+  /// The user's own action: the native cycle running at the tap (null when
+  /// the snapshot read fails or native reports none).
   Future<String?> _refreshNativeSosCycleIdForUserAction() async {
     try {
       final snapshot = await protectionPlatformAdapter
@@ -19961,6 +19985,7 @@ class EixamConnectSdkImpl
     // user's action (allowed even if the incident id was once another SOS's).
     final userActionAt = _userActionTerminalGenerations[lifecycle.generation];
     final userAction = userActionAt != null;
+    final tapCycleId = _userActionTapNativeCycleIds[lifecycle.generation];
     // F17c item 1: an automated close names the native cycle bound to this
     // SOS; without one it is never sent (the guard refuses it).
     final boundCycleId =
@@ -19998,22 +20023,23 @@ class EixamConnectSdkImpl
           );
           return;
         }
-        // F17c item 1 (Roger 17/11/2026): the user's own cancel / resolve
-        // targets the cycle running now. Its id is refreshed first (sent for
-        // the exact-id log); if the refresh fails or native reports none, the
-        // stop still goes to the current cycle: the user is never left unable
-        // to stop what rings in front of them.
-        final currentCycleId =
-            await _refreshNativeSosCycleIdForUserAction() ?? boundCycleId;
+        // F17c item 1 / F1 (Roger 17/11/2026): the user's own cancel /
+        // resolve targets the cycle in front of them AT THE TAP: the id
+        // captured then (never re-read now: a newer cycle may have begun
+        // since), issued at the tap. Native ignores it only when that id is
+        // not the current cycle's and the current cycle began after the tap;
+        // with no id captured the stop goes to the current cycle. The 0x04
+        // written at the tap already stopped the TAG.
+        final userCycleId = await (tapCycleId ?? Future<String?>.value());
         sdkReleaseLog(
           'SOS_OUTBOX_NATIVE_CYCLE_CLOSE_USER_ACTION '
-          'target=${currentCycleId == null ? 'current_cycle' : 'exact_id'}',
+          'target=${userCycleId == null ? 'current_cycle' : 'tap_id'}',
         );
         await protectionPlatformAdapter.closeNativeSosCycle(
           nodeId: nodeId,
           terminal: terminal,
           issuedAt: issuedAt,
-          targetCycleId: currentCycleId,
+          targetCycleId: userCycleId,
           targetCurrentCycle: true,
         );
       } catch (error) {
@@ -27666,6 +27692,7 @@ class EixamConnectSdkImpl
     _devicePacketSignaturesByGeneration.clear();
     _deviceMirrorDispatchedGenerations.clear();
     _userActionTerminalGenerations.clear();
+    _userActionTapNativeCycleIds.clear();
     _forgetTagStopConfirmation();
     _deviceOwnedBackendIncidentId = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;

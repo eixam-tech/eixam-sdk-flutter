@@ -1092,7 +1092,12 @@ struct IosNativeSosDeliveryStoreTests {
         // F17c item 1: the stop's target, as the bridge maps it.
         let target: IosSosStopTarget
         switch args["target"] {
-        case "user": target = .currentCycle
+        case "user": target = .currentCycle(tapCycleId: nil)
+        case let user? where user.hasPrefix("user:"):
+          // F1: the user's action with the cycle id captured at the tap.
+          let name = String(user.dropFirst("user:".count))
+          check(cycleIds[name] != nil, "\(label): unknown cycle \(name)")
+          target = .currentCycle(tapCycleId: cycleIds[name] ?? "?")
         case "none": target = .missing
         case nil: target = store.currentCycleId.map { .cycle($0) } ?? .missing
         case let name?:
@@ -1106,6 +1111,10 @@ struct IosNativeSosDeliveryStoreTests {
           nodeId: node, terminal: IosSosTerminalKind(rawValue: args["kind"] ?? "cancel"),
           issuedAtMs: args["issued"].flatMap(Int.init).map { base + $0 },
           target: target)
+        if case .currentCycle = target, let reason = store.lastSdkStopIgnoredReason {
+          // F1: the only reason a user's stop is ever ignored.
+          check(reason == "user_stop_for_older_cycle", "\(label): user stop ignored as \(reason)")
+        }
         if args["issued"] != nil {
           phase2Terminals += 1
         }
