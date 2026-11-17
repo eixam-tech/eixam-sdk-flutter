@@ -13,6 +13,7 @@ import '../../sdk/sos_backend_identity_normalizer.dart';
 import '../../sdk/sos_delivery_outbox.dart';
 import '../../sdk/sos_incident_correlation.dart';
 import '../../sdk/sos_origin_classifier.dart';
+import '../../sdk/sos_stop_guard.dart';
 import '../datasources_local/shared_prefs_sdk_store.dart';
 import '../datasources_remote/sos_remote_data_source.dart';
 import '../dtos/sos_incident_dto.dart';
@@ -108,6 +109,7 @@ class MqttOperationalSosRepository
       retryingAfter: deliveryRetryingAfter,
     );
     _deliveryStatusSub = _outbox.watchStatus().listen(_applyDeliveryStatus);
+    stopGuard.onChanged = () => unawaited(_persistState());
     _realtimeSub = realtimeClient.watchEvents().listen(_handleRealtimeEvent);
     BleDebugRegistry.instance.recordEvent(
       'SOS_MQTT_EVENT_REPOSITORY_LISTENER_ACTIVE parserReady=true',
@@ -235,6 +237,9 @@ class MqttOperationalSosRepository
       orElse: () => _activeIncident?.state ?? SosState.idle,
     );
     _setState(restoredState);
+    stopGuard.restoreFromJson(
+      await _localStore.readJson(SharedPrefsSdkStore.sosStopGuardKey),
+    );
     await _outbox.restore();
   }
 
@@ -362,6 +367,9 @@ class MqttOperationalSosRepository
       SosState.cancelRequested,
     };
     if (current != null && cancellable.contains(_stateMachine.current)) {
+      // Settled before the backend confirmed the close: its late events and
+      // REST reads must never be taken as a newer SOS's (F17c r7, (d)).
+      _recordSupersededSos(current, closedAt: observed);
       if (_stateMachine.current != SosState.cancelRequested) {
         _activeIncident = current.copyWith(state: SosState.cancelRequested);
         _emit(SosState.cancelRequested);
@@ -397,30 +405,24 @@ class MqttOperationalSosRepository
       SosState.acknowledged,
       SosState.cancelRequested,
     };
+    final closedAt = observedAt.toUtc();
     if (current == null || !open.contains(state)) {
+      // (d) Already settled locally (e.g. a native pending TAG cancel): its
+      // backend close may still be pending, so its late events stay its own.
+      _recordSupersededSos(null, closedAt: closedAt);
       sdkReleaseLog(
         'SOS_OUTBOX_TAG_CLOSE_SUPERSEDED repository=already_settled '
         'state=${state.name}',
       );
+      await _persistState();
       return;
     }
     await _outbox.enqueueCancel(
       cycleKey: current.cycleKey,
-      observedAt: observedAt.toUtc(),
+      observedAt: closedAt,
       scope: _authenticatedSessionScope,
     );
-    final incidentId = _normalizeIdentity(current.id);
-    if (current.isBackendConfirmed &&
-        incidentId != null &&
-        !_isProvisionalLocalSosIncidentId(current.id)) {
-      _supersededIncidentIds
-        ..remove(incidentId)
-        ..add(incidentId);
-      if (_supersededIncidentIds.length > 8) {
-        _supersededIncidentIds.removeAt(0);
-      }
-    }
-    _supersedeAttributionOpen = true;
+    _recordSupersededSos(current, closedAt: closedAt);
     _clearPendingMqttLifecycle(reason: 'tag_close_superseded');
     _stopMqttConfirmationWait(reason: 'tag_close_superseded');
     _activeIncident = null;
@@ -428,30 +430,112 @@ class MqttOperationalSosRepository
     _stateMachine = SosStateMachine();
     sdkReleaseLog(
       'SOS_OUTBOX_TAG_CLOSE_SUPERSEDED repository=settled_locally '
-      'previous=${state.name} backendIdentity=${incidentId != null && _supersededIncidentIds.contains(incidentId)}',
+      'previous=${state.name} '
+      'backendIdentity=${stopGuard.isSupersededIncident(current.id)}',
     );
     await _persistState();
   }
 
-  /// Backend incidents of SOS closed by a TAG close frame and superseded by
-  /// a newer TAG SOS before the backend confirmed the close (bounded, newest
-  /// last). Their events close only them.
-  final List<String> _supersededIncidentIds = <String>[];
+  /// Single place deciding which events, REST reads and TAG stops may end or
+  /// identify the current SOS (F17c review r7). Persisted with this
+  /// repository's state; the SDK consults the same instance before any TAG
+  /// stop.
+  final SosStopGuard stopGuard = SosStopGuard();
 
-  /// A TAG-closed SOS was superseded and its closing event has not been
-  /// attributed yet (nor the new SOS confirmed by the backend): a terminal
-  /// event of another or unknown incident may be that late close. It is
-  /// never proof against the new SOS (a duplicate is acceptable, a missed
-  /// SOS is not).
-  bool _supersedeAttributionOpen = false;
+  /// Publish timestamp of this phone's latest own trigger (the backend echoes
+  /// it as `occurredAt`).
+  DateTime? _lastOwnTriggerPublishedAt;
 
-  /// An event of a superseded incident: it confirms only that incident's
-  /// cancel (the head the broker already has), never a newer trigger, and is
-  /// never applied to the current SOS.
+  /// Publish timestamp of the current SOS, when known.
+  DateTime? _currentPublishedAt() {
+    final incident = _activeIncident;
+    if (incident == null) {
+      return null;
+    }
+    final last = _lastOwnTriggerPublishedAt;
+    if (last != null && !last.isBefore(incident.createdAt.toUtc())) {
+      return last;
+    }
+    return incident.createdAt.toUtc();
+  }
+
+  /// [occurredAt] is the current SOS's own publish timestamp.
+  bool _isCurrentOccurrence(DateTime? occurredAt) {
+    if (occurredAt == null || _activeIncident == null) {
+      return false;
+    }
+    final at = occurredAt.toUtc();
+    return at == _activeIncident!.createdAt.toUtc() ||
+        at == _lastOwnTriggerPublishedAt;
+  }
+
+  /// An SOS settled locally before the backend confirmed its close: what is
+  /// known of it is kept so its late events never reach a newer SOS.
+  void _recordSupersededSos(SosIncident? sos, {required DateTime closedAt}) {
+    final ids = <String>[];
+    final closedId = sos?.id ?? _locallyClosedIncidentId;
+    final normalized = _normalizeIdentity(closedId);
+    if (normalized != null &&
+        !_isProvisionalLocalSosIncidentId(normalized) &&
+        (sos == null || sos.isBackendConfirmed)) {
+      ids.add(normalized);
+    }
+    final published = _lastOwnTriggerPublishedAt;
+    stopGuard.recordSuperseded(
+      SupersededSosEvidence(
+        closedAt: closedAt,
+        publishedAt: published != null && !published.isAfter(closedAt)
+            ? published
+            : null,
+        incidentIds: ids,
+      ),
+    );
+  }
+
+  /// The update is a remote relay's (another user's SOS this phone relayed):
+  /// its timestamps are not this phone's own SOS's.
+  bool _isRemoteRelayEvidence(MqttSosLifecycleUpdate update) {
+    final pending = _pendingExternalRelayHandoff;
+    final occurredAt = update.incidentOccurredAt?.toUtc();
+    return (pending != null &&
+            occurredAt != null &&
+            occurredAt == pending.occurredAt) ||
+        _sameIdentity(
+          update.incidentId,
+          _externalRelayLifecycleContext?.incidentId,
+        );
+  }
+
+  /// An event of a superseded SOS (by its incident id, or by its
+  /// `occurredAt`: that SOS's publish timestamp or at or before its close):
+  /// it confirms only that SOS's cancel (the head the broker already has),
+  /// never a newer trigger, and is never applied to the current SOS.
+  ///
+  /// Accepted limit (r6 LOW-3): if the backend upserted the new SOS into the
+  /// superseded SOS's still-open incident (its cancel never processed), the
+  /// new SOS's own events carry that superseded id and are swallowed here.
+  /// That errs toward a duplicate (the new SOS keeps being re-published),
+  /// never toward a missed SOS.
   bool _consumeSupersededIncidentEvent(MqttSosLifecycleUpdate update) {
     final incidentId = _normalizeIdentity(update.incidentId);
-    if (incidentId == null || !_supersededIncidentIds.contains(incidentId)) {
+    if (incidentId == null) {
       return false;
+    }
+    final occurredAt = update.incidentOccurredAt?.toUtc();
+    final byId = stopGuard.isSupersededIncident(incidentId);
+    final byOccurrence =
+        !byId &&
+        occurredAt != null &&
+        update.authenticatedUserScoped &&
+        !_isExternalOnlyLifecycle(update) &&
+        !_isRemoteRelayEvidence(update) &&
+        !_isCurrentOccurrence(occurredAt) &&
+        stopGuard.isSupersededOccurrence(occurredAt);
+    if (!byId && !byOccurrence) {
+      return false;
+    }
+    if (byOccurrence) {
+      stopGuard.learnSupersededIncidentId(incidentId, occurredAt);
     }
     final state = update.state;
     final terminal = state == SosState.cancelled || state == SosState.resolved;
@@ -461,9 +545,7 @@ class MqttOperationalSosRepository
         source: 'mqtt_${state!.name}_superseded_incident',
         matches: (head) => head.published,
       );
-      _supersededIncidentIds.remove(incidentId);
       _rememberClosedBackendIncident(incidentId);
-      _supersedeAttributionOpen = false;
     }
     BleDebugRegistry.instance.recordEvent(
       'SOS_MQTT_EVENT_AUTHORITY_REJECTED reason=superseded_incident '
@@ -1177,6 +1259,7 @@ class MqttOperationalSosRepository
       occurredAt: timestamp.toUtc(),
       registeredAt: _nowProvider().toUtc(),
     );
+    _lastOwnTriggerPublishedAt = timestamp.toUtc();
     BleDebugRegistry.instance.recordEvent(
       'SOS_TRIGGER_MQTT_PUBLISH_START source=$sourceLabel '
       'incidentId=${incidentId ?? "none"} correlationId=$correlationId '
@@ -1586,9 +1669,18 @@ class MqttOperationalSosRepository
           diagnosticNote: 'E_SOS_REHYDRATION_SUPERSEDED_BY_NEWER_RUNTIME',
         );
       }
+      final localOpen =
+          _activeIncident != null && _isActiveLikeState(_stateMachine.current);
       if (active == null) {
-        if ((!terminalAbsenceExpected || _supersedeAttributionOpen) &&
-            _shouldPreserveLocalFallback()) {
+        if (localOpen && !_authorizeRestAbsence()) {
+          await _persistState();
+          return SosRuntimeRehydrationResult(
+            outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+            resultingState: _stateMachine.current,
+            diagnosticNote: 'E_SOS_REHYDRATION_KEPT_BY_STOP_GUARD',
+          );
+        }
+        if (!terminalAbsenceExpected && _shouldPreserveLocalFallback()) {
           await _persistState();
           return SosRuntimeRehydrationResult(
             outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
@@ -1626,6 +1718,70 @@ class MqttOperationalSosRepository
           diagnosticNote: 'E_SOS_REHYDRATION_EXTERNAL_ONLY_IGNORED',
         );
       }
+      final restOccurredAt = DateTime.tryParse(active.occurredAt ?? '')
+          ?.toUtc();
+      if (stopGuard.isSuperseded(
+            incidentId: hydratedIncident.id,
+            occurredAt: _isCurrentOccurrence(restOccurredAt)
+                ? null
+                : restOccurredAt,
+          ) &&
+          !_isCurrentOccurrence(restOccurredAt)) {
+        // A superseded SOS still open on the backend (its cancel not
+        // processed yet): never the current SOS, never adopted.
+        if (restOccurredAt != null) {
+          stopGuard.learnSupersededIncidentId(
+            hydratedIncident.id,
+            restOccurredAt,
+          );
+        }
+        sdkReleaseLog(
+          'SOS_OUTBOX_STOP_GUARD_REFUSED kind=restIncident basis=userScoped '
+          'source=rest_active reason=superseded_incident '
+          'action=keep_sos_active',
+        );
+        await _persistState();
+        return SosRuntimeRehydrationResult(
+          outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+          resultingState: _stateMachine.current,
+          diagnosticNote: 'E_SOS_REHYDRATION_SUPERSEDED_INCIDENT',
+        );
+      }
+      if (localOpen) {
+        final current = _activeIncident!;
+        final sameIncident = _sameIdentity(hydratedIncident.id, current.id);
+        final exactOccurrence = _isCurrentOccurrence(restOccurredAt);
+        final replacesUnconfirmed =
+            !current.isBackendConfirmed && !sameIncident;
+        final closesCurrent = _isTerminalState(hydratedIncident.state);
+        if (replacesUnconfirmed || closesCurrent) {
+          final decision = stopGuard.authorize(
+            SosStopRequest(
+              kind: SosStopKind.restIncident,
+              basis: sameIncident
+                  ? SosStopBasis.exactIncident
+                  : exactOccurrence
+                  ? SosStopBasis.exactOccurredAt
+                  : SosStopBasis.userScoped,
+              source: 'rest_active',
+              incidentId: hydratedIncident.id,
+              occurredAt: restOccurredAt,
+              currentPublishedAt: _currentPublishedAt(),
+            ),
+          );
+          if (!decision.allowed) {
+            await _persistState();
+            return SosRuntimeRehydrationResult(
+              outcome: SosRuntimeRehydrationOutcome.keptLocalFallback,
+              resultingState: _stateMachine.current,
+              diagnosticNote: 'E_SOS_REHYDRATION_KEPT_BY_STOP_GUARD',
+            );
+          }
+          if (exactOccurrence) {
+            stopGuard.closeAttribution('rest_exact_occurred_at');
+          }
+        }
+      }
       if (_shouldIgnoreLocallyClosedIncident(hydratedIncident)) {
         _activeIncident = null;
         _setState(SosState.idle);
@@ -1656,6 +1812,56 @@ class MqttOperationalSosRepository
         diagnosticNote: 'E_SOS_REHYDRATION_FAILED error=$error',
       );
     }
+  }
+
+  /// A REST read shows no open incident while the local SOS is open: only
+  /// its own confirmed incident's absence (or, with no other SOS of this
+  /// user to confuse it with, any absence) may end it.
+  bool _authorizeRestAbsence() {
+    final current = _activeIncident!;
+    final exact =
+        current.isBackendConfirmed &&
+        !_isProvisionalLocalSosIncidentId(current.id);
+    return stopGuard
+        .authorize(
+          SosStopRequest(
+            kind: SosStopKind.restAbsence,
+            basis: exact ? SosStopBasis.exactIncident : SosStopBasis.userScoped,
+            source: 'rest_absence',
+            incidentId: exact ? current.id : null,
+          ),
+        )
+        .allowed;
+  }
+
+  /// The open incident a backend read returned for [action] (a trigger) is
+  /// that trigger's: never a superseded SOS's, and while attribution is open
+  /// only with the trigger's own publish timestamp.
+  bool _backendIncidentProvesTrigger(
+    SosIncidentDto dto,
+    SosOutboxAction action,
+  ) {
+    final occurredAt = DateTime.tryParse(dto.occurredAt ?? '')?.toUtc();
+    final triggerAt = DateTime.tryParse('${action.payload['timestamp']}')
+        ?.toUtc();
+    final exact = occurredAt != null && occurredAt == triggerAt;
+    if (!exact &&
+        stopGuard.isSuperseded(incidentId: dto.id, occurredAt: occurredAt)) {
+      if (occurredAt != null) {
+        stopGuard.learnSupersededIncidentId(dto.id, occurredAt);
+      }
+      sdkReleaseLog(
+        'SOS_OUTBOX_CONFIRMATION_REJECTED reason=superseded_incident_open',
+      );
+      return false;
+    }
+    if (!exact && stopGuard.attributionOpen) {
+      sdkReleaseLog(
+        'SOS_OUTBOX_CONFIRMATION_REJECTED reason=not_provably_this_trigger',
+      );
+      return false;
+    }
+    return true;
   }
 
   Future<void> _publishOutboxAction(SosOutboxAction action) async {
@@ -1734,8 +1940,8 @@ class MqttOperationalSosRepository
         !classifySosIncidentOrigin(active).isExternalOnly;
     switch (action.kind) {
       case SosOutboxActionKind.trigger:
-        if (open) {
-          _outboxBackendConfirmations[action.id] = activeDto!;
+        if (open && _backendIncidentProvesTrigger(activeDto!, action)) {
+          _outboxBackendConfirmations[action.id] = activeDto;
           return SosOutboxBackendCheck.confirmed;
         }
         // No open incident: not confirmed. History is not used as proof (the
@@ -1839,6 +2045,9 @@ class MqttOperationalSosRepository
         _normalizeIdentity(current.id) != actionCycle) {
       return;
     }
+    if (!_backendIncidentProvesTrigger(activeDto, action)) {
+      return;
+    }
     final backendIncident = _mapper.toDomain(activeDto);
     final directIdentityMatch = sosIncidentEvidenceMatches(
       current,
@@ -1868,6 +2077,10 @@ class MqttOperationalSosRepository
     );
     _activeIncident = confirmed;
     _pendingProcessedHandoff = null;
+    if (stopGuard.attributionOpen) {
+      // Only reached with the trigger's own publish timestamp.
+      stopGuard.closeAttribution('rest_exact_occurred_at');
+    }
     BleDebugRegistry.instance.recordEvent(
       'SOS_BACKEND_CONFIRMATION_REST_ACCEPTED reason='
       '${directIdentityMatch
@@ -1950,6 +2163,24 @@ class MqttOperationalSosRepository
       );
       return !terminal;
     }
+    // While a superseded SOS's close is unattributed, only an event naming
+    // the head trigger's own publish timestamp (or the current SOS's exact
+    // incident) is that trigger's effect.
+    final occurredAt = update.incidentOccurredAt?.toUtc();
+    final exactCurrent =
+        _isCurrentOccurrence(occurredAt) ||
+        (_activeIncident?.isBackendConfirmed == true &&
+            _sameIdentity(update.incidentId, _activeIncident!.id));
+    bool provesHead(SosOutboxAction head) {
+      if (!stopGuard.attributionOpen) {
+        return true;
+      }
+      final triggerAt = DateTime.tryParse('${head.payload['timestamp']}')
+          ?.toUtc();
+      return exactCurrent ||
+          (occurredAt != null && triggerAt != null && occurredAt == triggerAt);
+    }
+
     if (!terminal &&
         (update.eventType == 'processed' ||
             state == SosState.sent ||
@@ -1957,10 +2188,10 @@ class MqttOperationalSosRepository
       _outbox.confirm(
         SosOutboxActionKind.trigger,
         source: 'mqtt_${update.eventType}',
-        matches: (head) => head.published,
+        matches: (head) => head.published && provesHead(head),
       );
     }
-    if (terminal && _supersedeAttributionOpen) {
+    if (terminal && stopGuard.attributionOpen && !exactCurrent) {
       sdkReleaseLog(
         'SOS_OUTBOX_CONFIRMATION_REJECTED reason=unattributed_after_tag_close '
         'eventType=${update.eventType}',
@@ -2086,8 +2317,8 @@ class MqttOperationalSosRepository
     _outboxBackendConfirmations.clear();
     _neverPublishedTriggerCycles.clear();
     _closedBackendIncidentIds.clear();
-    _supersededIncidentIds.clear();
-    _supersedeAttributionOpen = false;
+    stopGuard.clear();
+    _lastOwnTriggerPublishedAt = null;
     await _outbox.clear(reason: 'session_cleared');
     _setState(SosState.idle);
     await _persistState();
@@ -2196,6 +2427,13 @@ class MqttOperationalSosRepository
       }
       return;
     }
+    final incomingState = update.state;
+    if (incomingState != null &&
+        _isTerminalState(incomingState) &&
+        _isActiveLikeState(_stateMachine.current) &&
+        !_authorizeBackendTerminal(update, authority)) {
+      return;
+    }
     if (update.eventType == 'processed') {
       _pendingProcessedHandoff = null;
       _pendingExternalRelayHandoff = null;
@@ -2249,9 +2487,13 @@ class MqttOperationalSosRepository
     );
     _activeIncident = currentIncident;
     if (!previousIncident.isBackendConfirmed) {
-      // The new SOS has its own backend incident: later events are
-      // attributed by its id again.
-      _supersedeAttributionOpen = false;
+      if (update.eventType == 'processed' &&
+          (authority.reason == 'processed_publish_timestamp_match' ||
+              authority.reason == 'exact_occurred_at_match')) {
+        // The new SOS has its own backend incident (its exact `processed`):
+        // later events are attributed by its id again.
+        stopGuard.closeAttribution('exact_processed');
+      }
       BleDebugRegistry.instance.recordEvent(
         'SOS_BACKEND_CONFIRMATION_MQTT_RECEIVED eventType=${update.eventType} '
         'actuatorItems=${actuators?.items.length ?? 0}',
@@ -2377,6 +2619,36 @@ class MqttOperationalSosRepository
     }
   }
 
+  /// A backend terminal event about to end the current SOS goes through the
+  /// stop guard with the exactness its authority proved.
+  bool _authorizeBackendTerminal(
+    MqttSosLifecycleUpdate update,
+    _LifecycleAuthorityDecision authority,
+  ) {
+    final SosStopBasis basis;
+    switch (authority.reason) {
+      case 'exact_occurred_at_match':
+      case 'processed_publish_timestamp_match':
+        basis = SosStopBasis.exactOccurredAt;
+      case 'user_scoped_ack_handoff':
+        basis = SosStopBasis.userScoped;
+      default:
+        basis = SosStopBasis.exactIncident;
+    }
+    return stopGuard
+        .authorize(
+          SosStopRequest(
+            kind: SosStopKind.backendTerminal,
+            basis: basis,
+            source: 'mqtt_${update.state?.name ?? "terminal"}',
+            incidentId: update.incidentId,
+            occurredAt: update.incidentOccurredAt,
+            currentPublishedAt: _currentPublishedAt(),
+          ),
+        )
+        .allowed;
+  }
+
   void _requestAuthenticatedTerminalReconciliationIfEligible(
     MqttSosLifecycleUpdate update,
   ) {
@@ -2492,6 +2764,21 @@ class MqttOperationalSosRepository
       );
       return const _LifecycleAuthorityDecision.accepted(
         'processed_publish_timestamp_match',
+      );
+    }
+
+    if (update.authenticatedUserScoped &&
+        _isCurrentOccurrence(update.incidentOccurredAt) &&
+        !stopGuard.isSupersededIncident(update.incidentId)) {
+      // The backend echoes the current SOS's own publish timestamp.
+      _logLifecycleAuthorityAccepted(
+        update: update,
+        activeIncidentId: activeIncident.id,
+        reason: 'exact_occurred_at_match',
+        diagnostic: 'MQTT_SOS_LIFECYCLE_ACCEPTED_EXACT_OCCURRED_AT',
+      );
+      return const _LifecycleAuthorityDecision.accepted(
+        'exact_occurred_at_match',
       );
     }
 
@@ -2788,7 +3075,8 @@ class MqttOperationalSosRepository
     SosIncident backendIncident,
   ) {
     final buffered = _bufferedActuatorUpdates[backendIncident.id];
-    if (buffered == null ||
+    if (stopGuard.attributionOpen ||
+        buffered == null ||
         buffered.update.eventType != 'sos.actuator_update' ||
         !buffered.update.authenticatedUserScoped ||
         !_sameIdentity(buffered.update.incidentId, backendIncident.id) ||
@@ -2919,6 +3207,9 @@ class MqttOperationalSosRepository
     SosIncident activeIncident,
   ) {
     if (update.state != SosState.acknowledged ||
+        // A superseded SOS's close is unattributed: an ack naming no exact
+        // identity may be that SOS's (F17c r7).
+        stopGuard.attributionOpen ||
         !_isTrustedUserScopedAckTopic(update) ||
         activeIncident.isBackendConfirmed ||
         !_isActiveLikeState(_stateMachine.current) ||
@@ -3489,6 +3780,14 @@ class MqttOperationalSosRepository
       SharedPrefsSdkStore.sosStateKey,
       _stateMachine.current.name,
     );
+    if (stopGuard.superseded.isEmpty && !stopGuard.attributionOpen) {
+      await _localStore.remove(SharedPrefsSdkStore.sosStopGuardKey);
+    } else {
+      await _localStore.saveJson(
+        SharedPrefsSdkStore.sosStopGuardKey,
+        stopGuard.toJson(),
+      );
+    }
     final closedIncidentId = _locallyClosedIncidentId;
     if (closedIncidentId == null || closedIncidentId.isEmpty) {
       await _localStore.remove(SharedPrefsSdkStore.sosClosedIncidentKey);

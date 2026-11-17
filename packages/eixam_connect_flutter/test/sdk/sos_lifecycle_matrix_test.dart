@@ -4304,7 +4304,9 @@ void main() {
       // The field sequence: the user starts SOS on the TAG, the SDK publishes
       // it, the user cancels on the TAG (E1), and the backend publishes that
       // cancellation while the SDK's own cancel request is still in flight.
-      // The SDK then sends a redundant clear to a TAG that already stopped.
+      // F17c r7 (Roger 17/11/2026): the TAG already stopped, so the backend
+      // echo only confirms the close: no redundant clear (it could only land
+      // on a newer countdown of the same TAG).
       Future<SosLifecycleSnapshot> startTagSos(
         _SdkSosHarness harness,
         int Function() nextSequence,
@@ -4390,17 +4392,16 @@ void main() {
             expect(terminal.stage, SosLifecycleStage.cancelled);
             expect(
               _hasDebugMessage('SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DISPATCHED'),
-              isTrue,
-              reason: 'the backend echo dispatches a redundant clear',
+              isFalse,
+              reason: 'the backend echo writes no redundant clear',
             );
             expect(
               _hasDebugMessage(
                 'deviceMirrorState=synchronized generation=${terminal.generation} '
-                'source=remote_terminal_device_clear_inactive_observed',
+                'source=repository_correlated_terminal:no_physical_mirror_required',
               ),
               isTrue,
-              reason:
-                  'an already inactive TAG is the clear proof; no E2 follows',
+              reason: 'the TAG\'s own E1 is the clear proof; no E2 follows',
             );
 
             // The firmware reuses the cycle's packet identity for a new press;
@@ -4449,7 +4450,8 @@ void main() {
           final terminal = await harness.sdk.getSosLifecycle();
           expect(
             _hasDebugMessage(
-              'source=remote_terminal_device_clear_inactive_observed',
+              'deviceMirrorState=synchronized generation=${terminal.generation} '
+              'source=repository_correlated_terminal:no_physical_mirror_required',
             ),
             isTrue,
           );
@@ -8405,10 +8407,11 @@ void main() {
 
           expect(
             adapter.commands.where((command) => command.bytes[0] == 0x04),
-            hasLength(2),
+            hasLength(1),
             reason:
-                'app cancel plus backend terminal convergence use the same '
-                'native owner without starting Flutter GATT',
+                'the app cancel writes its 0x04 through the native owner '
+                '(without starting Flutter GATT); the backend terminal only '
+                'confirms it (F17c r7, Roger 17/11/2026)',
           );
           expect(
             adapter.commands.where((command) => command.bytes[0] == 0x07),
@@ -19080,6 +19083,55 @@ void _backgroundTagSosDeliveryTests() {
       }
     });
 
+    // F17c review r6 MEDIUM-1: a native create-pump start never bypasses the
+    // older native TAG cancel (the user-scoped MQTT cancel would follow the
+    // new SOS and close it).
+    test('a native SOS queued while an older native TAG cancel is pending: '
+        'the cancel reaches the broker first, then the SOS', () async {
+      final adapter = _SnapshotTimeoutProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+        ),
+      );
+      final realtime = _OnDemandOperationalRealtimeClient();
+      final repository = MqttOperationalSosRepository(realtimeClient: realtime);
+      final harness = _SdkSosHarness(
+        protectionPlatformAdapter: adapter,
+        sdkSosRepository: repository,
+        realtimeClient: realtime,
+      );
+      try {
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://api.example.com'),
+        );
+        await harness.setSession();
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(realtime.publishOrder, isEmpty);
+        adapter.snapshot = ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.ios,
+          backgroundCapabilityReady: true,
+          pendingNativeSosCreateCount: 1,
+          pendingNativeSosCancelCount: 1,
+          pendingNativeSosCancelCreatedAt: DateTime.now().toUtc().subtract(
+            const Duration(seconds: 5),
+          ),
+        );
+        adapter.pendingNativeSosCreate = nativeCreate('sos:4660:12');
+        adapter.emit(queued('create:device_cycle_active_after_timeout'));
+        await waitFor(() => realtime.publishOrder.length >= 2);
+
+        expect(realtime.publishOrder.take(2).toList(), <String>[
+          'cancel',
+          'trigger',
+        ]);
+      } finally {
+        await harness.dispose();
+        await repository.dispose();
+        await adapter.dispose();
+      }
+    });
+
     test(
       'an active SOS found on resume with a pending native create is '
       'delivered through the outbox, never as a device-only incident',
@@ -22446,7 +22498,11 @@ void _ambiguousSosPromptTests() {
 
     /// The TAG's own close frame through Dart's link (0xE1 user stop on the
     /// TAG, 0xE2 app-cancel ack, 0xE3 backend-resolve ack).
-    Future<void> tagClose(_SdkSosHarness harness, int opcode) async {
+    Future<void> tagClose(
+      _SdkSosHarness harness,
+      int opcode, {
+      String receiveSequenceDomain = 'flutter_gatt:prompt',
+    }) async {
       final bytes = <int>[
         opcode,
         // Subcode: the SOS had fired (0xE1 0x02 = cancelled after firing;
@@ -22474,7 +22530,7 @@ void _ambiguousSosPromptTests() {
                 PhysicalSosReceiveEvidence(
                   classification: BleIncomingPayloadKind.ownDeviceSos,
                   receiveSequence: seq,
-                  receiveSequenceDomain: 'flutter_gatt:prompt',
+                  receiveSequenceDomain: receiveSequenceDomain,
                   processSessionId: 'matrix-test-process',
                   producer: 'flutter_gatt',
                   characteristic: EixamBleProtocol.sosNotifyCharacteristicUuid,
@@ -23027,6 +23083,607 @@ void _ambiguousSosPromptTests() {
       }, timeout: const Timeout(Duration(minutes: 2)));
     }
 
+    // F17c review r7 (Roger 17/11/2026): every scenario the r6 review
+    // reproduced (a, b, c, d, R1b, R5, R6, S2, S3). A = the SOS the TAG closed
+    // (0xE1), B = the new TAG SOS started right after. A's late backend events
+    // and REST reads (one open SOS per user, no client identity on the wire)
+    // are never B's: B stays active and no stop (0x04 / 0x07) reaches the TAG,
+    // from Dart or natively.
+    Future<_R7Phone> r7AThenB(
+      _PromptNativeAdapter adapter,
+      List<int> written, {
+      required bool aConfirmed,
+      bool aSettledBeforeClose = false,
+    }) async {
+      final store = MemorySharedPrefsSdkStore();
+      final sessionStore = SdkSessionStore(localStore: store);
+      final secureStore = InMemorySecureKeyValueStore();
+      final phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: store,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+      );
+      for (var push = 0; push < 4; push++) {
+        await frame(phone.harness, active: false, packetId: 1);
+      }
+      await settle(countdown.inMilliseconds + 500);
+      expect(phone.realtime.publishedSos, hasLength(1));
+      final aPublishedAt = phone.realtime.publishedSos.first.timestamp.toUtc();
+      if (aConfirmed) {
+        await backendProcessed(phone);
+        expect(await phone.harness.sdk.getSosState(), SosState.sent);
+      }
+      final sent = await phone.harness.sdk.getSosLifecycle();
+      expect(sent.stage, SosLifecycleStage.active);
+      if (aSettledBeforeClose) {
+        // (d) a native pending TAG cancel settled A in the repository first.
+        await phone.repository.deliverDeviceCancel(
+          reason: 'native_pending_cancel',
+          observedAt: DateTime.now().toUtc(),
+        );
+        await settle(50);
+      }
+      await tagClose(phone.harness, 0xE1);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      await newBurst(phone, sent);
+      await settle(countdown.inMilliseconds + 500);
+      expect(phone.realtime.publishedSos.length, greaterThanOrEqualTo(2));
+      await expectBStillOpen(phone, sent, 'B sent');
+      written.clear();
+      return _R7Phone(
+        phone: phone,
+        sent: sent,
+        aPublishedAt: aPublishedAt,
+        bPublishedAt: phone.realtime.publishedSos.last.timestamp.toUtc(),
+        store: store,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+        nativeClosesAtB: adapter.closeNativeSosCycleArgs.length,
+      );
+    }
+
+    Future<void> r7Event(
+      _MqttSosPhone phone,
+      String type, {
+      DateTime? occurredAt,
+    }) async {
+      phone.realtime.emitEvent(
+        RealtimeEvent(
+          type: type,
+          timestamp: DateTime.now().toUtc(),
+          payload: <String, dynamic>{
+            'type': type,
+            'status': type,
+            'incidentId': backendIncidentId,
+            'userId': 'external-123',
+            if (occurredAt != null) 'occurredAt': occurredAt.toIso8601String(),
+            '_mqttAuthenticatedUserScoped': true,
+            '_mqttTopicCategory': 'internal',
+          },
+        ),
+      );
+      await settle(200);
+    }
+
+    SosIncidentDto r7RestA(DateTime? occurredAt) =>
+        SosIncidentDto.fromJson(<String, dynamic>{
+          'id': backendIncidentId,
+          'status': 'active',
+          'createdAt': DateTime.now().toUtc().toIso8601String(),
+          if (occurredAt != null) 'occurredAt': occurredAt.toIso8601String(),
+          'triggerSource': 'ble_device_runtime_status',
+          'owner': 'device',
+          'originKind': SosOriginKind.ownDevice.name,
+          'actionability': SosActionability.localActionable.name,
+          'displaySurface': SosDisplaySurface.activeAndHistory.name,
+        });
+
+    Future<void> r7Resume(_MqttSosPhone phone) async {
+      phone.harness.sdk.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await settle(50);
+      phone.harness.sdk.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await settle(500);
+    }
+
+    Future<void> r7Reconnect(_MqttSosPhone phone) async {
+      phone.realtime.emitConnectionState(RealtimeConnectionState.disconnected);
+      await settle(50);
+      phone.realtime.emitConnectionState(RealtimeConnectionState.connected);
+      await settle(500);
+    }
+
+    Future<_MqttSosPhone> r7Restart(
+      _R7Phone r7,
+      _PromptNativeAdapter adapter,
+      List<int> written,
+    ) async {
+      await r7.phone.dispose();
+      final restarted = await mqttPhone(
+        adapter,
+        written,
+        localStore: r7.store,
+        sessionStore: r7.sessionStore,
+        secureStore: r7.secureStore,
+        restore: true,
+      );
+      await settle(500);
+      return restarted;
+    }
+
+    /// The user cancels B from the app: at that action exactly one 0x04
+    /// reaches the TAG and exactly one MQTT cancel the broker. B's later
+    /// backend `cancelled` (echoing B's publish timestamp as `occurredAt`)
+    /// only confirms the close: no other stop, no other cancel.
+    Future<void> r7AppCancelB(
+      _MqttSosPhone phone,
+      _R7Phone r7,
+      List<int> written,
+      String name,
+    ) async {
+      written.clear();
+      final cancelsBefore = phone.realtime.publishedSosCancels.length;
+      final cancel = phone.harness.sdk.cancelSosAuthoritatively();
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while ((!written.contains(0x04) ||
+              phone.realtime.publishedSosCancels.length == cancelsBefore) &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      await settle(200);
+      expect(
+        written.where((o) => o == 0x04),
+        hasLength(1),
+        reason: '$name: one 0x04 at the user action',
+      );
+      expect(written, isNot(contains(0x07)), reason: name);
+      expect(
+        phone.realtime.publishedSosCancels.length,
+        cancelsBefore + 1,
+        reason: '$name: one MQTT cancel at the user action',
+      );
+      written.clear();
+      phone.remote!.active = null;
+      phone.realtime.emitEvent(
+        RealtimeEvent(
+          type: 'cancelled',
+          timestamp: DateTime.now().toUtc(),
+          payload: <String, dynamic>{
+            'type': 'cancelled',
+            'status': 'cancelled',
+            'incidentId': '3d5f7a9c-7425-40de-944b-e07fc1f90ab3',
+            'userId': 'external-123',
+            'occurredAt': r7.bPublishedAt.toIso8601String(),
+            '_mqttAuthenticatedUserScoped': true,
+            '_mqttTopicCategory': 'internal',
+          },
+        ),
+      );
+      await cancel;
+      await settle(500);
+      final closed = await phone.harness.sdk.getSosLifecycle();
+      expect(closed.generation, r7.sent.generation + 1, reason: name);
+      expect(
+        closed.stage,
+        SosLifecycleStage.cancelled,
+        reason: '$name: B cancelled by the user',
+      );
+      expect(
+        written.where((o) => o == 0x04 || o == 0x07),
+        isEmpty,
+        reason: '$name: B\'s backend cancelled only confirms (no stop)',
+      );
+      expect(
+        phone.realtime.publishedSosCancels.length,
+        cancelsBefore + 1,
+        reason: '$name: no second MQTT cancel',
+      );
+    }
+
+    test(
+      'r7 stop guard: every reproduced review scenario keeps B active and '
+      'never writes a stop (0x04 / 0x07) to the TAG; B stays cancellable',
+      () async {
+        final scenarios =
+            <
+              String,
+              Future<_MqttSosPhone> Function(
+                _R7Phone r7,
+                _PromptNativeAdapter adapter,
+                List<int> written,
+              )
+            >{
+              // (a) / S3: A not confirmed; late A acknowledged then cancelled.
+              'a/S3 occurredAt=A': (r7, adapter, written) async {
+                await r7Event(
+                  r7.phone,
+                  'acknowledged',
+                  occurredAt: r7.aPublishedAt,
+                );
+                await r7Event(
+                  r7.phone,
+                  'cancelled',
+                  occurredAt: r7.aPublishedAt,
+                );
+                return r7.phone;
+              },
+              'a/S3 no occurredAt': (r7, adapter, written) async {
+                await r7Event(r7.phone, 'acknowledged');
+                await r7Event(r7.phone, 'cancelled');
+                return r7.phone;
+              },
+              // (b) / S2: A not confirmed; REST returns A while B is open
+              // (app resume, mqtt_reconnected race); then A cancelled.
+              'b/S2 REST=A': (r7, adapter, written) async {
+                r7.phone.remote!.active = r7RestA(r7.aPublishedAt);
+                await r7Resume(r7.phone);
+                await r7Reconnect(r7.phone);
+                await r7Event(
+                  r7.phone,
+                  'cancelled',
+                  occurredAt: r7.aPublishedAt,
+                );
+                return r7.phone;
+              },
+              'b/S2 REST=A no occurredAt': (r7, adapter, written) async {
+                r7.phone.remote!.active = r7RestA(null);
+                await r7Reconnect(r7.phone);
+                await r7Event(r7.phone, 'cancelled');
+                return r7.phone;
+              },
+              // R1b / S1: A confirmed; REST returns A; A cancelled; REST null.
+              'R1b/S1': (r7, adapter, written) async {
+                r7.phone.remote!.active = r7RestA(r7.aPublishedAt);
+                await r7Resume(r7.phone);
+                await r7Event(
+                  r7.phone,
+                  'cancelled',
+                  occurredAt: r7.aPublishedAt,
+                );
+                r7.phone.remote!.active = null;
+                await r7Resume(r7.phone);
+                return r7.phone;
+              },
+              // (c) / R5: A confirmed; restart; REST returns A; A cancelled.
+              'c/R5 restart': (r7, adapter, written) async {
+                r7.phone.remote!.active = r7RestA(r7.aPublishedAt);
+                final phone = await r7Restart(r7, adapter, written);
+                phone.remote!.active = r7RestA(r7.aPublishedAt);
+                await r7Resume(phone);
+                await r7Event(phone, 'cancelled', occurredAt: r7.aPublishedAt);
+                return phone;
+              },
+              // (c) / R6: A confirmed; restart; A cancelled first; absence.
+              'c/R6 restart': (r7, adapter, written) async {
+                final phone = await r7Restart(r7, adapter, written);
+                await r7Event(phone, 'cancelled');
+                await settle(500);
+                await r7Resume(phone);
+                return phone;
+              },
+              // (d): A settled first by a native pending cancel.
+              'd settled first': (r7, adapter, written) async {
+                await r7Event(
+                  r7.phone,
+                  'acknowledged',
+                  occurredAt: r7.aPublishedAt,
+                );
+                await r7Event(
+                  r7.phone,
+                  'cancelled',
+                  occurredAt: r7.aPublishedAt,
+                );
+                return r7.phone;
+              },
+            };
+        for (final entry in scenarios.entries) {
+          final name = entry.key;
+          final adapter = _PromptNativeAdapter();
+          final written = <int>[];
+          final r7 = await r7AThenB(
+            adapter,
+            written,
+            aConfirmed: name.startsWith('R1b') || name.startsWith('c/'),
+            aSettledBeforeClose: name.startsWith('d '),
+          );
+          _MqttSosPhone? phone;
+          try {
+            phone = await entry.value(r7, adapter, written);
+            await settle(300);
+            await expectBStillOpen(phone, r7.sent, name);
+            expect(
+              written.where((opcode) => opcode == 0x04 || opcode == 0x07),
+              isEmpty,
+              reason: '$name: no stop written to the TAG',
+            );
+            expect(
+              adapter.closeNativeSosCycleArgs.length,
+              r7.nativeClosesAtB,
+              reason: '$name: no native stop of B',
+            );
+            // Never stuck: the guarded B stays cancellable by the user.
+            await r7AppCancelB(phone, r7, written, name);
+          } finally {
+            await (phone ?? r7.phone).dispose();
+          }
+        }
+      },
+      timeout: const Timeout(Duration(minutes: 6)),
+    );
+
+    // r7 positive side: the guard never blocks what is provably B's own or
+    // the user's: B closes normally with the right stop.
+    Future<void> r7BEvent(
+      _MqttSosPhone phone,
+      String type, {
+      required String incidentId,
+      DateTime? occurredAt,
+    }) async {
+      phone.realtime.emitEvent(
+        RealtimeEvent(
+          type: type,
+          timestamp: DateTime.now().toUtc(),
+          payload: <String, dynamic>{
+            'type': type,
+            'status': type == 'processed' ? 'active' : type,
+            'incidentId': incidentId,
+            'userId': 'external-123',
+            if (occurredAt != null) 'occurredAt': occurredAt.toIso8601String(),
+            '_mqttAuthenticatedUserScoped': true,
+            '_mqttTopicCategory': 'internal',
+          },
+        ),
+      );
+      await settle(300);
+    }
+
+    const bIncidentId = '7c9e1a3b-7425-40de-944b-e07fc1f90ab3';
+
+    /// B confirmed, never closed: its trigger left the outbox, it stays
+    /// active and nothing was written to stop the TAG.
+    Future<void> r7ExpectBConfirmedOpen(
+      _MqttSosPhone phone,
+      _R7Phone r7,
+      List<int> written,
+      SosState state,
+    ) async {
+      expect(await phone.harness.sdk.getSosState(), state);
+      expect(
+        phone.repository.deliveryStatus.pendingTrigger,
+        isFalse,
+        reason: 'B\'s trigger confirmed',
+      );
+      await expectBStillOpen(phone, r7.sent, 'B confirmed (${state.name})');
+      expect(
+        written.where((o) => o == 0x04 || o == 0x07),
+        isEmpty,
+        reason: 'a confirmation never stops the TAG',
+      );
+    }
+
+    for (final exactBy in <String>['incident id', 'occurredAt']) {
+      test('r7 positive: B\'s own processed and acknowledged (exact $exactBy) '
+          'confirm B and keep it active; its portal resolve closes B with the '
+          '0x07 resolve', () async {
+        final adapter = _PromptNativeAdapter();
+        final written = <int>[];
+        final r7 = await r7AThenB(adapter, written, aConfirmed: true);
+        final phone = r7.phone;
+        try {
+          // The backend holds B open (reconciliation reads see it).
+          phone.remote!.active = SosIncidentDto.fromJson(<String, dynamic>{
+            'id': bIncidentId,
+            'status': 'active',
+            'createdAt': DateTime.now().toUtc().toIso8601String(),
+            'occurredAt': r7.bPublishedAt.toIso8601String(),
+            'triggerSource': 'ble_device_runtime_status',
+            'owner': 'device',
+            'originKind': SosOriginKind.ownDevice.name,
+            'actionability': SosActionability.localActionable.name,
+            'displaySurface': SosDisplaySurface.activeAndHistory.name,
+          });
+          final exactId = exactBy == 'incident id';
+          await r7BEvent(
+            phone,
+            'processed',
+            incidentId: bIncidentId,
+            occurredAt: r7.bPublishedAt,
+          );
+          await r7ExpectBConfirmedOpen(phone, r7, written, SosState.sent);
+          await r7BEvent(
+            phone,
+            'acknowledged',
+            incidentId: bIncidentId,
+            occurredAt: exactId ? null : r7.bPublishedAt,
+          );
+          await settle(300);
+          await r7ExpectBConfirmedOpen(
+            phone,
+            r7,
+            written,
+            SosState.acknowledged,
+          );
+          phone.remote!.active = null;
+          await r7BEvent(
+            phone,
+            'resolved',
+            incidentId: bIncidentId,
+            occurredAt: exactId ? null : r7.bPublishedAt,
+          );
+          await settle(500);
+          final closed = await phone.harness.sdk.getSosLifecycle();
+          expect(closed.generation, r7.sent.generation + 1);
+          expect(closed.stage, SosLifecycleStage.resolved);
+          expect(written, contains(0x07), reason: 'portal resolve -> 0x07');
+          expect(written, isNot(contains(0x04)));
+        } finally {
+          await phone.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 2)));
+    }
+
+    test('r7 positive: B\'s own acknowledged (exact occurredAt, no processed '
+        'reached the phone) confirms B and keeps it active', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final r7 = await r7AThenB(adapter, written, aConfirmed: false);
+      final phone = r7.phone;
+      try {
+        phone.remote!.active = SosIncidentDto.fromJson(<String, dynamic>{
+          'id': bIncidentId,
+          'status': 'acknowledged',
+          'createdAt': DateTime.now().toUtc().toIso8601String(),
+          'occurredAt': r7.bPublishedAt.toIso8601String(),
+          'triggerSource': 'ble_device_runtime_status',
+          'owner': 'device',
+          'originKind': SosOriginKind.ownDevice.name,
+          'actionability': SosActionability.localActionable.name,
+          'displaySurface': SosDisplaySurface.activeAndHistory.name,
+        });
+        await r7BEvent(
+          phone,
+          'acknowledged',
+          incidentId: bIncidentId,
+          occurredAt: r7.bPublishedAt,
+        );
+        await settle(300);
+        await r7ExpectBConfirmedOpen(phone, r7, written, SosState.acknowledged);
+      } finally {
+        await phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('r7 positive: the user cancels B from the app: 0x04 and the MQTT '
+        'cancel, B closed', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final r7 = await r7AThenB(adapter, written, aConfirmed: true);
+      try {
+        await r7AppCancelB(r7.phone, r7, written, 'app cancel of B');
+      } finally {
+        await r7.phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    for (final guarded in <bool>[false, true]) {
+      test('r7 positive: the user cancels B on the TAG (0xE1 on B'
+          '${guarded ? ' after A\'s late events' : ''}): B closed, no stop '
+          'written (the TAG already closed it)', () async {
+        final adapter = _PromptNativeAdapter();
+        final written = <int>[];
+        final r7 = await r7AThenB(adapter, written, aConfirmed: false);
+        final phone = r7.phone;
+        try {
+          if (guarded) {
+            await r7Event(phone, 'acknowledged', occurredAt: r7.aPublishedAt);
+            await r7Event(phone, 'cancelled', occurredAt: r7.aPublishedAt);
+            await expectBStillOpen(phone, r7.sent, 'guarded');
+          }
+          final cancelsBefore = phone.realtime.publishedSosCancels.length;
+          phone.realtime.publishSosCancelHook = (_) async {
+            phone.realtime.publishSosCancelHook = null;
+            await Future<void>.delayed(const Duration(milliseconds: 20));
+            await r7BEvent(
+              phone,
+              'cancelled',
+              incidentId: bIncidentId,
+              occurredAt: r7.bPublishedAt,
+            );
+          };
+          await tagClose(phone.harness, 0xE1);
+          await settle(1500);
+          final closed = await phone.harness.sdk.getSosLifecycle();
+          expect(closed.generation, r7.sent.generation + 1);
+          expect(closed.stage, SosLifecycleStage.cancelled);
+          expect(
+            phone.realtime.publishedSosCancels.length,
+            greaterThan(cancelsBefore),
+          );
+          expect(
+            written.where((o) => o == 0x04 || o == 0x07),
+            isEmpty,
+            reason: 'the TAG closed B itself',
+          );
+        } finally {
+          await phone.dispose();
+        }
+      }, timeout: const Timeout(Duration(minutes: 2)));
+    }
+
+    // F17c review r6 LOW-1: the TAG close evidence survives an app restart and
+    // a BLE owner handover (another receive-sequence domain) between 0xE1 and
+    // the new burst: the burst still starts B, never merged into A.
+    test('r7 LOW-1: app restart between the TAG close 0xE1 and the new burst: '
+        'B starts at its first push', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final store = MemorySharedPrefsSdkStore();
+      final sessionStore = SdkSessionStore(localStore: store);
+      final secureStore = InMemorySecureKeyValueStore();
+      var phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: store,
+        sessionStore: sessionStore,
+        secureStore: secureStore,
+      );
+      try {
+        for (var push = 0; push < 4; push++) {
+          await frame(phone.harness, active: false, packetId: 1);
+        }
+        await settle(countdown.inMilliseconds + 500);
+        await backendProcessed(phone);
+        final sent = await phone.harness.sdk.getSosLifecycle();
+        expect(sent.stage, SosLifecycleStage.active);
+        // The backend still holds A open (its cancel not processed yet).
+        phone.remote!.active = r7RestA(
+          phone.realtime.publishedSos.first.timestamp.toUtc(),
+        );
+        await tagClose(phone.harness, 0xE1);
+        await phone.dispose();
+        phone = await mqttPhone(
+          adapter,
+          written,
+          localStore: store,
+          sessionStore: sessionStore,
+          secureStore: secureStore,
+          restore: true,
+        );
+        await settle(300);
+        written.clear();
+        await newBurst(phone, sent);
+        await settle(countdown.inMilliseconds + 500);
+        await expectBStillOpen(phone, sent, 'B after restart');
+        expect(written.where((o) => o == 0x04 || o == 0x07), isEmpty);
+      } finally {
+        await phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
+    test('r7 LOW-1: BLE owner handover (the close arrived in another '
+        'receive-sequence domain) before the new burst: B starts at its first '
+        'push', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, sent) = await sentSos(adapter, written);
+      try {
+        await tagClose(
+          phone.harness,
+          0xE1,
+          receiveSequenceDomain: 'native_protection:handover',
+        );
+        written.clear();
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await newBurst(phone, sent);
+        await settle(countdown.inMilliseconds + 500);
+        await expectBStillOpen(phone, sent, 'B after an owner handover');
+        expect(written.where((o) => o == 0x04 || o == 0x07), isEmpty);
+      } finally {
+        await phone.dispose();
+      }
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     // F17c M-b: the iOS native-delivered path. With Protection on, native
     // owns the TAG link: Dart sees `bleNotificationReceived` for every push and
     // `ownDeviceSosLifecycleObserved` only for the frames the bridge forwards
@@ -23225,12 +23882,10 @@ void _ambiguousSosPromptTests() {
         }
         await settle(countdown.inMilliseconds + 500);
         expect(phone.realtime.publishedSos, hasLength(2));
-        final order = phone.realtime.publishOrder;
-        expect(order.last, 'trigger');
         expect(
-          order.sublist(0, order.length - 1),
-          contains('cancel'),
-          reason: "A's cancel before B's trigger",
+          phone.realtime.publishOrder,
+          <String>['trigger', 'cancel', 'trigger'],
+          reason: "exact wire order: A's trigger, A's cancel, B's trigger",
         );
         expect(
           adapter.closeNativeSosCycleArgs,
@@ -23375,4 +24030,26 @@ void _ambiguousSosPromptTests() {
       }
     });
   });
+}
+
+final class _R7Phone {
+  _R7Phone({
+    required this.phone,
+    required this.sent,
+    required this.aPublishedAt,
+    required this.bPublishedAt,
+    required this.store,
+    required this.sessionStore,
+    required this.secureStore,
+    required this.nativeClosesAtB,
+  });
+
+  final _MqttSosPhone phone;
+  final SosLifecycleSnapshot sent;
+  final DateTime aPublishedAt;
+  final DateTime bPublishedAt;
+  final MemorySharedPrefsSdkStore store;
+  final SdkSessionStore sessionStore;
+  final InMemorySecureKeyValueStore secureStore;
+  final int nativeClosesAtB;
 }

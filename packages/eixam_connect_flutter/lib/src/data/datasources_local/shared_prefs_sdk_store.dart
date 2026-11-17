@@ -15,6 +15,12 @@ class SharedPrefsSdkStore {
   static const String sosClosedIncidentKey = 'eixam.sos.closed_incident';
   // Pending SOS trigger/cancel actions awaiting backend confirmation.
   static const String sosDeliveryOutboxKey = 'eixam.sos.delivery_outbox.v1';
+  // Evidence of SOS the TAG closed before the backend confirmed it (their
+  // late events are never a newer SOS's) and the stop guard's attribution.
+  static const String sosStopGuardKey = 'eixam.sos.stop_guard.v1';
+  // The TAG's close frame (0xE1 / 0xE2) of the open SOS generation, kept
+  // across a restart or a BLE owner handover until a new burst supersedes it.
+  static const String sosTagCloseEvidenceKey = 'eixam.sos.tag_close.v1';
   static const String trackingPositionKey = 'eixam.tracking.last_position';
   static const String resolvedLocationKey = 'eixam.location.resolved';
   static const int resolvedLocationHandoffVersion = 2;
@@ -66,6 +72,8 @@ class SharedPrefsSdkStore {
   static const List<String> localUserDataKeys = <String>[
     sosIncidentKey,
     sosDeliveryOutboxKey,
+    sosStopGuardKey,
+    sosTagCloseEvidenceKey,
     sosStateKey,
     sosClosedIncidentKey,
     trackingPositionKey,
