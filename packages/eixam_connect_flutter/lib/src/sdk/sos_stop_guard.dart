@@ -111,6 +111,12 @@ final class SupersededSosEvidence {
     incidentIds: <String>[...incidentIds.where((known) => known != id), id],
   );
 
+  SupersededSosEvidence withoutIncidentId(String id) => SupersededSosEvidence(
+    closedAt: closedAt,
+    publishedAt: publishedAt,
+    incidentIds: incidentIds.where((known) => known != id).toList(),
+  );
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'closedAt': closedAt.toUtc().toIso8601String(),
     if (publishedAt != null)
@@ -167,6 +173,29 @@ final class SosStopGuard {
   final List<SupersededSosEvidence> _superseded = <SupersededSosEvidence>[];
   bool _attributionOpen = false;
 
+  /// Trigger timestamps this phone published (bounded, persisted).
+  final List<DateTime> _ownPublished = <DateTime>[];
+
+  /// Incident ids proven to be the current SOS's after they were a
+  /// superseded SOS's (merged incident, r7 MEDIUM-1).
+  final Set<String> _reassigned = <String>{};
+
+  DateTime? _currentPublishedAt;
+
+  /// Publish timestamp of this phone's trigger of the current SOS (null when
+  /// the current SOS is not this phone's own trigger, e.g. another source's
+  /// SOS read over REST). Persisted: survives a restart.
+  DateTime? get currentPublishedAt => _currentPublishedAt;
+
+  set currentPublishedAt(DateTime? at) {
+    final utc = at?.toUtc();
+    if (utc == _currentPublishedAt) {
+      return;
+    }
+    _currentPublishedAt = utc;
+    _onChanged?.call();
+  }
+
   set onChanged(void Function()? callback) => _onChanged = callback;
 
   /// A superseded SOS's close has not been attributed to the current SOS
@@ -180,6 +209,8 @@ final class SosStopGuard {
   /// The TAG closed (or the phone settled) an SOS whose backend close is not
   /// confirmed, and a newer SOS may start: attribution opens.
   void recordSuperseded(SupersededSosEvidence evidence) {
+    // An id handed to the SOS now superseded belongs to it again.
+    _reassigned.removeAll(evidence.incidentIds);
     _superseded.add(evidence);
     while (_superseded.length > _maxEvidence) {
       _superseded.removeAt(0);
@@ -197,10 +228,13 @@ final class SosStopGuard {
   /// `occurredAt`: its id is that SOS's from now on.
   void learnSupersededIncidentId(String incidentId, DateTime occurredAt) {
     final id = incidentId.trim();
-    if (id.isEmpty || isSupersededIncident(id)) {
+    if (id.isEmpty || isSupersededIncident(id) || _reassigned.contains(id)) {
       return;
     }
     final at = occurredAt.toUtc();
+    if (!isSupersededOccurrence(at)) {
+      return;
+    }
     var index = _superseded.indexWhere((e) => e.publishedAt == at);
     if (index < 0) {
       index = _superseded.indexWhere((e) => !at.isAfter(e.closedAt));
@@ -212,6 +246,82 @@ final class SosStopGuard {
     _onChanged?.call();
   }
 
+  /// This phone published a trigger with [at] as its timestamp (the
+  /// backend echoes it as `occurredAt`). Only these timestamps can be a
+  /// superseded SOS's (r7 LOW-4).
+  void recordOwnPublish(DateTime at) {
+    final utc = at.toUtc();
+    if (_ownPublished.contains(utc)) {
+      return;
+    }
+    _ownPublished.add(utc);
+    while (_ownPublished.length > _maxEvidence) {
+      _ownPublished.removeAt(0);
+    }
+    _onChanged?.call();
+  }
+
+  /// The newest trigger timestamp this phone published at or before [at].
+  DateTime? latestOwnPublishAtOrBefore(DateTime at) {
+    final utc = at.toUtc();
+    DateTime? latest;
+    for (final published in _ownPublished) {
+      if (!published.isAfter(utc) &&
+          (latest == null || published.isAfter(latest))) {
+        latest = published;
+      }
+    }
+    return latest;
+  }
+
+  /// The newest trigger timestamp this phone published (restored after a
+  /// restart).
+  DateTime? get latestOwnPublish => _ownPublished.isEmpty
+      ? null
+      : _ownPublished.reduce((a, b) => a.isAfter(b) ? a : b);
+
+  /// r7 MEDIUM-1: the backend merged the current SOS into a superseded SOS's
+  /// still-open incident (that SOS's cancel was rejected or dropped). The
+  /// current SOS's exact publish timestamp as `occurredAt` proves the
+  /// incident is the current SOS's: its id is no longer a superseded SOS's
+  /// (and a late event of that SOS never makes it one again). Returns
+  /// whether the id was reassigned.
+  bool reassignToCurrent({
+    required String? incidentId,
+    required DateTime? occurredAt,
+    required DateTime? currentPublishedAt,
+    required String source,
+  }) {
+    final id = incidentId?.trim();
+    final at = occurredAt?.toUtc();
+    final published = currentPublishedAt?.toUtc();
+    if (id == null ||
+        id.isEmpty ||
+        at == null ||
+        published == null ||
+        at != published ||
+        isSupersededOccurrence(at) ||
+        !isSupersededIncident(id)) {
+      return false;
+    }
+    for (var i = 0; i < _superseded.length; i++) {
+      final evidence = _superseded[i];
+      if (evidence.incidentIds.contains(id)) {
+        _superseded[i] = evidence.withoutIncidentId(id);
+      }
+    }
+    _reassigned.add(id);
+    while (_reassigned.length > _maxEvidence) {
+      _reassigned.remove(_reassigned.first);
+    }
+    sdkReleaseLog(
+      'SOS_OUTBOX_STOP_GUARD_MERGED_INCIDENT_REASSIGNED source=$source '
+      'reason=exact_current_occurred_at',
+    );
+    _onChanged?.call();
+    return true;
+  }
+
   bool isSupersededIncident(String? incidentId) {
     final id = incidentId?.trim();
     if (id == null || id.isEmpty) {
@@ -220,18 +330,23 @@ final class SosStopGuard {
     return _superseded.any((evidence) => evidence.incidentIds.contains(id));
   }
 
-  /// [occurredAt] is a superseded SOS's: its publish timestamp, or at or
-  /// before the newest close (every current SOS started after it).
+  /// [occurredAt] is a superseded SOS's: its publish timestamp, or a
+  /// trigger timestamp this phone published at or before the newest close
+  /// (every current SOS started after it). Only this phone's own timestamps:
+  /// an SOS from another source (LoRa gateway, a second phone of the
+  /// account, another clock) is never taken as a closed one (r7 LOW-4).
   bool isSupersededOccurrence(DateTime? occurredAt) {
     if (occurredAt == null || _superseded.isEmpty) {
       return false;
     }
     final at = occurredAt.toUtc();
+    if (_superseded.any((evidence) => evidence.publishedAt == at)) {
+      return true;
+    }
     final newestClose = _superseded
         .map((evidence) => evidence.closedAt)
         .reduce((a, b) => a.isAfter(b) ? a : b);
-    return !at.isAfter(newestClose) ||
-        _superseded.any((evidence) => evidence.publishedAt == at);
+    return !at.isAfter(newestClose) && _ownPublished.contains(at);
   }
 
   bool isSuperseded({String? incidentId, DateTime? occurredAt}) =>
@@ -250,15 +365,32 @@ final class SosStopGuard {
 
   /// Session change: the previous account's evidence is dropped.
   void clear() {
-    if (_superseded.isEmpty && !_attributionOpen) {
+    if (_superseded.isEmpty &&
+        !_attributionOpen &&
+        _ownPublished.isEmpty &&
+        _reassigned.isEmpty &&
+        _currentPublishedAt == null) {
       return;
     }
     _superseded.clear();
     _attributionOpen = false;
+    _ownPublished.clear();
+    _reassigned.clear();
+    _currentPublishedAt = null;
     _onChanged?.call();
   }
 
   SosStopDecision authorize(SosStopRequest request) {
+    if (request.basis == SosStopBasis.exactOccurredAt) {
+      // r7 MEDIUM-1: the current SOS's exact publish timestamp beats a
+      // superseded incident id (merged incident).
+      reassignToCurrent(
+        incidentId: request.incidentId,
+        occurredAt: request.occurredAt,
+        currentPublishedAt: request.currentPublishedAt,
+        source: request.source,
+      );
+    }
     final decision = _decide(request);
     if (!decision.allowed) {
       sdkReleaseLog(
@@ -315,6 +447,12 @@ final class SosStopGuard {
   Map<String, dynamic> toJson() => <String, dynamic>{
     'attributionOpen': _attributionOpen,
     'superseded': _superseded.map((evidence) => evidence.toJson()).toList(),
+    'ownPublished': _ownPublished
+        .map((at) => at.toUtc().toIso8601String())
+        .toList(),
+    'reassigned': _reassigned.toList(),
+    if (_currentPublishedAt != null)
+      'currentPublishedAt': _currentPublishedAt!.toIso8601String(),
   };
 
   void restoreFromJson(Map<String, dynamic>? json) {
@@ -330,5 +468,24 @@ final class SosStopGuard {
             .whereType<SupersededSosEvidence>(),
       );
     _attributionOpen = json['attributionOpen'] == true;
+    final own = json['ownPublished'];
+    _ownPublished
+      ..clear()
+      ..addAll(
+        (own is List ? own : const <Object>[])
+            .map((raw) => DateTime.tryParse('$raw')?.toUtc())
+            .whereType<DateTime>(),
+      );
+    _currentPublishedAt = json['currentPublishedAt'] == null
+        ? null
+        : DateTime.tryParse('${json['currentPublishedAt']}')?.toUtc();
+    final reassigned = json['reassigned'];
+    _reassigned
+      ..clear()
+      ..addAll(
+        (reassigned is List ? reassigned : const <Object>[])
+            .whereType<String>()
+            .where((id) => id.isNotEmpty),
+      );
   }
 }

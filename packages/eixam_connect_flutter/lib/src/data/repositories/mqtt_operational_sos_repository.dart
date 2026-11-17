@@ -442,32 +442,42 @@ class MqttOperationalSosRepository
   /// stop.
   final SosStopGuard stopGuard = SosStopGuard();
 
-  /// Publish timestamp of this phone's latest own trigger (the backend echoes
-  /// it as `occurredAt`).
-  DateTime? _lastOwnTriggerPublishedAt;
-
-  /// Publish timestamp of the current SOS, when known.
+  /// Publish timestamp of the current SOS, when known: this phone's own
+  /// trigger of it (kept by the guard, persisted), else the incident's own
+  /// creation time (a local SOS is published with it).
   DateTime? _currentPublishedAt() {
     final incident = _activeIncident;
     if (incident == null) {
       return null;
     }
-    final last = _lastOwnTriggerPublishedAt;
-    if (last != null && !last.isBefore(incident.createdAt.toUtc())) {
-      return last;
-    }
-    return incident.createdAt.toUtc();
+    return stopGuard.currentPublishedAt ?? incident.createdAt.toUtc();
   }
 
-  /// [occurredAt] is the current SOS's own publish timestamp.
+  /// [occurredAt] is the current SOS's own publish timestamp. One rule with
+  /// [_currentPublishedAt] (r7 LOW-2): an older trigger of this phone is
+  /// never the current SOS's.
   bool _isCurrentOccurrence(DateTime? occurredAt) {
-    if (occurredAt == null || _activeIncident == null) {
-      return false;
-    }
-    final at = occurredAt.toUtc();
-    return at == _activeIncident!.createdAt.toUtc() ||
-        at == _lastOwnTriggerPublishedAt;
+    final current = _currentPublishedAt();
+    return occurredAt != null &&
+        current != null &&
+        occurredAt.toUtc() == current;
   }
+
+  /// r7 MEDIUM-1: [incidentId] names a superseded SOS but [occurredAt] is the
+  /// current SOS's exact publish timestamp: the backend merged the current
+  /// SOS into that still-open incident, so the id is the current SOS's.
+  bool _reassignMergedIncident(
+    String? incidentId,
+    DateTime? occurredAt,
+    String source,
+  ) =>
+      _isCurrentOccurrence(occurredAt) &&
+      stopGuard.reassignToCurrent(
+        incidentId: incidentId,
+        occurredAt: occurredAt,
+        currentPublishedAt: _currentPublishedAt(),
+        source: source,
+      );
 
   /// An SOS settled locally before the backend confirmed its close: what is
   /// known of it is kept so its late events never reach a newer SOS.
@@ -480,13 +490,10 @@ class MqttOperationalSosRepository
         (sos == null || sos.isBackendConfirmed)) {
       ids.add(normalized);
     }
-    final published = _lastOwnTriggerPublishedAt;
     stopGuard.recordSuperseded(
       SupersededSosEvidence(
         closedAt: closedAt,
-        publishedAt: published != null && !published.isAfter(closedAt)
-            ? published
-            : null,
+        publishedAt: stopGuard.latestOwnPublishAtOrBefore(closedAt),
         incidentIds: ids,
       ),
     );
@@ -522,6 +529,13 @@ class MqttOperationalSosRepository
       return false;
     }
     final occurredAt = update.incidentOccurredAt?.toUtc();
+    if (update.authenticatedUserScoped &&
+        !_isExternalOnlyLifecycle(update) &&
+        !_isRemoteRelayEvidence(update) &&
+        _reassignMergedIncident(incidentId, occurredAt, 'mqtt_event')) {
+      // The current SOS's own event (merged incident): never consumed.
+      return false;
+    }
     final byId = stopGuard.isSupersededIncident(incidentId);
     final byOccurrence =
         !byId &&
@@ -1259,7 +1273,8 @@ class MqttOperationalSosRepository
       occurredAt: timestamp.toUtc(),
       registeredAt: _nowProvider().toUtc(),
     );
-    _lastOwnTriggerPublishedAt = timestamp.toUtc();
+    stopGuard.recordOwnPublish(timestamp);
+    stopGuard.currentPublishedAt = timestamp;
     BleDebugRegistry.instance.recordEvent(
       'SOS_TRIGGER_MQTT_PUBLISH_START source=$sourceLabel '
       'incidentId=${incidentId ?? "none"} correlationId=$correlationId '
@@ -1720,6 +1735,13 @@ class MqttOperationalSosRepository
       }
       final restOccurredAt = DateTime.tryParse(active.occurredAt ?? '')
           ?.toUtc();
+      if (localOpen) {
+        _reassignMergedIncident(
+          hydratedIncident.id,
+          restOccurredAt,
+          'rest_active',
+        );
+      }
       if (stopGuard.isSuperseded(
             incidentId: hydratedIncident.id,
             occurredAt: _isCurrentOccurrence(restOccurredAt)
@@ -1797,6 +1819,15 @@ class MqttOperationalSosRepository
         _locallyClosedIncidentId = null;
       }
 
+      final previousIncident = _activeIncident;
+      final sameSos =
+          previousIncident != null &&
+          (_sameIdentity(hydratedIncident.id, previousIncident.id) ||
+              _isCurrentOccurrence(restOccurredAt));
+      if (!sameSos) {
+        // Another SOS (another source): no publish timestamp of this phone.
+        stopGuard.currentPublishedAt = null;
+      }
       _activeIncident = hydratedIncident;
       _rememberActiveLikeStateIfNeeded(_activeIncident!.state);
       _setState(_activeIncident!.state);
@@ -1845,6 +1876,15 @@ class MqttOperationalSosRepository
     final triggerAt = DateTime.tryParse('${action.payload['timestamp']}')
         ?.toUtc();
     final exact = occurredAt != null && occurredAt == triggerAt;
+    if (exact) {
+      // r7 MEDIUM-1: the trigger's own timestamp beats a superseded id.
+      stopGuard.reassignToCurrent(
+        incidentId: dto.id,
+        occurredAt: occurredAt,
+        currentPublishedAt: triggerAt,
+        source: 'outbox_backend_read',
+      );
+    }
     if (!exact &&
         stopGuard.isSuperseded(incidentId: dto.id, occurredAt: occurredAt)) {
       if (occurredAt != null) {
@@ -2318,7 +2358,6 @@ class MqttOperationalSosRepository
     _neverPublishedTriggerCycles.clear();
     _closedBackendIncidentIds.clear();
     stopGuard.clear();
-    _lastOwnTriggerPublishedAt = null;
     await _outbox.clear(reason: 'session_cleared');
     _setState(SosState.idle);
     await _persistState();

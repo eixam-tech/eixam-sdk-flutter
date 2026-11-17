@@ -21,6 +21,8 @@ class SharedPrefsSdkStore {
   // The TAG's close frame (0xE1 / 0xE2) of the open SOS generation, kept
   // across a restart or a BLE owner handover until a new burst supersedes it.
   static const String sosTagCloseEvidenceKey = 'eixam.sos.tag_close.v1';
+  static const String sosTagStopConfirmationKey =
+      'eixam.sos.tag_stop_confirmed.v1';
   static const String trackingPositionKey = 'eixam.tracking.last_position';
   static const String resolvedLocationKey = 'eixam.location.resolved';
   static const int resolvedLocationHandoffVersion = 2;
@@ -74,6 +76,7 @@ class SharedPrefsSdkStore {
     sosDeliveryOutboxKey,
     sosStopGuardKey,
     sosTagCloseEvidenceKey,
+    sosTagStopConfirmationKey,
     sosStateKey,
     sosClosedIncidentKey,
     trackingPositionKey,

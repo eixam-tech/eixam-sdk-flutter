@@ -315,6 +315,213 @@ void main() {
       );
     });
   });
+
+  // F17c review r7 MEDIUM-1 (Roger 17/11/2026): the backend merged B into
+  // A's still-open incident (A's cancel rejected or dropped): B's own events
+  // carry A's incident id with B's exact publish timestamp as `occurredAt`.
+  // That exact timestamp is B's, so the id is B's from then on: B's own
+  // resolve, REST absence and user cancel close B (before and after a
+  // restart). A's own late evidence (A's publish timestamp) stays A's.
+  group('F17c r8: B merged into A\'s still-open incident', () {
+    Future<DateTime> mergedB() async {
+      final (_, bAt) = await aSentThenB(aConfirmed: true);
+      remote.active = _activeDto('backend-A', occurredAt: bAt);
+      realtime.emit(
+        _event('processed', incidentId: 'backend-A', occurredAt: bAt),
+      );
+      await eventually(() => !repository.deliveryStatus.pendingTrigger);
+      return bAt;
+    }
+
+    Future<void> expectMergedBConfirmed(
+      String reason, {
+      bool localCopy = true,
+    }) async {
+      expect(
+        repository.deliveryStatus.pendingTrigger,
+        isFalse,
+        reason: '$reason: B confirmed',
+      );
+      final incident = await repository.getCurrentIncident();
+      expect(incident?.id, 'backend-A', reason: '$reason: merged id');
+      if (localCopy) {
+        // A REST hydration replaces the local copy with the backend's (no
+        // cycle key): the same SOS by id.
+        expect(incident?.cycleKey, 'sos:7:2', reason: '$reason: still B');
+      }
+      expect(incident?.isBackendConfirmed, isTrue, reason: reason);
+      expect(await repository.getSosState(), SosState.sent, reason: reason);
+      expect(
+        repository.stopGuard.isSupersededIncident('backend-A'),
+        isFalse,
+        reason: '$reason: the merged id is B\'s now',
+      );
+    }
+
+    test('B\'s exact processed on A\'s id confirms B; B\'s own resolved '
+        'closes B', () async {
+      final bAt = await mergedB();
+      await expectMergedBConfirmed('processed');
+      remote.active = null;
+      realtime.emit(
+        _event('resolved', incidentId: 'backend-A', occurredAt: bAt),
+      );
+      await settle();
+      expect(
+        await repository.getSosState(),
+        anyOf(SosState.resolved, SosState.idle),
+      );
+    });
+
+    test('merged through REST only (no processed reached the phone): the '
+        'outbox read and the rehydration take B on A\'s id; B\'s REST '
+        'absence then closes B', () async {
+      final (_, bAt) = await aSentThenB(aConfirmed: true);
+      remote.active = _activeDto('backend-A', occurredAt: bAt);
+      await eventually(() => !repository.deliveryStatus.pendingTrigger);
+      final hydrated = await repository.rehydrateRuntimeStateFromBackend();
+      expect(
+        hydrated.outcome,
+        SosRuntimeRehydrationOutcome.hydratedFromBackend,
+      );
+      await expectMergedBConfirmed('rest', localCopy: false);
+      remote.active = null;
+      final absence = await repository.rehydrateRuntimeStateFromBackend(
+        terminalAbsenceExpected: true,
+      );
+      expect(absence.outcome, SosRuntimeRehydrationOutcome.clearedToIdle);
+      expect(await repository.getSosState(), SosState.idle);
+    });
+
+    test('merged, then an app restart: B\'s own resolved still closes B',
+        () async {
+      final bAt = await mergedB();
+      await restart();
+      final restored = await repository.getCurrentIncident();
+      expect(restored?.id, 'backend-A');
+      expect(repository.stopGuard.isSupersededIncident('backend-A'), isFalse);
+      remote.active = null;
+      realtime.emit(
+        _event('resolved', incidentId: 'backend-A', occurredAt: bAt),
+      );
+      await settle();
+      expect(
+        await repository.getSosState(),
+        anyOf(SosState.resolved, SosState.idle),
+      );
+    });
+
+    test('merged: the user cancel of B is confirmed by B\'s own cancelled',
+        () async {
+      final bAt = await mergedB();
+      final cancel = repository.cancelSos();
+      await eventually(() => realtime.publishedCancels.length >= 2);
+      remote.active = null;
+      realtime.emit(
+        _event('cancelled', incidentId: 'backend-A', occurredAt: bAt),
+      );
+      final cancelled = await cancel;
+      expect(cancelled.state, SosState.cancelled);
+      expect(
+        await repository.getSosState(),
+        anyOf(SosState.cancelled, SosState.idle),
+      );
+    });
+
+    test('merged: a late event carrying A\'s own publish timestamp is still '
+        'A\'s (never closes B, never takes the id back)', () async {
+      final (aAt, bAt) = await aSentThenB(aConfirmed: true);
+      remote.active = _activeDto('backend-A', occurredAt: bAt);
+      realtime.emit(
+        _event('processed', incidentId: 'backend-A', occurredAt: bAt),
+      );
+      await eventually(() => !repository.deliveryStatus.pendingTrigger);
+      realtime.emit(
+        _event('cancelled', incidentId: 'backend-A', occurredAt: aAt),
+      );
+      await settle();
+      await expectMergedBConfirmed('A\'s late cancelled');
+      realtime.emit(
+        _event('resolved', incidentId: 'backend-A', occurredAt: bAt),
+      );
+      await settle();
+      expect(
+        await repository.getSosState(),
+        anyOf(SosState.resolved, SosState.idle),
+      );
+    });
+  });
+
+  // F17c review r7 LOW-4: only timestamps this phone published are a
+  // superseded SOS's. An SOS from another source (a LoRa gateway, a second
+  // phone of the account) whose `occurredAt` is at or before the TAG close
+  // (another clock) is never consumed or hidden.
+  group('F17c r8: another source\'s SOS right after a TAG close', () {
+    test('REST returns another source\'s open SOS with occurredAt before the '
+        'close: adopted, never hidden as the closed SOS', () async {
+      await repository.triggerSos(
+        triggerSource: 'ble_device_runtime_status',
+        originatorNodeId: 7,
+        incidentId: 'device-runtime-sos:7:1',
+        cycleKey: 'sos:7:1',
+      );
+      await eventually(() => realtime.publishedSos.isNotEmpty);
+      realtime.emit(
+        _event(
+          'processed',
+          incidentId: 'backend-A',
+          occurredAt: realtime.publishedSos.first.timestamp.toUtc(),
+        ),
+      );
+      await eventually(() => !repository.deliveryStatus.pendingTrigger);
+      await settle(20);
+      final closedAt = DateTime.now().toUtc();
+      await repository.closeSosSupersededByTagClose(observedAt: closedAt);
+      // A's close confirmed; another source opened an SOS whose clock is
+      // two seconds behind this phone's.
+      realtime.emit(_event('cancelled', incidentId: 'backend-A'));
+      await settle();
+      final otherAt = closedAt.subtract(const Duration(seconds: 2));
+      expect(repository.stopGuard.isSupersededOccurrence(otherAt), isFalse);
+      remote.active = _activeDto('backend-X', occurredAt: otherAt);
+      final result = await repository.rehydrateRuntimeStateFromBackend();
+      expect(result.outcome, SosRuntimeRehydrationOutcome.hydratedFromBackend);
+      expect((await repository.getCurrentIncident())?.id, 'backend-X');
+      expect(repository.stopGuard.isSupersededIncident('backend-X'), isFalse);
+    });
+
+    test('LOW-2: the current SOS hydrated from another source: a late event '
+        'of the closed SOS (this phone\'s older publish timestamp) is the '
+        'closed SOS\'s, never the current one\'s', () async {
+      await repository.triggerSos(
+        triggerSource: 'ble_device_runtime_status',
+        originatorNodeId: 7,
+        incidentId: 'device-runtime-sos:7:1',
+        cycleKey: 'sos:7:1',
+      );
+      await eventually(() => realtime.publishedSos.isNotEmpty);
+      final aAt = realtime.publishedSos.first.timestamp.toUtc();
+      await settle(20);
+      await repository.closeSosSupersededByTagClose(
+        observedAt: DateTime.now().toUtc(),
+      );
+      await settle(20);
+      final otherAt = DateTime.now().toUtc();
+      remote.active = _activeDto('backend-X', occurredAt: otherAt);
+      final result = await repository.rehydrateRuntimeStateFromBackend();
+      expect(result.outcome, SosRuntimeRehydrationOutcome.hydratedFromBackend);
+      realtime.emit(
+        _event('cancelled', incidentId: 'backend-A', occurredAt: aAt),
+      );
+      await settle();
+      final incident = await repository.getCurrentIncident();
+      expect(incident?.id, 'backend-X');
+      expect(
+        await repository.getSosState(),
+        isNot(anyOf(SosState.idle, SosState.cancelled, SosState.resolved)),
+      );
+    });
+  });
 }
 
 SosIncidentDto _activeDto(String id, {DateTime? occurredAt}) {

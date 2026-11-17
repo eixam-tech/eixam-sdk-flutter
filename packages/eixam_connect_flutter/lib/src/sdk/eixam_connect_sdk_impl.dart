@@ -477,6 +477,7 @@ class EixamConnectSdkImpl
     deviceSosController.setPhysicalSosStartAdmissionPolicy(
       _evaluatePhysicalSosStartAdmission,
     );
+    deviceSosController.setTagCloseFrameObserver(_rememberTagStopConfirmation);
     if (_nativeOwnTagSosClassifierAvailable) {
       deviceSosController.setOwnTagSosFrameClassifier(_classifyOwnTagSosFrame);
     }
@@ -1293,6 +1294,7 @@ class EixamConnectSdkImpl
     );
     await _restorePersistedPreSosSession(trigger: 'initialize');
     await _restoreTagCloseEvidence();
+    await _restoreTagStopConfirmation();
     // A native SOS (or TAG cancel) stored before process death is delivered
     // now.
     _deliverNativePendingCancelThenCreate('initialize');
@@ -3096,7 +3098,8 @@ class EixamConnectSdkImpl
     _terminalGenerationsEstablishedThisProcess.clear();
     _devicePacketSignaturesByGeneration.clear();
     _deviceMirrorDispatchedGenerations.clear();
-    _userStopWrittenGenerations.clear();
+    _userActionTerminalGenerations.clear();
+    _forgetTagStopConfirmation();
     _clearPreSosSession(reason: 'session_cleared', emitIdleState: false);
     _clearPendingAppTriggeredSosBridge(reason: 'session_cleared');
     _clearDeviceRuntimeSosOwnership(reason: 'session_cleared');
@@ -7236,6 +7239,19 @@ class EixamConnectSdkImpl
 
   Future<void> _handleDeviceSosStatus(DeviceSosStatus status) async {
     final lifecycleAtStatus = _sosLifecycle.current;
+    if (_isCloseFrameReplayBeforeOpenSos(status, lifecycleAtStatus)) {
+      // F17c review r7 (MEDIUM-candidate, reproduced): attaching Dart's
+      // command path re-emits the last status, e.g. the previous SOS's 0xE1
+      // when the open SOS started while native owned the TAG link (Dart never
+      // saw its frames). That close is older than the open SOS: it never
+      // closes it (it used to cancel it on the backend).
+      _pushTagLinkSnapshot();
+      BleDebugRegistry.instance.recordEvent(
+        'SOS_DEVICE_CLOSE_REPLAY_IGNORED generation=${lifecycleAtStatus.generation} '
+        'reason=close_frame_before_open_sos',
+      );
+      return;
+    }
     _rememberTagCloseOfOpenGeneration(status, lifecycleAtStatus);
     _pushTagLinkSnapshot();
     final sosStatusEventSequence = ++_deviceSosStatusEventSequence;
@@ -10589,6 +10605,7 @@ class EixamConnectSdkImpl
         reason: 'public_cancel_acceptance',
       );
       final cancellationLifecycle = _sosLifecycle.current;
+      _userActionTerminalGenerations.add(cancellationLifecycle.generation);
       if (cancellationLifecycle.isOpen &&
           cancellationLifecycle.stage != SosLifecycleStage.cancelling) {
         await _sosLifecycle.beginCancellation();
@@ -10635,9 +10652,6 @@ class EixamConnectSdkImpl
         ),
         refreshRuntimeStatus: true,
       );
-      if (deviceSync.succeeded) {
-        _userStopWrittenGenerations.add(cancellationLifecycle.generation);
-      }
       // An unavailable command path does not block logical/backend
       // cancellation, but it is never evidence that the physical TAG stopped.
       final deviceMirrorSynchronized =
@@ -10649,7 +10663,7 @@ class EixamConnectSdkImpl
         source: !deviceSync.available
             ? 'public_cancel_no_physical_mirror_required'
             : deviceSync.succeeded
-            ? 'public_cancel_device_mirror_E2'
+            ? 'public_cancel_device_mirror_written'
             : 'public_cancel_device_mirror_failed',
       );
       BleDebugRegistry.instance.recordEvent(
@@ -11180,6 +11194,9 @@ class EixamConnectSdkImpl
       }
       final activeIncident = await sosRepository.getCurrentIncident();
       final lifecycleAtResolveStart = _sosLifecycle.current;
+      // r7 LOW-3: the generation the user resolved (captured at the action),
+      // never the one current after an await.
+      _userActionTerminalGenerations.add(lifecycleAtResolveStart.generation);
       _rememberDeviceOriginatedClosureIntent(
         incident: activeIncident,
         intent: _SosClosureIntent.resolve,
@@ -11197,9 +11214,6 @@ class EixamConnectSdkImpl
         ),
         refreshRuntimeStatus: true,
       );
-      if (deviceSync.succeeded) {
-        _userStopWrittenGenerations.add(_sosLifecycle.current.generation);
-      }
 
       SosIncident? backendIncident;
       Object? backendError;
@@ -14577,7 +14591,26 @@ class EixamConnectSdkImpl
   /// outbox drops it if a newer SOS already reached the broker and orders it
   /// before newer queued SOS; the repository settles only an older local
   /// SOS. Without that time it is delivered only when nothing is open.
-  Future<void> _recoverNativePendingCancel(String reason) async {
+  Future<void> _recoverNativePendingCancel(String reason) {
+    // Single flight: concurrent callers (cancel-then-create and the create
+    // flush) share one recovery, so the cancel is handed over once.
+    final inFlight = _nativeCancelRecoveryInFlight;
+    if (inFlight != null) {
+      return inFlight;
+    }
+    late final Future<void> run;
+    run = _recoverNativePendingCancelOnce(reason).whenComplete(() {
+      if (identical(_nativeCancelRecoveryInFlight, run)) {
+        _nativeCancelRecoveryInFlight = null;
+      }
+    });
+    _nativeCancelRecoveryInFlight = run;
+    return run;
+  }
+
+  Future<void>? _nativeCancelRecoveryInFlight;
+
+  Future<void> _recoverNativePendingCancelOnce(String reason) async {
     final repository = sosRepository;
     if (repository is! MqttOperationalSosRepository) {
       return;
@@ -14849,6 +14882,12 @@ class EixamConnectSdkImpl
       if (await _dropStalePendingNativeSosCreate(pending, trigger: trigger)) {
         return;
       }
+      // r7 LOW-1: cancel-first at the single point every native create
+      // publish goes through (pre-SOS createPending / elapsed, app
+      // activation retained, native backend sync succeeded/queued): an older
+      // native TAG cancel still pending reaches the FIFO outbox before this
+      // newer SOS, so its user-scoped MQTT cancel can never close it.
+      await _recoverNativePendingCancel('create_flush:$trigger');
 
       await protectionPlatformAdapter
           .markPendingNativeSosCreateMqttFlushStarted(pending.signature);
@@ -16993,16 +17032,12 @@ class EixamConnectSdkImpl
                   retainedTarget.status.lastPacketAt ??
                       retainedTarget.status.updatedAt,
                 ));
-    if (_userStopWrittenGenerations.contains(lifecycle.generation)) {
-      // r7: the user's own stop already reached the TAG at the user's action;
-      // the backend terminal only confirms that close.
-      _logRemoteTerminalDeviceClearSkipped('user_stop_already_written');
-      return null;
-    }
-    if (_tagClosedLifecycleItself(lifecycle, snapshot.deviceSos)) {
-      // r7: the TAG itself closed this SOS (0xE1 / 0xE2) after it started:
-      // nothing is left to stop, and a redundant stop could only land on a
-      // newer countdown of the same TAG.
+    if (_tagStopConfirmedFor(lifecycle)) {
+      // r7 MEDIUM-2: the TAG itself confirmed this SOS closed (its own 0xE1,
+      // or its 0xE2 / 0xE3 ack of the user's stop) after it started: nothing
+      // is left to stop, and a redundant stop could only land on a newer
+      // countdown of the same TAG. A completed write without that frame is
+      // not proof: the backend terminal then mirrors the stop again.
       _logRemoteTerminalDeviceClearSkipped('tag_already_closed');
       return null;
     }
@@ -17694,9 +17729,10 @@ class EixamConnectSdkImpl
 
   late final SosStopGuard _localSosStopGuard = SosStopGuard();
 
-  /// Generations whose stop the user's own action already wrote to the TAG
-  /// (bounded by the lifecycle generations of this process).
-  final Set<int> _userStopWrittenGenerations = <int>{};
+  /// Generations the user cancelled or resolved from the app (bounded by the
+  /// lifecycle generations of this process): their terminal is the user's
+  /// action, so their native cycle close is too (r7 MEDIUM-1).
+  final Set<int> _userActionTerminalGenerations = <int>{};
 
   /// F17c review r7: the single stop / terminal guard. Owned by the MQTT
   /// repository (it persists the attribution state with its own).
@@ -17885,27 +17921,121 @@ class EixamConnectSdkImpl
     );
   }
 
-  /// The last own-TAG frame Dart saw is the TAG's own close (0xE1 stop /
-  /// 0xE2 app-cancel ack) of [lifecycle]'s SOS, received after it started.
-  bool _tagClosedLifecycleItself(
-    SosLifecycleSnapshot lifecycle,
-    DeviceSosStatus status,
+  /// r7 MEDIUM-2 / MEDIUM-candidate: the TAG's own close frame of a
+  /// generation's SOS (0xE1 stop; 0xE2 / 0xE3 ack of a stop sent for it),
+  /// received after that SOS started: physical proof nothing is left to stop
+  /// on the TAG for it. Keyed by lifecycle id and generation and dated by
+  /// the frame's physical receive time, never by the mirror's `updatedAt`.
+  /// Persisted (a restart between the close and the backend terminal must
+  /// not write a redundant stop).
+  _TagCloseEvidence? _tagStopConfirmation;
+
+  void _rememberTagStopConfirmation(
+    int opcode,
+    int nodeId,
+    PhysicalSosReceiveEvidence close,
   ) {
-    final opcode = status.lastOpcode;
+    const stopRequested = <SosLifecycleStage>{
+      SosLifecycleStage.cancelling,
+      SosLifecycleStage.cancelled,
+      SosLifecycleStage.resolved,
+      SosLifecycleStage.cancellationFailed,
+    };
+    if (_disposed) {
+      return;
+    }
+    final lifecycle = _sosLifecycle.current;
     final started = lifecycle.activationTimestamp;
     final lifecycleNodeId = _normalizeNodeIdOrNull(lifecycle.nodeId);
-    final statusNodeId = _normalizeNodeIdOrNull(status.nodeId);
-    return !lifecycle.externalOnly &&
-        started != null &&
+    final frameNodeId = _normalizeNodeIdOrNull(nodeId);
+    final tagOwnStop = opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode;
+    // An ack (0xE2 / 0xE3) proves only a stop sent for this SOS.
+    final stopAck =
+        (opcode == EixamBleProtocol.sosEventAppCancelAckOpcode ||
+            opcode == EixamBleProtocol.sosEventBackendResolvedOpcode) &&
+        (stopRequested.contains(lifecycle.stage) ||
+            _userActionTerminalGenerations.contains(lifecycle.generation));
+    if (lifecycle.externalOnly ||
+        started == null ||
+        !(tagOwnStop || stopAck) ||
+        lifecycleNodeId == null ||
+        frameNodeId == null ||
+        lifecycleNodeId != frameNodeId ||
+        close.receivedAt.toUtc().isBefore(started.toUtc())) {
+      return;
+    }
+    if (_tagStopConfirmedFor(lifecycle)) {
+      return;
+    }
+    final evidence = _TagCloseEvidence(
+      lifecycleId: lifecycle.lifecycleId,
+      generation: lifecycle.generation,
+      closeOpcode: opcode,
+      closedAt: close.receivedAt.toUtc(),
+      receivedAt: close.receivedAt.toUtc(),
+    );
+    _tagStopConfirmation = evidence;
+    sdkReleaseLog(
+      'SOS_OUTBOX_TAG_STOP_CONFIRMED generation=${lifecycle.generation} '
+      'opcode=0x${opcode.toRadixString(16).toUpperCase()}',
+    );
+    unawaited(
+      _localStore
+          .saveJson(
+            SharedPrefsSdkStore.sosTagStopConfirmationKey,
+            evidence.toJson(),
+          )
+          .catchError((Object _) {}),
+    );
+  }
+
+  /// [status] is the command-path attach copy of a TAG close frame received
+  /// before the open SOS started.
+  bool _isCloseFrameReplayBeforeOpenSos(
+    DeviceSosStatus status,
+    SosLifecycleSnapshot lifecycle,
+  ) {
+    final started = lifecycle.activationTimestamp;
+    final frameAt = status.lastPacketAt;
+    return status.lastEvent == DeviceSosController.commandChannelAttachedEvent &&
         status.derivedFromBlePacket &&
-        status.transitionSource == DeviceSosTransitionSource.device &&
         _isDeviceSosCycleClosed(status.state) &&
-        (opcode == EixamBleProtocol.sosEventUserDeactivatedOpcode ||
-            opcode == EixamBleProtocol.sosEventAppCancelAckOpcode) &&
-        !status.updatedAt.isBefore(started) &&
-        lifecycleNodeId != null &&
-        statusNodeId != null &&
-        lifecycleNodeId == statusNodeId;
+        lifecycle.isOpen &&
+        !lifecycle.externalOnly &&
+        started != null &&
+        frameAt != null &&
+        frameAt.toUtc().isBefore(started.toUtc());
+  }
+
+  bool _tagStopConfirmedFor(SosLifecycleSnapshot lifecycle) {
+    final evidence = _tagStopConfirmation;
+    return evidence != null &&
+        evidence.lifecycleId == lifecycle.lifecycleId &&
+        evidence.generation == lifecycle.generation;
+  }
+
+  Future<void> _restoreTagStopConfirmation() async {
+    try {
+      _tagStopConfirmation = _TagCloseEvidence.tryParse(
+        await _localStore.readJson(
+          SharedPrefsSdkStore.sosTagStopConfirmationKey,
+        ),
+      );
+    } catch (_) {
+      _tagStopConfirmation = null;
+    }
+  }
+
+  void _forgetTagStopConfirmation() {
+    if (_tagStopConfirmation == null) {
+      return;
+    }
+    _tagStopConfirmation = null;
+    unawaited(
+      _localStore
+          .remove(SharedPrefsSdkStore.sosTagStopConfirmationKey)
+          .catchError((Object _) {}),
+    );
   }
 
   /// The TAG's own close frame (0xE1 stop / 0xE2 app-cancel ack) of this
@@ -19693,12 +19823,21 @@ class EixamConnectSdkImpl
       );
       return;
     }
+    // r7 MEDIUM-1: after the user's own cancel / resolve the close is the
+    // user's action (allowed even if the incident id was once another SOS's).
+    final userAction = _userActionTerminalGenerations.contains(
+      lifecycle.generation,
+    );
     if (!_sosStopGuard
         .authorize(
           SosStopRequest(
             kind: SosStopKind.nativeCycleClose,
-            basis: SosStopBasis.authorizedUpstream,
-            source: 'lifecycle_terminal',
+            basis: userAction
+                ? SosStopBasis.userAction
+                : SosStopBasis.authorizedUpstream,
+            source: userAction
+                ? 'lifecycle_terminal_user_action'
+                : 'lifecycle_terminal',
             incidentId: lifecycle.backendIncidentId,
           ),
         )
@@ -27308,7 +27447,8 @@ class EixamConnectSdkImpl
     _terminalGenerationsEstablishedThisProcess.clear();
     _devicePacketSignaturesByGeneration.clear();
     _deviceMirrorDispatchedGenerations.clear();
-    _userStopWrittenGenerations.clear();
+    _userActionTerminalGenerations.clear();
+    _forgetTagStopConfirmation();
     _deviceOwnedBackendIncidentId = null;
     _lastDeviceRuntimeCanonicalIncidentSignature = null;
     _lastDeviceRuntimeCanonicalIncident = null;

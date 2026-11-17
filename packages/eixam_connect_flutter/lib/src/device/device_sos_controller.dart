@@ -197,6 +197,11 @@ class DeviceSosController {
     yield* _controlCommandPathController.stream;
   }
 
+  /// `lastEvent` of the status re-emitted when a command path attaches: a
+  /// copy of the last status, not a new TAG frame.
+  static const String commandChannelAttachedEvent =
+      'DEVICE_SOS_COMMAND_CHANNEL_ATTACHED';
+
   Future<void> attach({
     required DeviceCommandWriter commandWriter,
     String? transportId,
@@ -216,7 +221,7 @@ class DeviceSosController {
     _emitControlCommandPathAvailabilityIfChanged(previousControlAvailability);
     _emit(
       _status.copyWith(
-        lastEvent: 'DEVICE_SOS_COMMAND_CHANNEL_ATTACHED',
+        lastEvent: commandChannelAttachedEvent,
         updatedAt: _now(),
       ),
     );
@@ -260,6 +265,24 @@ class DeviceSosController {
 
   void setOwnTagSosFrameClassifier(OwnTagSosFrameClassifier? classifier) {
     ownTagSosFrameGate.setClassifier(classifier);
+  }
+
+  void Function(
+    int opcode,
+    int nodeId,
+    PhysicalSosReceiveEvidence evidence,
+  )?
+  _tagCloseFrameObserver;
+
+  /// F17c review r7 MEDIUM-2: told of every own-TAG close frame (0xE1 stop,
+  /// 0xE2 cancel ack, 0xE3 resolve ack) received with exact physical
+  /// evidence, including an ack this controller ignores because the command
+  /// already settled the mirror: the TAG's physical confirmation of a stop.
+  void setTagCloseFrameObserver(
+    void Function(int opcode, int nodeId, PhysicalSosReceiveEvidence evidence)?
+    observer,
+  ) {
+    _tagCloseFrameObserver = observer;
   }
 
   void setPhysicalSosStartAdmissionPolicy(
@@ -1435,6 +1458,21 @@ class DeviceSosController {
         pendingTerminalCommand?.action == 'cancel' &&
         _terminalOperationIsCurrent(pendingTerminalCommand?.operationIsCurrent);
     final physicalEvidence = resolutionContext?.physicalEvidence;
+    if (physicalEvidence != null &&
+        physicalEvidence.hasTerminalSemantics &&
+        physicalEvidence.exactPhysicalIdentityMatch &&
+        source == DeviceSosTransitionSource.device &&
+        (packet.isUserDeactivated ||
+            packet.isAppCancelAck ||
+            packet.isBackendResolved)) {
+      try {
+        _tagCloseFrameObserver?.call(
+          packet.opcode,
+          packet.nodeId,
+          physicalEvidence,
+        );
+      } catch (_) {}
+    }
     final acknowledgesRetainedTerminal =
         ((packet.isBackendResolved &&
                 pendingTerminalCommand?.action == 'resolve') ||
