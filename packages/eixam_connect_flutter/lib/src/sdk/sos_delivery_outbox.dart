@@ -260,8 +260,9 @@ class SosDeliveryOutbox {
   Completer<void>? _confirmSignal;
   bool _running = false;
 
-  /// The action whose publish is on its way to the broker right now: it may
-  /// reach the backend whatever happens to the queue meanwhile.
+  /// The action selected for its attempt (from the head selection, before
+  /// its pre-publish persist, until the publish returned): it may reach the
+  /// backend whatever happens to the queue meanwhile.
   String? _publishInFlightId;
   bool _disposed = false;
   bool _paused = false;
@@ -390,7 +391,11 @@ class SosDeliveryOutbox {
         _queue.any(
           (action) =>
               action.kind == SosOutboxActionKind.trigger &&
-              (action.published || action.id == _publishInFlightId) &&
+              // A failed attempt (e.g. a PUBACK timeout) may still have
+              // reached the broker: possibly delivered too.
+              (action.published ||
+                  action.attempts > 0 ||
+                  action.id == _publishInFlightId) &&
               action.createdAt.isAfter(observed),
         );
     if (newerTriggerPublished) {
@@ -615,13 +620,14 @@ class SosDeliveryOutbox {
       attempts: head.attempts + 1,
       lastAttemptAt: _clock().toUtc(),
     );
+    // Selected: from here the attempt may reach the broker (MEDIUM-1).
+    _publishInFlightId = attempted.id;
     _replace(attempted);
-    await _persist();
-    _publishStatus();
     var current = attempted;
     try {
-      _publishInFlightId = current.id;
       try {
+        await _persist();
+        _publishStatus();
         await _publish(current);
       } finally {
         _publishInFlightId = null;
