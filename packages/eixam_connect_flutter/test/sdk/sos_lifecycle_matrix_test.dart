@@ -24493,64 +24493,138 @@ void _ambiguousSosPromptTests() {
     // `cancelled` lands later. The deferred native close names the cycle the
     // user stopped AT THE TAP (A), issued at the tap: native leaves B's
     // countdown running.
-    test('F1: user cancel of A pending, B opens natively, A\'s late terminal '
-        'names A\'s tap cycle: B\'s countdown continues', () async {
+    for (final dartSeesB in <bool>[false, true]) {
+      test(
+        'F1: user cancel of A pending, B opens natively, A\'s late terminal '
+        'names A\'s tap cycle: B\'s countdown continues and no stop is '
+        'written to the TAG (R1${dartSeesB ? ', Dart sees B\'s frames' : ''})',
+        () async {
+          final adapter = _PromptNativeAdapter();
+          final written = <int>[];
+          final phone = await nativeCyclePhone(adapter, written);
+          try {
+            await dartSeenSos(phone, adapter, cycleId: 'native-cycle-a');
+            final aPub = phone.realtime.publishedSos.first.timestamp.toUtc();
+            phone.remote!.active = r7RestA(aPub);
+            phone.realtime.offlineError = StateError('offline');
+            written.clear();
+            final before = adapter.closeNativeSosCycleArgs.length;
+            try {
+              await phone.harness.sdk.cancelSosAuthoritatively();
+            } catch (_) {
+              // Offline: the cancel stays pending (lifecycle `cancelling`).
+            }
+            await settle(300);
+            expect(
+              (await phone.harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.cancelling,
+            );
+            expect(written, contains(0x04), reason: 'the TAG stop at the tap');
+            expect(
+              adapter.closeNativeSosCycleArgs.skip(before),
+              isEmpty,
+              reason: 'no native close before the terminal',
+            );
+            // B: a genuine new TAG SOS, countdown opened natively, unseen by Dart.
+            adapter
+              ..nativeCycleId = 'native-cycle-b'
+              ..nativeCycleOpen = true;
+            final bStartedAt = adapter.nativeCycleStartedAt!;
+            if (dartSeesB) {
+              // Dart-owned link: Dart's mirror sees B's countdown frames too.
+              for (var push = 0; push < 2; push++) {
+                await frame(phone.harness, active: false, packetId: 2);
+              }
+              await settle(200);
+            }
+            phone.realtime.offlineError = null;
+            phone.remote!.active = null;
+            written.clear();
+            await r7Event(phone, 'cancelled');
+            await settle(500);
+            // R1 (review c9522ce): A's late backend `cancelled` writes no stop
+            // over B's running countdown (Dart's remote device clear skips:
+            // newer native cycle).
+            expect(written, isEmpty, reason: 'no 0x04 / 0x07 over B');
+            expect(
+              (await phone.harness.sdk.getSosLifecycle()).stage,
+              SosLifecycleStage.cancelled,
+              reason: 'A is cancelled',
+            );
+            final closes = adapter.closeNativeSosCycleArgs
+                .skip(before)
+                .toList();
+            expect(closes, hasLength(1));
+            expect(closes.single.terminal, 'cancel');
+            expect(closes.single.targetCurrentCycle, isTrue, reason: 'user');
+            expect(
+              closes.single.targetCycleId,
+              'native-cycle-a',
+              reason: 'the cycle in front of the user at the tap',
+            );
+            expect(closes.single.issuedAt!.isBefore(bStartedAt), isTrue);
+            expect(
+              adapter.nativeCloseOutcomes.last,
+              'ignored:user_stop_for_older_cycle',
+            );
+            expect(adapter.nativeCycleOpen, isTrue, reason: 'B continues');
+            expect(adapter.nativeCycleId, 'native-cycle-b');
+            // R1 re-check B1: the skipped clear must not leave the device
+            // mirror pending: B's later frames reach Dart, B is published.
+            final publishedBefore = phone.realtime.publishedSos.length;
+            for (var push = 0; push < 4; push++) {
+              await frame(phone.harness, active: false, packetId: 2);
+            }
+            await settle(countdown.inMilliseconds + 500);
+            for (var push = 0; push < 3; push++) {
+              await frame(phone.harness, active: true, packetId: 2);
+            }
+            await settle(800);
+            expect(
+              phone.realtime.publishedSos.length,
+              publishedBefore + 1,
+              reason: 'B is published',
+            );
+            final b = await phone.harness.sdk.getSosLifecycle();
+            expect(b.isOpen, isTrue, reason: 'B is open');
+            expect(b.generation, greaterThan(1), reason: 'B is a new SOS');
+            expect(written, isEmpty, reason: 'still no stop over B');
+          } finally {
+            await phone.dispose();
+          }
+        },
+        timeout: const Timeout(Duration(minutes: 2)),
+      );
+    }
+
+    // R1 re-check B2: with no user tap, the same SOS's native cycle id can
+    // change (long link gap, native runtime restart). A portal resolve of
+    // that SOS still writes its stop to the TAG (no newer-cycle skip without
+    // a tap; the ambiguous "close frame never seen + new SOS" case is the
+    // accepted 1.0.6 known limitation).
+    test('R1 B2: no user tap, the SOS\'s native cycle id changed, portal '
+        'resolve: the TAG still gets 0x07', () async {
       final adapter = _PromptNativeAdapter();
       final written = <int>[];
       final phone = await nativeCyclePhone(adapter, written);
       try {
         await dartSeenSos(phone, adapter, cycleId: 'native-cycle-a');
-        final aPub = phone.realtime.publishedSos.first.timestamp.toUtc();
-        phone.remote!.active = r7RestA(aPub);
-        phone.realtime.offlineError = StateError('offline');
-        written.clear();
-        final before = adapter.closeNativeSosCycleArgs.length;
-        try {
-          await phone.harness.sdk.cancelSosAuthoritatively();
-        } catch (_) {
-          // Offline: the cancel stays pending (lifecycle `cancelling`).
+        for (var push = 0; push < 3; push++) {
+          await frame(phone.harness, active: true, packetId: 1);
         }
         await settle(300);
-        expect(
-          (await phone.harness.sdk.getSosLifecycle()).stage,
-          SosLifecycleStage.cancelling,
-        );
-        expect(written, contains(0x04), reason: 'the TAG stop at the tap');
-        expect(
-          adapter.closeNativeSosCycleArgs.skip(before),
-          isEmpty,
-          reason: 'no native close before the terminal',
-        );
-        // B: a genuine new TAG SOS, countdown opened natively, unseen by Dart.
+        // The same SOS, re-opened natively under a new id.
         adapter
-          ..nativeCycleId = 'native-cycle-b'
+          ..nativeCycleId = 'native-cycle-y'
           ..nativeCycleOpen = true;
-        final bStartedAt = adapter.nativeCycleStartedAt!;
-        phone.realtime.offlineError = null;
-        phone.remote!.active = null;
-        await r7Event(phone, 'cancelled');
-        await settle(500);
+        written.clear();
+        await portalResolved(phone);
+        await settle(800);
         expect(
           (await phone.harness.sdk.getSosLifecycle()).stage,
-          SosLifecycleStage.cancelled,
-          reason: 'A is cancelled',
+          SosLifecycleStage.resolved,
         );
-        final closes = adapter.closeNativeSosCycleArgs.skip(before).toList();
-        expect(closes, hasLength(1));
-        expect(closes.single.terminal, 'cancel');
-        expect(closes.single.targetCurrentCycle, isTrue, reason: 'user');
-        expect(
-          closes.single.targetCycleId,
-          'native-cycle-a',
-          reason: 'the cycle in front of the user at the tap',
-        );
-        expect(closes.single.issuedAt!.isBefore(bStartedAt), isTrue);
-        expect(
-          adapter.nativeCloseOutcomes.last,
-          'ignored:user_stop_for_older_cycle',
-        );
-        expect(adapter.nativeCycleOpen, isTrue, reason: 'B continues');
-        expect(adapter.nativeCycleId, 'native-cycle-b');
+        expect(written, contains(0x07), reason: 'the TAG gets the resolve');
       } finally {
         await phone.dispose();
       }

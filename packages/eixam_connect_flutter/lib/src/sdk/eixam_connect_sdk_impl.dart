@@ -18678,6 +18678,24 @@ class EixamConnectSdkImpl
         _logRemoteTerminalDeviceClearSkipped('stop_guard_refused');
         return;
       }
+      if (await _newerNativeCycleRunsThan(_sosLifecycle.current)) {
+        // F17c review c9522ce R1: the TAG runs a newer SOS (native opened a
+        // cycle that is neither this SOS's bound cycle nor the one the user
+        // stopped at the tap): this SOS's late backend terminal must not
+        // write its stop over the new countdown.
+        _logRemoteTerminalDeviceClearSkipped('newer_native_cycle');
+        // R1 re-check B1: end this clear and the pending device mirror, or
+        // the convergence fence keeps suppressing the new SOS's frames.
+        _supersedeRemoteTerminalDeviceClearAtAdmission(
+          terminalGeneration: proof.generation,
+          receiveSequence: -1,
+        );
+        _setSosDeviceMirrorState(
+          _SosDeviceMirrorState.failed,
+          source: 'remote_terminal_device_clear_newer_native_cycle',
+        );
+        return;
+      }
       if (proof.retainedAcrossHandoff && !_remoteTerminalWriterIsReady(proof)) {
         BleDebugRegistry.instance.recordEvent(
           'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_DEFERRED '
@@ -19901,6 +19919,47 @@ class EixamConnectSdkImpl
           )
           .catchError((Object _) {}),
     );
+  }
+
+  /// F17c review c9522ce R1: true only when the user stopped [lifecycle]
+  /// (their stop was already written at the tap) and native now reports an
+  /// open cycle whose id differs from every cycle of it (the cycle captured
+  /// at the tap and its bound cycle): that is a newer SOS. No tap (R1
+  /// re-check B2: the same SOS's native id can change after a long link gap
+  /// or a native runtime restart, so a portal resolve must still reach the
+  /// TAG), unknown ids, no open cycle, or a failed read: false (today's
+  /// behaviour).
+  Future<bool> _newerNativeCycleRunsThan(SosLifecycleSnapshot lifecycle) async {
+    final tap = _userActionTapNativeCycleIds[lifecycle.generation];
+    if (tap == null) {
+      return false;
+    }
+    final known = <String>{};
+    final bound = _nativeSosCycleBindings[_nativeSosCycleBindingKey(lifecycle)];
+    if (bound != null && bound.isNotEmpty) {
+      known.add(bound);
+    }
+    try {
+      final id = await tap;
+      if (id != null && id.isNotEmpty) {
+        known.add(id);
+      }
+    } catch (_) {}
+    if (known.isEmpty) {
+      return false;
+    }
+    try {
+      final snapshot = await protectionPlatformAdapter
+          .getPlatformSnapshot()
+          .timeout(_nativeSosCycleReadTimeout);
+      final current = snapshot.nativeSosCycleId?.trim();
+      return snapshot.nativeSosCycleOpen &&
+          current != null &&
+          current.isNotEmpty &&
+          !known.contains(current);
+    } catch (_) {
+      return false;
+    }
   }
 
   /// The user's own action: the native cycle running at the tap (null when
