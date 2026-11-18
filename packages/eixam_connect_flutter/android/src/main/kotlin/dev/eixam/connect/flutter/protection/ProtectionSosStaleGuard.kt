@@ -294,7 +294,7 @@ internal object ProtectionSosStaleGuard {
      * a genuine new SOS into a stale stop.
      */
     fun onForwardedLinkUp(state: ProtectionSosStaleGuardState, now: Long): ProtectionSosStaleGuardState =
-        state.copy(lastFrameAt = now, linkDroppedSinceLastFrame = false)
+        state.copy(lastFrameAt = now, linkDroppedSinceLastFrame = false, stopOwed = false)
 
     /**
      * F17c M-B: like iOS noteLinkDropped: the open candidate is kept. F13: the
@@ -321,13 +321,18 @@ internal object ProtectionSosStaleGuard {
     fun shouldSendStopOnArm(lastSosFrameAt: Long?, connected: Boolean, now: Long): Boolean =
         connected && lastSosFrameAt != null && now - lastSosFrameAt in 0..recentFrameMs
 
-    /** Reconnect: no stop is written; the gap clock restarts. */
+    /**
+     * Reconnect: no stop is written; the gap clock restarts. F13 re-check BL1:
+     * an owed "No" survives only while the link stays up (a "No" given while
+     * down, or one persisted across a restart, asks again on the next retry).
+     */
     fun onReconnected(state: ProtectionSosStaleGuardState, now: Long): ProtectionSosStaleGuardState =
         state.copy(
             lastFrameAt = now,
             linkDroppedSinceLastFrame = false,
             candidateFirstAt = null,
             candidatePushes = 0,
+            stopOwed = false,
         )
 
     /**

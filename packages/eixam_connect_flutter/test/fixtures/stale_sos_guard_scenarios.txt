@@ -19,8 +19,9 @@
 # native timeout sends the SOS. After "No" the stop is OWED until a GATT write
 # of it succeeded (native write result, or Dart's report when Dart owns the
 # link): retries meanwhile re-attempt it without asking; once written, a retry
-# asks again. F13: a link drop (any path) ends the owed stop: the next retry
-# asks again (the TAG may run a new SOS by then).
+# asks again. F13: a link drop or the link coming up (any path, also after an
+# app restart) ends the owed stop: the next retry asks again (the TAG may run
+# a new SOS by then). Owed survives only while the link stays up.
 #
 # Line format (plain text: the Android unit-test classpath has no JSON parser):
 #   <t_ms> <event> [key=value ...] => <action> [stop=cancel|resolve]
@@ -218,6 +219,46 @@ scenario f13_no_then_link_drop_then_new_sos_out_of_range_is_asked
 330005 frame node=7 source=native => duplicate
 332000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
 362000 answer choice=timeout => sosOpened prompt=closed armed=false
+
+# F13 re-check BL1 (Roger 18/11/2026): an owed "No" survives only while the
+# link stays continuously up. The link coming back ends it too: a "No" given
+# while the link was down, or a persisted one across an app restart (no drop
+# callback), never stops the TAG on its own after reconnect.
+scenario f13_drop_then_no_then_link_up_asks_again
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+123000 link_drop => - armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+125100 stop_written ok=false => - owed=true armed=true
+300000 link_up => - owed=false armed=true
+330000 frame node=7 source=native => pending
+330005 frame node=7 source=native => duplicate
+332000 decide => prompt kind=cancel opened=true prompt=open owed=false armed=true
+
+# Persisted owed "No", then a process death (no drop callback): the link
+# coming up after the relaunch ends it; the next retry asks again.
+scenario f13_owed_no_then_restart_link_up_asks_again
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=resolve prompt=closed owed=true armed=true
+400000 link_up => - owed=false armed=true
+420000 frame node=7 source=dart => pending
+422000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
+
+# "No" with the link up: the stop is written at once (unchanged).
+scenario f13_no_with_link_up_writes_the_stop_at_once
+0 seen source=dart node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+15000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+15100 stop_written ok=true => - owed=false armed=true
 
 # (ii) Once the stop was written, a retry asks again (no silent window).
 scenario no_retry_after_the_write_asks_again

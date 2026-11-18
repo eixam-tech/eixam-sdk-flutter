@@ -499,6 +499,11 @@ final class IosNativeSosDeliveryStore {
       defaults.set(now(), forKey: Keys.staleGuardLastFrameAt)
     }
     defaults.set(false, forKey: Keys.staleGuardLinkDropped)
+    // F13 re-check BL1: an owed "No" survives only while the link stays up.
+    // A "No" given while the link was down, or one persisted across an app
+    // restart (no drop callback), is not written on its own after reconnect:
+    // the next ambiguous retry asks again.
+    defaults.set(false, forKey: Keys.staleGuardStopOwed)
   }
 
   /// F17c: the open prompt's deadline (ms since epoch), nil when none.
