@@ -296,9 +296,12 @@ internal object ProtectionSosStaleGuard {
     fun onForwardedLinkUp(state: ProtectionSosStaleGuardState, now: Long): ProtectionSosStaleGuardState =
         state.copy(lastFrameAt = now, linkDroppedSinceLastFrame = false)
 
-    /** F17c M-B: like iOS noteLinkDropped: the open candidate is kept. */
+    /**
+     * F17c M-B: like iOS noteLinkDropped: the open candidate is kept. F13: the
+     * user's "No" is no longer owed after a drop (the next retry asks again).
+     */
     fun onForwardedLinkDropped(state: ProtectionSosStaleGuardState): ProtectionSosStaleGuardState =
-        state.copy(linkDroppedSinceLastFrame = true)
+        state.copy(linkDroppedSinceLastFrame = true, stopOwed = false)
 
     fun arm(
         terminal: ProtectionSosStaleTerminal,
@@ -327,8 +330,17 @@ internal object ProtectionSosStaleGuard {
             candidatePushes = 0,
         )
 
+    /**
+     * F13 (Roger 18/11/2026): a drop ends the user's owed "No": out of range
+     * the TAG may start a genuine new SOS, so the next retry asks again.
+     */
     fun onLinkDropped(state: ProtectionSosStaleGuardState): ProtectionSosStaleGuardState =
-        state.copy(linkDroppedSinceLastFrame = true, candidateFirstAt = null, candidatePushes = 0)
+        state.copy(
+            linkDroppedSinceLastFrame = true,
+            candidateFirstAt = null,
+            candidatePushes = 0,
+            stopOwed = false,
+        )
 
     /** The TAG sent its own close: it got the stop (or closed the SOS itself). */
     @Suppress("UNUSED_PARAMETER")

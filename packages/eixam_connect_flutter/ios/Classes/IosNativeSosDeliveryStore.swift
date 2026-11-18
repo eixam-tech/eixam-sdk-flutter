@@ -482,9 +482,13 @@ final class IosNativeSosDeliveryStore {
   }
 
   /// The TAG link dropped. The guard survives it (A1): after a reconnect the
-  /// TAG may still run the SOS the SDK closed.
+  /// TAG may still run the SOS the SDK closed. F13 (Roger 18/11/2026): the
+  /// user's "No" is no longer owed: out of range the TAG may start a genuine
+  /// new SOS, so the next ambiguous retry asks again (never an automatic
+  /// stop after a drop).
   func noteLinkDropped() {
     defaults.set(true, forKey: Keys.staleGuardLinkDropped)
+    defaults.set(false, forKey: Keys.staleGuardStopOwed)
   }
 
   /// The TAG link is back. An armed guard measures its gap from now: a TAG

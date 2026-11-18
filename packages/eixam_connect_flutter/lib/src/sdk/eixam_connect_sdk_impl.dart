@@ -26092,6 +26092,34 @@ class EixamConnectSdkImpl
     void Function()? validateOperation,
     void Function(String owner)? onWriterSelected,
   }) async {
+    try {
+      await _sendDeviceCommandThroughActiveOwnerOnce(
+        command,
+        validateOperation: validateOperation,
+        onWriterSelected: onWriterSelected,
+      );
+    } catch (_) {
+      if (command.opcode == 0x04 || command.opcode == 0x07) {
+        // F13 review B1 (Roger 18/11/2026): a TAG stop that could not be
+        // written is a possible silent link loss (Bluetooth off while the
+        // link still looks up): counted as a drop, so no deferred stop is
+        // written later on its own; the TAG's frames go to the classifier.
+        _ownTagLinkDropEpoch++;
+        sdkReleaseLog(
+          'SOS_OUTBOX_TAG_STOP_WRITE_FAILED '
+          'opcode=0x${command.opcode.toRadixString(16).padLeft(2, '0')} '
+          'decision=link_continuity_lost',
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _sendDeviceCommandThroughActiveOwnerOnce(
+    EixamDeviceCommand command, {
+    void Function()? validateOperation,
+    void Function(String owner)? onWriterSelected,
+  }) async {
     final commandGeneration = _sosLifecycle.current.generation;
     void requireCurrentConfirmation() {
       validateOperation?.call();

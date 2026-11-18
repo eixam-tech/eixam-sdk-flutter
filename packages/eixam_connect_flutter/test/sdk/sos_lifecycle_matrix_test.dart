@@ -873,6 +873,136 @@ void main() {
       });
     }
 
+    // F13 review B1 (Roger 18/11/2026): a TAG stop whose write failed is a
+    // possible silent link loss: the TAG may run a genuine new SOS by the time
+    // the writer is ready again, so it is never re-written on its own.
+    test('F13 review B1: a backend CANCEL whose native write failed while the '
+        'link looked up is not re-written when the writer is ready again; '
+        'the user can still stop the TAG', () async {
+      const hardware = 'CF:82:00:00:00:01';
+      final adapter = _SnapshotProtectionPlatformAdapter(
+        const ProtectionPlatformSnapshot(
+          platform: ProtectionPlatform.android,
+          backgroundCapabilityReady: false,
+        ),
+      );
+      final harness = _SdkSosHarness(
+        connectedBle: true,
+        connectedNodeId: 0x1234,
+        deviceCountdown: Duration.zero,
+        protectionPlatformAdapter: adapter,
+      );
+      final commands = <int>[];
+      int cancelWrites() =>
+          commands.where((opcode) => opcode == 0x04).length +
+          adapter.commands
+              .where((request) => request.bytes.first == 0x04)
+              .length;
+      ProtectionPlatformSnapshot nativeOwner({required bool ready}) =>
+          ProtectionPlatformSnapshot(
+            platform: ProtectionPlatform.android,
+            backgroundCapabilityReady: true,
+            serviceRunning: true,
+            runtimeActive: true,
+            runtimeState: ProtectionRuntimeState.active,
+            coverageLevel: ProtectionCoverageLevel.full,
+            bleOwner: ProtectionBleOwner.androidService,
+            serviceBleConnected: true,
+            serviceBleReady: true,
+            nativeCommandServiceReady: true,
+            nativeCommandEa04Ready: ready,
+            nativeCommandIdentityReady: true,
+            nativeCommandQueueHealthy: true,
+            nativeCommandReady: ready,
+            protectedDeviceId: hardware,
+            activeDeviceId: 'ble-1',
+            bleHardwareId: hardware,
+          );
+      try {
+        await harness.deviceSosController.attach(
+          transportId: 'ble-1',
+          commandWriter: (command) async => commands.add(command.opcode),
+        );
+        await harness.sdk.initialize(
+          const EixamSdkConfig(apiBaseUrl: 'https://example.test'),
+        );
+        await harness.setSession();
+        await harness.sdk.triggerSosAuthoritatively(
+          const SosTriggerPayload(triggerSource: 'commercial_app'),
+        );
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _physicalResolutionContext(
+            receiveSequence: 1,
+            terminal: false,
+            receiveSequenceDomain: 'b1-failed-write',
+          ),
+        );
+        await pumpEventQueue(times: 10);
+        final original = await harness.sdk.getSosLifecycle();
+        expect(original.stage, SosLifecycleStage.active);
+        // Native takes the link; it never visibly drops.
+        await harness.deviceSosController.detach();
+        var failWrites = true;
+        adapter.commandObserver = (request) {
+          if (request.bytes.first == 0x04 && failWrites) {
+            throw StateError('GATT write failed');
+          }
+        };
+        adapter.snapshot = nativeOwner(ready: true);
+        await harness.sdk.rehydrateProtectionState();
+        await pumpEventQueue(times: 20);
+        // Bluetooth fails silently: the backend cancel's write fails.
+        harness.sosRepository.currentIncident = harness
+            .sosRepository
+            .currentIncident
+            .copyWith(state: SosState.cancelled, isBackendConfirmed: true);
+        harness.sosRepository.stateController.add(SosState.cancelled);
+        await pumpEventQueue(times: 30);
+        expect(
+          (await harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.cancelled,
+        );
+        final attempts = cancelWrites();
+        // Out of range the user cancels on the TAG and presses a genuine new
+        // SOS. The writer is ready again.
+        failWrites = false;
+        adapter.snapshot = nativeOwner(ready: false);
+        await harness.sdk.rehydrateProtectionState();
+        await pumpEventQueue(times: 20);
+        adapter.snapshot = nativeOwner(ready: true);
+        await harness.sdk.rehydrateProtectionState();
+        await pumpEventQueue(times: 30);
+        expect(
+          cancelWrites(),
+          attempts,
+          reason: 'no automatic stop once a write failed',
+        );
+        // The user can still stop it: the TAG's ACTIVE retry is never dropped
+        // silently and the user's cancel is written at once.
+        harness.deviceSosController.handleIncomingSosPacket(
+          _deviceOriginActivePacket(),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _physicalResolutionContext(
+            receiveSequence: 5,
+            terminal: false,
+            receiveSequenceDomain: 'b1-failed-write',
+          ),
+        );
+        await pumpEventQueue(times: 20);
+        final reopened = await harness.sdk.getSosLifecycle();
+        expect(reopened.generation, original.generation + 1);
+        expect(reopened.isOpen, isTrue, reason: 'never dropped silently');
+        await harness.sdk.cancelSosAuthoritatively();
+        await pumpEventQueue(times: 30);
+        expect(cancelWrites(), attempts + 1, reason: "the user's cancel");
+      } finally {
+        await harness.dispose();
+        await adapter.dispose();
+      }
+    });
+
     for (final counter in [0, 3]) {
       test(
         'B3 native current-cycle counter $counter keeps CANCEL E2 proof',
@@ -22665,7 +22795,10 @@ void _ambiguousSosPromptTests() {
         'through): the unsent app cancel is never re-sent on them', () async {
       final adapter = _PromptNativeAdapter();
       final written = <int>[];
-      final (phone, _) = await cancelWhileLinkSilentlyDown(adapter, written);
+      final (phone, cancelled) = await cancelWhileLinkSilentlyDown(
+        adapter,
+        written,
+      );
       try {
         adapter.recordArmed = false;
         await connect(phone.harness, written);
@@ -22677,6 +22810,18 @@ void _ambiguousSosPromptTests() {
           written,
           isNot(contains(0x04)),
           reason: 'never stopped silently',
+        );
+        // F13 review N3: let through, the retries reopen the SOS (never
+        // dropped) and the user's cancel stops the TAG with one write.
+        final reopened = await phone.harness.sdk.getSosLifecycle();
+        expect(reopened.generation, cancelled.generation + 1);
+        expect(reopened.isOpen, isTrue);
+        await phone.harness.sdk.cancelSosAuthoritatively();
+        await settle(200);
+        expect(
+          written.where((opcode) => opcode == 0x04),
+          hasLength(1),
+          reason: "the user's cancel, written once",
         );
       } finally {
         await phone.dispose();
@@ -22730,6 +22875,70 @@ void _ambiguousSosPromptTests() {
         await expectSosSentAndShownActive(phone, cancelled);
         expect(written, isNot(contains(0x04)), reason: 'never stopped');
         expect(written, isNot(contains(0x07)), reason: 'never stopped');
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('F13 review B1: a portal resolve whose write failed while the link '
+        'looked up is never written at reconnect; the TAG retries ask and '
+        '"No" writes the stop once', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final store = MemorySharedPrefsSdkStore();
+      final phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: store,
+        sessionStore: SdkSessionStore(localStore: store),
+        secureStore: InMemorySecureKeyValueStore(),
+      );
+      try {
+        for (var push = 0; push < 4; push++) {
+          await frame(phone.harness, active: false, packetId: 1);
+        }
+        await settle(countdown.inMilliseconds + 500);
+        await backendProcessed(phone);
+        expect(phone.realtime.publishedSos, hasLength(1));
+        // Bluetooth fails silently: the link still looks up, every write fails.
+        await phone.harness.deviceSosController.attach(
+          commandWriter: (_) async => throw StateError('Bluetooth off'),
+          transportId: 'ble-1',
+        );
+        await settle(50);
+        await portalResolved(phone);
+        expect(
+          (await phone.harness.sdk.getSosLifecycle()).stage,
+          SosLifecycleStage.resolved,
+        );
+        adapter.recordArmed = true;
+        expect(written, isEmpty);
+        // Out of range the user cancels on the TAG and presses a genuine new
+        // SOS (its countdown ends unseen). The link comes back.
+        await phone.harness.deviceSosController.detach();
+        await settle(50);
+        await connect(phone.harness, written);
+        await settle(300);
+        expect(
+          written,
+          isEmpty,
+          reason: 'no automatic 0x07/0x04 at reconnect after a failed write',
+        );
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'resolve',
+        );
+        expect(written, isEmpty, reason: 'never stopped silently');
+        expect(control(phone).currentAmbiguousTagSosPrompt, isNotNull);
+        final outcome = await control(
+          phone,
+        ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.stopTag);
+        await settle(100);
+        expect(outcome, AmbiguousTagSosAnswerOutcome.tagStopped);
+        expect(written, <int>[0x07], reason: 'the stop the user chose, once');
+        expect(phone.realtime.publishedSos, hasLength(1), reason: 'no new one');
       } finally {
         await phone.dispose();
       }

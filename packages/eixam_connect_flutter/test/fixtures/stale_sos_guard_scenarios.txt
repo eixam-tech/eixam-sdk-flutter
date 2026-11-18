@@ -19,7 +19,8 @@
 # native timeout sends the SOS. After "No" the stop is OWED until a GATT write
 # of it succeeded (native write result, or Dart's report when Dart owns the
 # link): retries meanwhile re-attempt it without asking; once written, a retry
-# asks again.
+# asks again. F13: a link drop (any path) ends the owed stop: the next retry
+# asks again (the TAG may run a new SOS by then).
 #
 # Line format (plain text: the Android unit-test classpath has no JSON parser):
 #   <t_ms> <event> [key=value ...] => <action> [stop=cancel|resolve]
@@ -182,6 +183,41 @@ scenario no_write_failure_keeps_the_stop_owed
 180000 frame node=7 source=native => pending
 182000 decide => stale stop=cancel prompt=closed owed=true armed=true
 182200 stop_written ok=true => - owed=false armed=true
+
+# F13 (review B2, Roger 18/11/2026): the user's "No" is owed only while the
+# link stays up. A link drop ends it (any path): out of range the user may
+# cancel on the TAG and press a genuine new SOS, so after reconnect the next
+# ambiguous retry asks again; nothing is stopped automatically.
+scenario f13_no_then_link_drop_asks_again_dart
+0 seen source=dart node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+22000 link_up => - armed=true
+22000 frame node=7 source=dart => pending
+24000 decide => prompt kind=cancel opened=true prompt=open armed=true
+30000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+30100 stop_written ok=false => - owed=true armed=true
+31000 link_drop source=dart => - owed=false armed=true
+200000 link_up source=dart => - owed=false armed=true
+220000 frame node=7 source=dart => pending
+220005 frame node=7 source=dart => duplicate
+222000 decide => prompt kind=cancel opened=true prompt=open owed=false armed=true
+
+# Device case 13 shape after "No": the link drops before the stop reached the
+# TAG; out of range the user cancels on the TAG and presses a new SOS whose
+# countdown ends unseen: only ACTIVE retries at reconnect -> ask, never stop.
+scenario f13_no_then_link_drop_then_new_sos_out_of_range_is_asked
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=resolve prompt=closed owed=true armed=true
+125050 link_drop => - owed=false armed=true
+300000 link_up => - owed=false armed=true
+330000 frame node=7 source=native => pending
+330005 frame node=7 source=native => duplicate
+332000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
+362000 answer choice=timeout => sosOpened prompt=closed armed=false
 
 # (ii) Once the stop was written, a retry asks again (no silent window).
 scenario no_retry_after_the_write_asks_again
