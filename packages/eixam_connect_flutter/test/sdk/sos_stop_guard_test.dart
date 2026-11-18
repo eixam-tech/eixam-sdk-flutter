@@ -329,6 +329,43 @@ void main() {
     expect(guard.isSupersededIncident('incident-a'), isTrue);
   });
 
+  // F13 (device cases 12/13, Roger 18/11/2026): a stop that could not be
+  // written then is never written on its own when a link or writer comes
+  // back, whatever identity it carries.
+  test('a deferred replay is always refused and logged', () {
+    for (final kind in <SosStopKind>[
+      SosStopKind.tagStop,
+      SosStopKind.nativeCycleClose,
+    ]) {
+      for (final incidentId in <String?>[null, 'incident-b']) {
+        final decision = SosStopGuard().authorize(
+          SosStopRequest(
+            kind: kind,
+            basis: SosStopBasis.deferredReplay,
+            source: 'test_reconnect',
+            incidentId: incidentId,
+            nativeCycleId: 'cycle-b',
+          ),
+        );
+        expect(decision.allowed, isFalse, reason: '${kind.name} $incidentId');
+        expect(decision.reason, 'deferred_replay_unclassified');
+      }
+    }
+    expect(
+      lines.where(
+        (line) =>
+            line.contains('SOS_OUTBOX_STOP_GUARD_REFUSED') &&
+            line.contains('basis=deferredReplay') &&
+            line.contains('source=test_reconnect') &&
+            line.contains('action=keep_sos_active'),
+      ),
+      hasLength(4),
+    );
+    // The user's own action and the prompt's owed stop stay allowed.
+    expect(allowed(SosStopGuard(), SosStopBasis.userAction), isTrue);
+    expect(allowed(SosStopGuard(), SosStopBasis.owedStop), isTrue);
+  });
+
   test('the attribution state survives a restart (JSON round trip)', () {
     final guard = guardWithA();
     final restored = SosStopGuard()..restoreFromJson(guard.toJson());

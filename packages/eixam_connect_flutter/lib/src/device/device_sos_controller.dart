@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../diagnostics/sdk_release_log.dart';
 import 'ble_debug_registry.dart';
 import 'ble_incoming_event.dart';
 import 'eixam_ble_command.dart';
@@ -167,7 +168,6 @@ class DeviceSosController {
   PhysicalSosStartAdmissionPolicy? _physicalSosStartAdmissionPolicy;
 
   static const Duration _terminalCycleSuppressionWindow = Duration(seconds: 5);
-  static const Duration _terminalCommandRetryInterval = Duration(seconds: 1);
   static const Duration _promotedPreConfirmSuppressionWindow = Duration(
     minutes: 2,
   );
@@ -225,7 +225,33 @@ class DeviceSosController {
         updatedAt: _now(),
       ),
     );
-    unawaited(_flushPendingTerminalCommand(reason: 'command_path_attached'));
+    _dropUnsentTerminalCommand(reason: 'command_path_attached');
+  }
+
+  /// F13 (device cases 12/13, Roger 18/11/2026): a cancel / resolve the TAG
+  /// never received is never written later on its own. v1 TAG frames carry
+  /// no episode id: while the link was down the TAG may have closed that SOS
+  /// and started a genuine new one, which the stop would cancel. The TAG's
+  /// frames go through the native classifier instead: a new countdown is
+  /// admitted; the old SOS still running is ambiguous and native asks the
+  /// user, whose "No" writes the stop (owed-stop path). A command already
+  /// written keeps its correlation (its 0xE2/0xE3 still settles it).
+  void _dropUnsentTerminalCommand({required String reason}) {
+    final pending = _pendingTerminalCommand;
+    if (pending == null ||
+        pending.sentAt != null ||
+        _terminalCommandDispatchInFlight) {
+      return;
+    }
+    _pendingTerminalCommand = null;
+    BleDebugRegistry.instance.recordEvent(
+      'SOS_TRACE device_terminal_command_replay_dropped '
+      'reason=$reason action=${pending.action}',
+    );
+    sdkReleaseLog(
+      'SOS_OUTBOX_TERMINAL_REPLAY_DROPPED terminal=${pending.action} '
+      'reason=$reason decision=native_classifier',
+    );
   }
 
   Future<void> detach() async {
@@ -966,73 +992,6 @@ class DeviceSosController {
     );
   }
 
-  Future<void> _flushPendingTerminalCommand({required String reason}) async {
-    final pending = _pendingTerminalCommand;
-    final writer = pending?.commandWriterOverride ?? _commandWriter;
-    if (pending == null || writer == null || _terminalCommandDispatchInFlight) {
-      return;
-    }
-    if (!_terminalOperationIsCurrent(pending.operationIsCurrent)) {
-      _pendingTerminalCommand = null;
-      _recordStaleTerminalOperation(
-        pending.commandRouteLabel ?? 'attached_writer',
-      );
-      return;
-    }
-    final usesOverride = pending.commandWriterOverride != null;
-    if (!usesOverride && !longCommandAvailable && !shortCommandAvailable) {
-      return;
-    }
-    final sentAt = pending.sentAt;
-    if (reason == 'command_path_attached' &&
-        sentAt != null &&
-        pending.operationIsCurrent != null) {
-      // Readiness is not a new terminal request. A guarded operation already
-      // submitted to its authorized writer waits for physical acknowledgement;
-      // only later observed ACTIVE evidence may request a bounded retry.
-      return;
-    }
-    if (reason == 'sos_still_observed_after_terminal' &&
-        sentAt != null &&
-        _now().difference(sentAt) < _terminalCommandRetryInterval) {
-      return;
-    }
-    if (reason != 'sos_still_observed_after_terminal') {
-      BleDebugRegistry.instance.recordEvent(
-        'SOS_TRACE device_terminal_command_retry reason=$reason',
-      );
-    }
-    late final bool sent;
-    _terminalCommandDispatchInFlight = true;
-    try {
-      sent = await _dispatchTerminalCommand(
-        writer: writer,
-        previous: _status,
-        commandRouteLabel: pending.commandRouteLabel ?? 'attached_writer',
-        allowCmd: pending.action == 'resolve'
-            ? usesOverride || longCommandAvailable
-            : !usesOverride && longCommandAvailable,
-        allowInet:
-            pending.action != 'resolve' &&
-            (usesOverride || shortCommandAvailable),
-        action: pending.action,
-        commandWriterOverride: pending.commandWriterOverride,
-        operationIsCurrent: pending.operationIsCurrent,
-      );
-    } on _StaleDeviceTerminalOperation {
-      _pendingTerminalCommand = null;
-      _recordStaleTerminalOperation(
-        pending.commandRouteLabel ?? 'attached_writer',
-      );
-      return;
-    } finally {
-      _terminalCommandDispatchInFlight = false;
-    }
-    if (sent) {
-      _pendingTerminalCommand = pending.copyWith(sentAt: _now());
-    }
-  }
-
   void _recordTerminalCommandSent({
     required String channel,
     required String action,
@@ -1313,13 +1272,12 @@ class DeviceSosController {
       BleDebugRegistry.instance.recordEvent(
         'SOS_TRACE device_rearm_suppressed reason=pending_terminal_command',
       );
+      // F13: never re-sent on its own. An SOS frame after an unconfirmed
+      // terminal is the ambiguous case: native classifies it and asks the
+      // user (v1 frames carry no episode id).
       BleDebugRegistry.instance.recordEvent(
-        'SOS_TRACE device_terminal_command_retry reason=sos_still_observed_after_terminal',
-      );
-      unawaited(
-        _flushPendingTerminalCommand(
-          reason: 'sos_still_observed_after_terminal',
-        ),
+        'SOS_TRACE device_terminal_command_retry_skipped '
+        'reason=sos_still_observed_after_terminal decision=native_classifier',
       );
       return;
     }

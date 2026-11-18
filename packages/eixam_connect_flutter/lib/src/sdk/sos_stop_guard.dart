@@ -50,6 +50,18 @@ enum SosStopBasis {
   /// non-exact adoption). Valid only while no other SOS of this user can be
   /// confused with the current one: the backend keeps one open SOS per user.
   userScoped,
+
+  /// F13 (device cases 12/13, Roger 18/11/2026): a stop decided earlier that
+  /// could not be written then and would now be written on its own because a
+  /// writer came back (reconnect, attach), while the TAG link dropped (or was
+  /// down) at some point since the decision, or that cannot be told. Always
+  /// refused: v1 TAG frames carry no episode id, so the TAG may meanwhile
+  /// run a genuine new SOS the stop would cancel. Native classifies the
+  /// TAG's frames instead (new countdown -> new SOS; the old SOS still
+  /// running -> the user is asked, and "No" writes the stop as
+  /// [owedStop]). A writer change with the TAG connected throughout is not
+  /// this basis: the same SOS is still in front of the user.
+  deferredReplay,
 }
 
 /// One request to the [SosStopGuard]. Identifiers are used for the decision
@@ -429,6 +441,8 @@ final class SosStopGuard {
         return const SosStopDecision._(true, 'user_action');
       case SosStopBasis.owedStop:
         return const SosStopDecision._(true, 'owed_stop');
+      case SosStopBasis.deferredReplay:
+        return const SosStopDecision._(false, 'deferred_replay_unclassified');
       case SosStopBasis.exactIncident:
       case SosStopBasis.exactOccurredAt:
       case SosStopBasis.authorizedUpstream:
@@ -462,6 +476,8 @@ final class SosStopGuard {
       case SosStopBasis.userAction:
       case SosStopBasis.owedStop:
         return const SosStopDecision._(true, 'user_action');
+      case SosStopBasis.deferredReplay:
+        return const SosStopDecision._(false, 'deferred_replay_unclassified');
     }
   }
 

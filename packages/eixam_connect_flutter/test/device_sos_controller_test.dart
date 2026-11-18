@@ -766,7 +766,9 @@ void main() {
           source: DeviceSosTransitionSource.device,
         );
         await Future<void>.delayed(const Duration(milliseconds: 5));
-        expect(commands.map((command) => command.opcode), <int>[0x07, 0x07]);
+        // F13: an ACTIVE frame after an unconfirmed terminal is the ambiguous
+        // case (native classifier / prompt): never re-sent automatically.
+        expect(commands.map((command) => command.opcode), <int>[0x07]);
         expect(controller.currentStatus.state, DeviceSosState.active);
 
         controller.handleIncomingSosEventPacket(
@@ -815,7 +817,8 @@ void main() {
       },
     );
 
-    test('pending cancel retry remains alive while waiting for ACK', () async {
+    test('F13: a cancel awaiting its ACK is not re-sent on ACTIVE frames and '
+        'still settles on the ACK', () async {
       final commands = <EixamDeviceCommand>[];
       DateTime? controlledNow;
       final controller = DeviceSosController(
@@ -840,7 +843,7 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 5));
 
-      expect(commands.map((command) => command.opcode), <int>[0x04, 0x04]);
+      expect(commands.map((command) => command.opcode), <int>[0x04]);
       expect(controller.currentStatus.state, DeviceSosState.active);
 
       controller.handleIncomingSosEventPacket(
@@ -852,6 +855,98 @@ void main() {
       expect(closed.state, DeviceSosState.inactive);
       expect(controller.currentStatus.state, DeviceSosState.inactive);
     });
+
+    // F13 device cases 12/13 (18/11): the app cancel could not be written
+    // (Bluetooth off, the link still read as up). v1 TAG frames carry no
+    // episode id: the TAG may since run a genuine new SOS, so the stop is
+    // never written automatically at reconnect or on later frames.
+    for (final route in <String>['attached_writer', 'owner_override']) {
+      test('F13 case 12: an unsent cancel is never written when the command '
+          'path attaches, nor on later ACTIVE frames ($route)', () async {
+        var now = DateTime.utc(2026, 11, 18, 9);
+        final commands = <EixamDeviceCommand>[];
+        var linkUp = false;
+        Future<void> owner(EixamDeviceCommand command) async {
+          if (!linkUp) throw StateError('Bluetooth off');
+          commands.add(command);
+        }
+
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(seconds: 20),
+          now: () => now,
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: owner);
+        controller.handleIncomingSosPacket(
+          _countdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        expect(controller.currentStatus.state, DeviceSosState.preConfirm);
+
+        await controller.cancelSos(
+          commandWriterOverride: route == 'owner_override' ? owner : null,
+          waitForCloseAcknowledgement: false,
+        );
+        expect(commands, isEmpty);
+
+        now = now.add(const Duration(seconds: 1));
+        linkUp = true;
+        await controller.attach(commandWriter: owner);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(commands, isEmpty, reason: 'no automatic stop at reconnect');
+
+        for (var retry = 1; retry <= 2; retry++) {
+          now = now.add(const Duration(seconds: 2));
+          controller.handleIncomingSosPacket(
+            _activePacket(packetId: retry),
+            source: DeviceSosTransitionSource.device,
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(commands, isEmpty, reason: 'no automatic stop on ACTIVE frames');
+      });
+
+      test('F13 case 13: after an unsent cancel, a genuine new countdown is '
+          'admitted at reconnect and nothing is written ($route)', () async {
+        var now = DateTime.utc(2026, 11, 18, 9);
+        final commands = <EixamDeviceCommand>[];
+        var linkUp = false;
+        Future<void> owner(EixamDeviceCommand command) async {
+          if (!linkUp) throw StateError('Bluetooth off');
+          commands.add(command);
+        }
+
+        final controller = DeviceSosController(
+          countdownDuration: const Duration(seconds: 20),
+          now: () => now,
+        );
+        addTearDown(controller.dispose);
+        await controller.attach(commandWriter: owner);
+        controller.handleIncomingSosPacket(
+          _countdownPacket(),
+          source: DeviceSosTransitionSource.device,
+        );
+        await controller.cancelSos(
+          commandWriterOverride: route == 'owner_override' ? owner : null,
+          waitForCloseAcknowledgement: false,
+        );
+
+        now = now.add(const Duration(seconds: 1));
+        linkUp = true;
+        await controller.attach(commandWriter: owner);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        controller.handleIncomingSosPacket(
+          _countdownPacket(packetId: 3),
+          source: DeviceSosTransitionSource.device,
+          resolutionContext: _receivedAfterTerminal(sequence: 7, at: now),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(commands, isEmpty, reason: 'the new SOS is never stopped');
+        expect(controller.currentStatus.state, DeviceSosState.preConfirm);
+        expect(controller.currentStatus.derivedFromBlePacket, isTrue);
+      });
+    }
 
     test(
       'stale terminal write completion cannot close a newer generation',

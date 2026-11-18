@@ -800,18 +800,55 @@ void main() {
             }
             await pumpEventQueue(times: 20);
           }
-          final delivered = [
-            'foreground',
+          // F13 (device cases 12/13, Roger 18/11/2026): here the TAG link
+          // visibly dropped (Flutter disconnected, no native owner yet) before
+          // the backend cancel, so the TAG may run a genuine new SOS when a
+          // writer comes back: never written on its own (rule 2).
+          final linkDropped = [
             'handoff',
             'changed_transport',
             'missing_transport',
           ].contains(scenario);
+          final delivered = scenario == 'foreground';
           expect(
             cancelWrites(),
             delivered ? 1 : 0,
             reason:
-                'same-cycle physical target must survive transport handoff; conflicts fail closed',
+                'written only with the link up since the decision; conflicts fail closed',
           );
+          if (linkDropped) {
+            expect(
+              _hasDebugMessage(
+                'SOS_REMOTE_TERMINAL_DEVICE_CLEAR_SKIPPED '
+                'reason=deferred_replay_refused',
+              ),
+              isTrue,
+            );
+            // The TAG still rings: its next ACTIVE retry is never dropped
+            // silently; the user can stop it with an immediate write.
+            harness.deviceSosController.handleIncomingSosPacket(
+              _deviceOriginActivePacket(),
+              source: DeviceSosTransitionSource.device,
+              resolutionContext: _physicalResolutionContext(
+                receiveSequence: 5,
+                terminal: false,
+                receiveSequenceDomain: 'b3-target',
+              ),
+            );
+            await pumpEventQueue(times: 20);
+            // ignore: avoid_print
+            final reopened = await harness.sdk.getSosLifecycle();
+            expect(reopened.generation, original.generation + 1);
+            expect(reopened.isOpen, isTrue, reason: 'never dropped silently');
+            await harness.sdk.cancelSosAuthoritatively();
+            await pumpEventQueue(times: 20);
+            expect(
+              cancelWrites(),
+              1,
+              reason: "the user's cancel stops the TAG at once",
+            );
+            return;
+          }
           if (delivered) {
             expect(
               harness.deviceSosController.currentStatus.state,
@@ -22535,6 +22572,168 @@ void _ambiguousSosPromptTests() {
         },
       );
     }
+
+    /// Device cases 12/13 (18/11, iOS): the TAG countdown reaches the phone,
+    /// then Bluetooth goes off while the phone still reads the link as up
+    /// (every GATT write fails). The user cancels in the app: nothing is
+    /// published, native records the unconfirmed stop; the TAG never got it.
+    Future<(_MqttSosPhone, SosLifecycleSnapshot)> cancelWhileLinkSilentlyDown(
+      _PromptNativeAdapter adapter,
+      List<int> written,
+    ) async {
+      final store = MemorySharedPrefsSdkStore();
+      final phone = await mqttPhone(
+        adapter,
+        written,
+        localStore: store,
+        sessionStore: SdkSessionStore(localStore: store),
+        secureStore: InMemorySecureKeyValueStore(),
+      );
+      for (var push = 1; push <= 4; push++) {
+        await frame(phone.harness, active: false, packetId: push);
+      }
+      await settle(50);
+      expect((await phone.harness.sdk.getSosLifecycle()).isOpen, isTrue);
+      await phone.harness.deviceSosController.attach(
+        commandWriter: (_) async => throw StateError('Bluetooth off'),
+        transportId: 'ble-1',
+      );
+      await settle(50);
+      await phone.harness.sdk.cancelSosAuthoritatively();
+      await settle(50);
+      final cancelled = await phone.harness.sdk.getSosLifecycle();
+      expect(cancelled.stage, SosLifecycleStage.cancelled);
+      expect(phone.realtime.publishedSos, isEmpty, reason: 'nothing published');
+      expect(
+        adapter.closeNativeSosCycleArgs.map((c) => c.terminal),
+        contains('cancel'),
+      );
+      adapter.recordArmed = true;
+      expect(written, isEmpty);
+      return (phone, cancelled);
+    }
+
+    test('F13 device case 12: an app cancel the TAG never got is not written '
+        'automatically at reconnect; the ACTIVE retries ask the user and "No" '
+        'writes the stop; no incident', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, cancelled) = await cancelWhileLinkSilentlyDown(
+        adapter,
+        written,
+      );
+      try {
+        await settle(countdown.inMilliseconds + 300);
+        await connect(phone.harness, written);
+        await settle(200);
+        expect(
+          written,
+          isEmpty,
+          reason: 'reconnect writes nothing before a TAG frame is classified',
+        );
+        await reconnectWithActiveRetries(
+          phone,
+          adapter,
+          written,
+          terminal: 'cancel',
+        );
+        expectPromptOpenAndNothingElse(
+          phone,
+          adapter,
+          cancelled,
+          await phone.harness.sdk.getSosLifecycle(),
+          written,
+          terminal: AmbiguousTagSosTerminal.cancel,
+        );
+        final outcome = await control(
+          phone,
+        ).answerAmbiguousTagSosPrompt(AmbiguousTagSosChoice.stopTag);
+        await settle(100);
+        expect(outcome, AmbiguousTagSosAnswerOutcome.tagStopped);
+        expect(written, <int>[0x04], reason: 'only the stop the user chose');
+        expect(phone.realtime.publishedSos, isEmpty, reason: 'no incident');
+        expect(
+          (await phone.harness.sdk.getSosLifecycle()).generation,
+          cancelled.generation,
+        );
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('F13 device case 12 (fail open, native lets the ACTIVE retries '
+        'through): the unsent app cancel is never re-sent on them', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, _) = await cancelWhileLinkSilentlyDown(adapter, written);
+      try {
+        adapter.recordArmed = false;
+        await connect(phone.harness, written);
+        for (var retry = 0; retry < 2; retry++) {
+          await frame(phone.harness, active: true, packetId: 6 + retry);
+          await settle(1100);
+        }
+        expect(
+          written,
+          isNot(contains(0x04)),
+          reason: 'never stopped silently',
+        );
+      } finally {
+        await phone.dispose();
+      }
+    });
+
+    test('F13 device case 13: the user cancels the old SOS on the TAG and '
+        'presses a genuine new one while out of range; at reconnect nothing '
+        'is written and the new SOS is admitted and published', () async {
+      final adapter = _PromptNativeAdapter();
+      final written = <int>[];
+      final (phone, cancelled) = await cancelWhileLinkSilentlyDown(
+        adapter,
+        written,
+      );
+      try {
+        await settle(200);
+        await connect(phone.harness, written);
+        await settle(200);
+        expect(
+          written,
+          isEmpty,
+          reason: 'the new SOS is never stopped at reconnect',
+        );
+        // The new countdown burst (fixture
+        // countdown_burst_through_dart_is_a_new_sos): native holds the first
+        // pushes, the burst completes on the fifth, then frames pass.
+        adapter.scriptedVerdicts.addAll(<OwnTagSosFrameVerdict>[
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.suppress,
+          OwnTagSosFrameVerdict.newSos,
+        ]);
+        for (var push = 0; push < 5; push++) {
+          if (push == 4) {
+            adapter.recordArmed = false;
+          }
+          await frame(
+            phone.harness,
+            active: false,
+            packetId: 12,
+            characteristic: push.isOdd ? 'tel' : 'sos',
+          );
+        }
+        await settle(50);
+        final opened = await phone.harness.sdk.getSosLifecycle();
+        expect(opened.generation, cancelled.generation + 1, reason: 'new SOS');
+        expect(opened.isOpen, isTrue);
+        await settle(countdown.inMilliseconds + 500);
+        await expectSosSentAndShownActive(phone, cancelled);
+        expect(written, isNot(contains(0x04)), reason: 'never stopped');
+        expect(written, isNot(contains(0x07)), reason: 'never stopped');
+      } finally {
+        await phone.dispose();
+      }
+    });
 
     test('"Send SOS" from the app opens the SOS (shown active, cancellable '
         'over MQTT); the TAG is never stopped', () async {

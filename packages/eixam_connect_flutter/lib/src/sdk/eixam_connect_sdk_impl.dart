@@ -726,6 +726,12 @@ class EixamConnectSdkImpl
 
   // --- TAG disconnect lease inputs (see TagDisconnectAlertPolicy) ---
   bool? _tagLinkWasConnected;
+
+  /// F13: counts every observation of the TAG link visibly down (no owner
+  /// connected). A deferred TAG stop may be written later only while this is
+  /// unchanged since its decision, which was itself taken with the link up:
+  /// the TAG then cannot have run another SOS unseen in between.
+  int _ownTagLinkDropEpoch = 0;
   String? _tagLinkSignature;
   DateTime? _tagLastConnectedAt;
   DateTime? _tagDropSince;
@@ -6300,6 +6306,9 @@ class EixamConnectSdkImpl
   void _observeTagLink(DeviceStatus status) {
     final was = _tagLinkWasConnected;
     _tagLinkWasConnected = status.connected;
+    if (!status.connected) {
+      _ownTagLinkDropEpoch++;
+    }
     if (status.connected) {
       _tagLastConnectedAt = _clock();
       _tagDropSince = null;
@@ -17173,6 +17182,8 @@ class EixamConnectSdkImpl
       return null;
     }
     final proof = _PhysicalSosTerminationTarget(
+      linkUpAtCapture: _lastPublicDeviceStatus?.connected == true,
+      linkDropEpochAtCapture: _ownTagLinkDropEpoch,
       lifecycleId: lifecycle.lifecycleId,
       generation: lifecycle.generation,
       ownerScope: ownerScope,
@@ -17418,6 +17429,46 @@ class EixamConnectSdkImpl
             proof.operationKey) {
           _remoteTerminalDeviceClearAwaitingAckProof = null;
         }
+      }
+      if (_remoteTerminalDeviceClearInFlightKey == proof.operationKey ||
+          _remoteTerminalDeviceClearAwaitingAckProof?.operationKey ==
+              proof.operationKey) {
+        return;
+      }
+      // F13 (device cases 12/13, Roger 18/11/2026): a writer coming back
+      // writes this terminal only if the TAG link never dropped since it was
+      // decided (owner handoff, transport change, command path rediscovered
+      // with the TAG connected throughout): the same SOS is in front of the
+      // user. After a drop (out of range, Bluetooth off, link down when it
+      // was decided) the TAG may run a genuine new SOS: never written on its
+      // own; native classifies the TAG's frames (a still-running old SOS ->
+      // the user is asked; "No" writes the stop).
+      final linkContinuous =
+          proof.linkUpAtCapture &&
+          proof.linkDropEpochAtCapture == _ownTagLinkDropEpoch;
+      if (!linkContinuous &&
+          !_sosStopGuard
+              .authorize(
+                SosStopRequest(
+                  kind: SosStopKind.tagStop,
+                  basis: SosStopBasis.deferredReplay,
+                  source: 'remote_terminal_writer_rebinding',
+                  incidentId: proof.incidentId,
+                ),
+              )
+              .allowed) {
+        _logRemoteTerminalDeviceClearSkipped('deferred_replay_refused');
+        // End this clear and the pending device mirror, or the convergence
+        // fence keeps suppressing the TAG's frames (as R1 newer_native_cycle).
+        _supersedeRemoteTerminalDeviceClearAtAdmission(
+          terminalGeneration: proof.generation,
+          receiveSequence: -1,
+        );
+        _setSosDeviceMirrorState(
+          _SosDeviceMirrorState.failed,
+          source: 'remote_terminal_device_clear_deferred_replay_refused',
+        );
+        return;
       }
       _scheduleRemoteTerminalDeviceClear(proof);
     }
@@ -30608,6 +30659,8 @@ class _PhysicalSosTerminationTarget {
     required this.capturedOwner,
     required this.capturedIdentityMarker,
     required this.retainedAcrossHandoff,
+    required this.linkUpAtCapture,
+    required this.linkDropEpochAtCapture,
   });
 
   final String lifecycleId;
@@ -30631,6 +30684,11 @@ class _PhysicalSosTerminationTarget {
   final String capturedOwner;
   final String capturedIdentityMarker;
   final bool retainedAcrossHandoff;
+
+  /// F13: the TAG link was visibly up when this terminal was decided, and the
+  /// link-drop count then (`_ownTagLinkDropEpoch`).
+  final bool linkUpAtCapture;
+  final int linkDropEpochAtCapture;
   String? lastSubmittedOwner;
   EixamDeviceCommand? lastSubmittedCommand;
   bool ownerRebindAttempted = false;
