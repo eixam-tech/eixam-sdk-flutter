@@ -746,6 +746,19 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = "bluetooth_unavailable",
             )
+            val precondition = evaluateProtectionConnectPrecondition(
+                adapterEnabled = adapter?.isEnabled == true,
+                targetKnown = !deviceId.isNullOrBlank(),
+            )
+            if (precondition == ProtectionConnectPrecondition.waitForBluetooth) {
+                // Bluetooth off must not end the native reconnect loop;
+                // STATE_ON reconnects at once, this is the safety net.
+                connectionInFlight = false
+                scheduleReconnect(
+                    "bluetooth_unavailable",
+                    delayMs = protectionBluetoothOffRecheckMs,
+                )
+            }
             return
         }
 
@@ -873,10 +886,12 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     @SuppressLint("MissingPermission")
-    private fun scheduleReconnect(reason: String) {
+    private fun scheduleReconnect(reason: String, delayMs: Long = reconnectBackoffMs) {
         if (isStopping || !runtimeActive) {
             return
         }
+        // One pending retry at most: never stack two reconnect chains.
+        reconnectRunnable?.let(mainHandler::removeCallbacks)
         reconnectAttemptCount += 1
         runtimeStore.markReconnectAttempt(reconnectAttemptCount)
         ProtectionRuntimeBridge.recordBleEvent(
@@ -889,7 +904,7 @@ internal class ProtectionBleRuntimeOwner(
                 connect(reason = "scheduled_reconnect_$reconnectAttemptCount")
             }
         }.also {
-            mainHandler.postDelayed(it, reconnectBackoffMs)
+            mainHandler.postDelayed(it, delayMs)
         }
     }
 
