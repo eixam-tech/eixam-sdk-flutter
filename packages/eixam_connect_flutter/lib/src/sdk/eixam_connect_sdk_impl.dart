@@ -69,6 +69,10 @@ import '../tag_alerts/tag_drop_time.dart';
 import '../tag_alerts/tag_last_position_extractor.dart';
 import '../tag_alerts/tag_lease_log.dart';
 import '../tag_alerts/tag_battery_probe_gate.dart';
+import '../provisioning/provisioning_command_result.dart';
+import '../data/datasources_local/tag_radio_repair_ledger.dart';
+import '../data/datasources_local/tag_volume_store.dart';
+import 'tag_session_bootstrap.dart';
 import '../tag_alerts/tag_battery_reading_extractor.dart';
 import '../data/datasources_local/activity_availability_store.dart';
 import '../data/datasources_remote/sdk_activity_availability_remote_data_source.dart';
@@ -565,6 +569,7 @@ class EixamConnectSdkImpl
         );
       }
       unawaited(_emitSosCapability(reason: 'lifecycle_change'));
+      _tagSessionBootstrap.safetyMayHaveCleared();
     });
   }
 
@@ -1456,6 +1461,9 @@ class EixamConnectSdkImpl
         unawaited(_devicePositionBacklogCoordinator.disconnected());
         _tagBatteryEpoch++;
       }
+      if ((_lastPublicDeviceStatus ?? promotedStatus).connected != true) {
+        _tagSessionBootstrap.stop();
+      }
       _syncNearbyTextLink(
         connected: _lastPublicDeviceStatus?.connected == true,
       );
@@ -1483,6 +1491,7 @@ class EixamConnectSdkImpl
     _deviceSosSub = deviceSosController.watchStatus().listen(
       (status) async {
         await _handleDeviceSosStatus(status);
+        _tagSessionBootstrap.safetyMayHaveCleared();
       },
       onError: (Object error) {
         BleDebugRegistry.instance.recordEvent(
@@ -4474,6 +4483,10 @@ class EixamConnectSdkImpl
       }
     }
     _recoverBleAfterProvisioningRebootFailure(result.failure?.code);
+    _maybeRunTagSessionBootstrap(
+      'provisioning_settled',
+      connectionEpoch: _ensureDeviceCountryConfigConnectionEpoch(),
+    );
     unawaited(_maybeCheckDeviceCountryConfig('provisioning_settled'));
     return result;
   }
@@ -4552,21 +4565,7 @@ class EixamConnectSdkImpl
         );
       },
       runtimeStatusProvider: getDeviceRuntimeStatus,
-      countryIsoProvider: () async {
-        final location = await _resolveLocation(
-          useCase: SdkResolvedLocationUseCase.emergencyBackend,
-        );
-        if (location == null) {
-          throw const ProvisioningContractException(
-            DeviceReadyFailureDetail.countryLocationUnavailable,
-          );
-        }
-        final country = await geoSource.resolveCountry(
-          latitude: location.latitude,
-          longitude: location.longitude,
-        );
-        return country.countryIso;
-      },
+      countryIsoProvider: () => _resolveProvisioningCountryIso(geoSource),
       pskSource: pskSource,
       configSource: configSource,
       assignmentVerifier: RegisteredDeviceAssignmentVerifier(
@@ -5777,6 +5776,7 @@ class EixamConnectSdkImpl
       action: 'set_notification_volume',
       command: EixamDeviceCommand.notificationVolume(volume),
     );
+    await _rememberTagVolume(notification: volume);
   }
 
   @override
@@ -5786,6 +5786,7 @@ class EixamConnectSdkImpl
       action: 'set_sos_volume',
       command: EixamDeviceCommand.sosVolume(volume),
     );
+    await _rememberTagVolume(sos: volume);
   }
 
   void _rememberPhysicalSosSilenceTarget(DeviceSosStatus status) {
@@ -6747,6 +6748,9 @@ class EixamConnectSdkImpl
     int? connectionEpoch,
     bool resume = false,
   }) async {
+    if (connectionEpoch != null) {
+      _maybeRunTagSessionBootstrap(trigger, connectionEpoch: connectionEpoch);
+    }
     final controller = _deviceCountryConfigController;
     if (controller == null) {
       return;
@@ -6818,6 +6822,216 @@ class EixamConnectSdkImpl
       }
     } finally {
       _deviceCountryConfigCheckDrainRunning = false;
+    }
+  }
+
+  // TAG session bootstrap (1.0.7): one per TAG connection; see
+  // [TagSessionBootstrap] for the order and the guards.
+
+  int _tagSessionBootstrapHandbacks = 0;
+
+  late final TagVolumeStore _tagVolumeStore = SharedPrefsTagVolumeStore(
+    _localStore,
+  );
+
+  late final TagSessionBootstrap _tagSessionBootstrap = TagSessionBootstrap(
+    readStatus: _readTagSessionStatus,
+    sosHold: _tagSessionSosHold,
+    radioWriteHold: _tagSessionRadioWriteHold,
+    lastSosFrameAt: () {
+      final repository = deviceRepository;
+      return repository is InMemoryDeviceRepository
+          ? repository.lastSosFrameAt
+          : null;
+    },
+    volumeStore: _tagVolumeStore,
+    sendNotificationVolume: (volume) =>
+        _sendDeviceControlCommandThroughActiveOwner(
+          action: 'restore_notification_volume',
+          command: EixamDeviceCommand.notificationVolume(volume),
+        ),
+    sendSosVolume: (volume) => _sendDeviceControlCommandThroughActiveOwner(
+      action: 'restore_sos_volume',
+      command: EixamDeviceCommand.sosVolume(volume),
+    ),
+    fetchProvisioningConfig: _fetchTagSessionProvisioningConfig,
+    sendAckCommand: _sendTagSessionAckCommand,
+    reboot: _rebootDeviceAndAwaitExpectedDisconnect,
+    repairLedger: SharedPrefsTagRadioRepairLedger(_localStore),
+    isLinkUp: () =>
+        (_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true,
+    clock: _clock,
+  );
+
+  void _maybeRunTagSessionBootstrap(
+    String trigger, {
+    required int connectionEpoch,
+  }) {
+    if (_disposed) return;
+    final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (status == null || !status.connected || !status.paired) return;
+    // Provisioning, OTA and migration own the link; provisioning settles
+    // with its own call, a TAG in its DFU bootloader runs no EIXAM firmware.
+    if (_deviceProvisioningCoordinator?.isBusy == true ||
+        _firmwareOtaInProgress ||
+        firmwareUpdateCoordinator?.hasActiveSession == true ||
+        deviceMigrationCoordinator?.ownsBleOperation == true ||
+        status.inDfuBootloader) {
+      return;
+    }
+    // Deferred until CMD is discovered; that event re-calls with this epoch.
+    if (!_isDeviceCountryConfigCommandPathReady()) return;
+    final keys = _tagVolumeKeys(status);
+    if (keys.isEmpty) return;
+    BleDebugRegistry.instance.recordEvent(
+      'TAG_SESSION_BOOTSTRAP start trigger=$trigger',
+    );
+    unawaited(
+      _tagSessionBootstrap.start(
+        sessionId: '$connectionEpoch.$_tagSessionBootstrapHandbacks',
+        deviceKeys: keys,
+      ),
+    );
+  }
+
+  /// Same order as [DeviceCountryConfigController.deviceKeyFor]: canonical
+  /// hardware id, node id, transport id.
+  List<String> _tagVolumeKeys(DeviceStatus status) {
+    final hardware = status.canonicalHardwareId?.trim();
+    return <String>[
+      if (hardware != null && hardware.isNotEmpty) hardware,
+      if (status.nodeId != null) 'node:${status.nodeId}',
+      if (status.deviceId.isNotEmpty) status.deviceId,
+    ];
+  }
+
+  Future<void> _rememberTagVolume({int? notification, int? sos}) async {
+    final status = _lastPublicDeviceStatus ?? _lastDeviceStatus;
+    if (status == null || !status.paired) return;
+    try {
+      await _tagVolumeStore.write(
+        _tagVolumeKeys(status),
+        notification: notification,
+        sos: sos,
+      );
+    } catch (_) {
+      // The TAG has the volume; only a later re-send after a reboot is lost.
+    }
+  }
+
+  /// One `0x23` only on an already usable command path (never reconnects).
+  Future<DeviceRuntimeStatus> _readTagSessionStatus() {
+    final request = _startTagBatteryProbeRequest();
+    if (request == null) {
+      throw const DeviceException(
+        'E_DEVICE_COMMAND_NOT_READY',
+        'E_DEVICE_COMMAND_NOT_READY',
+      );
+    }
+    return request;
+  }
+
+  /// An SOS, pre-SOS, TAG countdown or state not ruled out, an open
+  /// ambiguous prompt, or an SOS delivery still pending.
+  Future<String?> _tagSessionSosHold() async {
+    if (TagBatteryProbeGate.isSosActive(
+      preSosActive: _hasActivePreSosSession,
+      sosStage: _sosLifecycle.current.stage,
+      deviceSosState: deviceSosController.currentStatus.state,
+    )) {
+      return 'sos_active';
+    }
+    if (_ambiguousSosPrompt.current != null) return 'sos_prompt_open';
+    final sos = sosRepository;
+    if (sos is MqttOperationalSosRepository && !sos.deliveryStatus.isEmpty) {
+      return 'sos_delivery_pending';
+    }
+    return null;
+  }
+
+  /// The radio repair writes and reboots on a Flutter-owned link only: its
+  /// E9 7A results are read on the Flutter notification path.
+  Future<String?> _tagSessionRadioWriteHold() async {
+    if (_disposed) return 'disposed';
+    if (_isProtectionPlatformOwningBle) return 'native_owner';
+    if (_isAppBackgrounded) return 'background';
+    if (_deviceProvisioningCoordinator?.isBusy == true) return 'provisioning';
+    if (_firmwareOtaInProgress ||
+        firmwareUpdateCoordinator?.hasActiveSession == true) {
+      return 'firmware_update';
+    }
+    if (deviceMigrationCoordinator?.ownsBleOperation == true) {
+      return 'migration';
+    }
+    if (_deviceCountryConfigController?.lastStatus.outcome ==
+        DeviceCountryConfigOutcome.applying) {
+      return 'country_config_applying';
+    }
+    final repository = deviceRepository;
+    if (repository is! InMemoryDeviceRepository ||
+        !repository.hasCommandCapableBleRuntime) {
+      return 'path_not_ready';
+    }
+    // SOS / pre-SOS / DMP / protection blockers shared with OTA and region.
+    return _deviceCountryConfigSafetyHold();
+  }
+
+  Future<String> _resolveProvisioningCountryIso(
+    SdkGeoCountryRemoteDataSource geoSource,
+  ) async {
+    final location = await _resolveLocation(
+      useCase: SdkResolvedLocationUseCase.emergencyBackend,
+    );
+    if (location == null) {
+      throw const ProvisioningContractException(
+        DeviceReadyFailureDetail.countryLocationUnavailable,
+      );
+    }
+    final country = await geoSource.resolveCountry(
+      latitude: location.latitude,
+      longitude: location.longitude,
+    );
+    return country.countryIso;
+  }
+
+  /// Exactly the provisioning source: location → country → device-configs.
+  Future<StrictDeviceProvisioningConfig>
+  _fetchTagSessionProvisioningConfig() async {
+    final configSource = provisioningConfigSource;
+    final geoSource = geoCountryRemoteDataSource;
+    if (configSource == null || geoSource == null) {
+      throw StateError('provisioning config source unavailable');
+    }
+    final countryIso = await _resolveProvisioningCountryIso(geoSource);
+    return configSource.fetch(countryIso: countryIso);
+  }
+
+  Future<ProvisioningCommandOutcome> _sendTagSessionAckCommand(
+    int opcode,
+    List<int> bytes,
+  ) async {
+    final ack = ProvisioningAckCoordinator(
+      packets: bleIncomingEvents.map((event) => event.payload),
+    );
+    try {
+      final result = await ack.run(
+        expectedOpcode: opcode,
+        allowNoChange: true,
+        write: () => _sendDeviceCommandThroughActiveOwner(
+          EixamDeviceCommand.provisioningFrame(
+            label: switch (opcode) {
+              0x20 => 'REPAIR RADIO CONFIG',
+              0x21 => 'REPAIR SOS RADIO CONFIG',
+              _ => 'TAG SESSION CMD',
+            },
+            bytes: bytes,
+            secret: false,
+          ),
+        ),
+      );
+      return result.outcome;
+    } finally {
+      await ack.dispose();
     }
   }
 
@@ -26419,6 +26633,11 @@ class EixamConnectSdkImpl
       ),
     );
     if ((_lastPublicDeviceStatus ?? _lastDeviceStatus)?.connected == true) {
+      _tagSessionBootstrapHandbacks++;
+      _maybeRunTagSessionBootstrap(
+        'flutter_ble_ownership_reclaimed',
+        connectionEpoch: _ensureDeviceCountryConfigConnectionEpoch(),
+      );
       unawaited(
         _maybeCheckDeviceCountryConfig('flutter_ble_ownership_reclaimed'),
       );
@@ -30284,6 +30503,7 @@ class EixamConnectSdkImpl
     await backgroundLocationPlatformAdapter.dispose();
     await _deviceCountryConfigStatusSub?.cancel();
     await _deviceCountryConfigController?.dispose();
+    await _tagSessionBootstrap.dispose();
     await _deviceProvisioningCoordinator?.dispose();
     await deviceMigrationCoordinator?.dispose();
     await dfuRecoveryController?.dispose();

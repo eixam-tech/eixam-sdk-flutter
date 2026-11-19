@@ -76,6 +76,13 @@ class SharedPrefsSdkStore {
   static const String firmwareUpdateSessionKey =
       'eixam.device.firmware_update_session';
   static const String dfuRecoveryRecordKey = 'eixam.device.dfu_recovery_record';
+
+  /// Buzzer volumes last written per TAG (firmware keeps them in RAM only).
+  static const String tagVolumesKey = 'eixam.device.tag_volumes.v1';
+
+  /// TAG radio repairs awaiting verification / blocked (no reboot loops
+  /// across app restarts).
+  static const String tagRadioRepairKey = 'eixam.device.tag_radio_repair.v1';
   static const List<String> localUserDataKeys = <String>[
     sosIncidentKey,
     sosDeliveryOutboxKey,
@@ -104,6 +111,8 @@ class SharedPrefsSdkStore {
     deviceMigrationSessionKey,
     firmwareUpdateSessionKey,
     dfuRecoveryRecordKey,
+    tagVolumesKey,
+    tagRadioRepairKey,
   ];
 
   SharedPreferences? _prefs;

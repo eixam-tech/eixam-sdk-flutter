@@ -87,6 +87,11 @@ it to `Unknown`). Tests: `ios/Tests/IosBleSosFrameClassifierTests.swift` (backgr
   - relayed remote-node event
   - app-correlated event
 
+## TAG session bootstrap (every connection)
+
+- `lib/src/sdk/tag_session_bootstrap.dart`, started from `_maybeRunTagSessionBootstrap` on each connection epoch (CMD ready), provisioning settled and the Flutter handback. Order: contract-handshake hook (none yet) → `0x23` → SOS evidence (status v2: always unavailable) → volume re-send → radio check. Volume and radio only while `_tagSessionSosHold` is null; deferred work re-checks every 15 s and on SOS changes while the link stays up.
+- Radio repair = provisioning frames `0x20`/`0x21`/`0x22`, Flutter-owned link only, after 75 s with no TAG SOS frame, at most once per connection, verified on the next connection (failure → no more repairs this app session). Tests: `test/sdk/tag_session_bootstrap_test.dart` (fake TAG), `tag_session_bootstrap_wiring_test.dart`.
+
 ## Reconnect / Resume Edge Cases
 
 - Auto-reconnect only runs when:
