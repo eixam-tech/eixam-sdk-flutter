@@ -26,6 +26,7 @@ import 'eixam_last_known_position_store.dart';
 import 'eixam_sos_event_packet.dart';
 import 'eixam_sos_over_tel_classifier.dart';
 import 'eixam_sos_packet.dart';
+import 'own_tag_sos_frame_gate.dart';
 import 'eixam_tel_fragment.dart';
 import 'eixam_tel_packet.dart';
 import 'eixam_tel_live_batch_packet.dart';
@@ -2650,33 +2651,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           classification: classification.kind,
           packet: sosPacket,
         );
-        final physicalStartAdmission = _deviceSosController
-            .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
-        final packetNotRecentlyProcessed = physicalStartAdmission.shouldProcess
-            ? _shouldProcessSosPacket(
-                nodeId: sosPacket.nodeId,
-                packetId: sosPacket.packetId,
-                rawHex: sosPacket.rawHex,
-              )
-            : false;
-        if (physicalStartAdmission.shouldProcess &&
-            packetNotRecentlyProcessed) {
-          _deviceSosController.handleIncomingSosPacket(
-            sosPacket,
-            source: physicalStartAdmission.allowFreshStartAfterTerminal
-                ? DeviceSosTransitionSource.device
-                : source,
-            resolutionContext:
-                DeviceSosStateResolutionContext.fromPhysicalEvidence(
-                  physicalEvidence,
-                  physicalStartAdmission: physicalStartAdmission,
-                ),
-          );
-        } else {
-          BleDebugRegistry.instance.recordEvent(
-            'SOS duplicate suppressed -> ${sosPacket.rawHex}',
-          );
-        }
+        _submitOwnTagSosStartFrame(
+          notification: notification,
+          payload: payload,
+          sosPacket: sosPacket,
+          physicalEvidence: physicalEvidence,
+          source: source,
+        );
       }
       _incomingEventsController.add(
         BleIncomingEvent(
@@ -3009,41 +2990,58 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
       receivedAt: notification.receivedAt,
     );
     if (isLocalEvent) {
-      if (_shouldProcessSosPacket(
-        nodeId: packet.nodeId,
-        packetId: null,
-        rawHex: packet.rawHex,
-      )) {
-        _deviceSosController.handleIncomingSosEventPacket(
-          packet,
-          source: source,
-          resolutionContext:
-              DeviceSosStateResolutionContext.fromPhysicalEvidence(
-                _physicalSosEventReceiveEvidence(
-                  notification: notification,
-                  receiveSequence: receiveSequence,
-                  classification: classification.kind,
-                  packet: packet,
-                  exactPhysicalIdentityMatch:
-                      _connectedBleTagNodeId != null &&
-                      packet.nodeId == _connectedBleTagNodeId,
-                ),
-                incomingPacketType: 'sos_event',
-              ),
-        );
-        if (packet.isUserDeactivated ||
-            packet.isAppCancelAck ||
-            packet.isBackendResolved) {
-          final terminalSignature = '${packet.nodeId}:na:${packet.rawHex}';
-          _recentSosPacketSignatures.removeWhere(
-            (signature, _) => signature != terminalSignature,
-          );
-        }
-      } else {
-        BleDebugRegistry.instance.recordEvent(
-          'SOS duplicate suppressed -> ${packet.rawHex}',
-        );
-      }
+      // F17c: in arrival order with the start frames; any TAG close frame,
+      // from any path, also ends the native guard.
+      _deviceSosController.ownTagSosFrameGate.submitEventFrame(
+        OwnTagSosFrameReport(
+          bytes: List<int>.unmodifiable(notification.payload),
+          characteristic: notification.channel == EixamBleChannel.tel
+              ? 'tel'
+              : 'sos',
+          receivedAt: notification.receivedAt,
+          isClose:
+              packet.isUserDeactivated ||
+              packet.isAppCancelAck ||
+              packet.isBackendResolved,
+        ),
+        () {
+          if (_shouldProcessSosPacket(
+            nodeId: packet.nodeId,
+            packetId: null,
+            rawHex: packet.rawHex,
+          )) {
+            _deviceSosController.handleIncomingSosEventPacket(
+              packet,
+              source: source,
+              resolutionContext:
+                  DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                    _physicalSosEventReceiveEvidence(
+                      notification: notification,
+                      receiveSequence: receiveSequence,
+                      classification: classification.kind,
+                      packet: packet,
+                      exactPhysicalIdentityMatch:
+                          _connectedBleTagNodeId != null &&
+                          packet.nodeId == _connectedBleTagNodeId,
+                    ),
+                    incomingPacketType: 'sos_event',
+                  ),
+            );
+            if (packet.isUserDeactivated ||
+                packet.isAppCancelAck ||
+                packet.isBackendResolved) {
+              final terminalSignature = '${packet.nodeId}:na:${packet.rawHex}';
+              _recentSosPacketSignatures.removeWhere(
+                (signature, _) => signature != terminalSignature,
+              );
+            }
+          } else {
+            BleDebugRegistry.instance.recordEvent(
+              'SOS duplicate suppressed -> ${packet.rawHex}',
+            );
+          }
+        },
+      );
     }
     _incomingEventsController.add(
       BleIncomingEvent(
@@ -3163,33 +3161,13 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
           classification: sosClassification.kind,
           packet: sosPacket,
         );
-        final physicalStartAdmission = _deviceSosController
-            .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
-        final packetNotRecentlyProcessed = physicalStartAdmission.shouldProcess
-            ? _shouldProcessSosPacket(
-                nodeId: sosPacket.nodeId,
-                packetId: sosPacket.packetId,
-                rawHex: sosPacket.rawHex,
-              )
-            : false;
-        if (physicalStartAdmission.shouldProcess &&
-            packetNotRecentlyProcessed) {
-          _deviceSosController.handleIncomingSosPacket(
-            sosPacket,
-            source: physicalStartAdmission.allowFreshStartAfterTerminal
-                ? DeviceSosTransitionSource.device
-                : source,
-            resolutionContext:
-                DeviceSosStateResolutionContext.fromPhysicalEvidence(
-                  physicalEvidence,
-                  physicalStartAdmission: physicalStartAdmission,
-                ),
-          );
-        } else {
-          BleDebugRegistry.instance.recordEvent(
-            'SOS duplicate suppressed -> ${sosPacket.rawHex}',
-          );
-        }
+        _submitOwnTagSosStartFrame(
+          notification: notification,
+          payload: notification.payload,
+          sosPacket: sosPacket,
+          physicalEvidence: physicalEvidence,
+          source: source,
+        );
       }
       _incomingEventsController.add(
         BleIncomingEvent(
@@ -3484,6 +3462,56 @@ class BleDeviceRuntimeProvider implements DeviceRuntimeProvider {
     }
     return requestDeviceRuntimeStatus(
       timeout: const Duration(milliseconds: 1500),
+    );
+  }
+
+  /// F17c: an own-TAG SOS start frame received by this Dart BLE link. The
+  /// native store classifies it first (stale vs new, one decision point for
+  /// every BLE path); only an admitted frame reaches the device SOS state.
+  void _submitOwnTagSosStartFrame({
+    required EixamBleNotification notification,
+    required List<int> payload,
+    required EixamSosPacket sosPacket,
+    required PhysicalSosReceiveEvidence physicalEvidence,
+    required DeviceSosTransitionSource source,
+  }) {
+    _deviceSosController.ownTagSosFrameGate.submitStartFrame(
+      OwnTagSosFrameReport(
+        bytes: List<int>.unmodifiable(payload),
+        characteristic: notification.channel == EixamBleChannel.tel
+            ? 'tel'
+            : 'sos',
+        receivedAt: notification.receivedAt,
+      ),
+      () {
+        final physicalStartAdmission = _deviceSosController
+            .evaluatePhysicalSosStartAdmission(sosPacket, physicalEvidence);
+        final packetNotRecentlyProcessed = physicalStartAdmission.shouldProcess
+            ? _shouldProcessSosPacket(
+                nodeId: sosPacket.nodeId,
+                packetId: sosPacket.packetId,
+                rawHex: sosPacket.rawHex,
+              )
+            : false;
+        if (physicalStartAdmission.shouldProcess &&
+            packetNotRecentlyProcessed) {
+          _deviceSosController.handleIncomingSosPacket(
+            sosPacket,
+            source: physicalStartAdmission.allowFreshStartAfterTerminal
+                ? DeviceSosTransitionSource.device
+                : source,
+            resolutionContext:
+                DeviceSosStateResolutionContext.fromPhysicalEvidence(
+                  physicalEvidence,
+                  physicalStartAdmission: physicalStartAdmission,
+                ),
+          );
+        } else {
+          BleDebugRegistry.instance.recordEvent(
+            'SOS duplicate suppressed -> ${sosPacket.rawHex}',
+          );
+        }
+      },
     );
   }
 

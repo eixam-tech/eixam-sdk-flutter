@@ -3877,7 +3877,30 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
 }
 
 class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async => null;
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
+
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) async {}
+
   int ackPendingNativeSosCancelCalls = 0;
+
+  @override
+  bool get classifiesOwnTagSosFrames => false;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async => OwnTagSosFrameVerdict.proceed;
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) async {}
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) async {}
 
   @override
   Future<void> setSosDeliveryPending(bool pending) async {}
@@ -3887,6 +3910,9 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {}
 
   @override

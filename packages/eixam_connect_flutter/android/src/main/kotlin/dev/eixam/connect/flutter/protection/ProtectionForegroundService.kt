@@ -88,12 +88,20 @@ internal class ProtectionForegroundService : Service() {
                             BluetoothAdapter.ERROR,
                         )
                     ) {
-                        BluetoothAdapter.STATE_ON ->
+                        BluetoothAdapter.STATE_ON -> {
                             ProtectionRuntimeBridge.recordPlatformEvent(
                                 context = applicationContext,
                                 type = "bluetoothTurnedOn",
                                 reason = "bluetooth_on",
                             )
+                            // Native keeps the TAG link across Bluetooth
+                            // off/on: reconnect now (no-op when disarmed).
+                            ensureProtectionRuntime(
+                                runtimeStore = ProtectionRuntimeStore(applicationContext),
+                                restored = false,
+                                wakeReason = protectionBluetoothOnWakeReason,
+                            )
+                        }
 
                         BluetoothAdapter.STATE_OFF ->
                             ProtectionRuntimeBridge.recordPlatformEvent(
@@ -218,14 +226,6 @@ internal class ProtectionForegroundService : Service() {
                 action = actionStop
             }
             context.startService(intent)
-        }
-
-        internal fun shouldForceNativeBleReconnect(wakeReason: String): Boolean {
-            // Only abort an in-flight native GATT after Flutter actually
-            // released the radio. Matching native_owner_ / native_ble_owner
-            // force-kills every skipped Flutter campaign and attach/detach
-            // loops the SOS status stream.
-            return wakeReason.contains("flutter_yielded")
         }
 
         fun showPreConfirmNotification(context: Context) {

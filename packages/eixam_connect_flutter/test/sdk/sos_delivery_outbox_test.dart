@@ -271,6 +271,9 @@ void main() {
       final harness = _Harness(failFirstPublishes: 1000);
       final outbox = harness.build(clock: () => now);
       addTearDown(outbox.dispose);
+      // The newer trigger was never attempted (an attempted one may have
+      // reached the broker: the stale cancel is then dropped, see below).
+      outbox.pauseForTesting();
       final cancelObservedAt = now;
       now = now.add(const Duration(seconds: 30));
       final newer = await outbox.enqueueTrigger(
@@ -339,6 +342,186 @@ void main() {
       );
     });
 
+    // F17c (Roger 16/11/2026): the MQTT cancel is user-scoped. A newer SOS's
+    // trigger reaches the broker only after the older cancel's PUBACK, and
+    // then at once (only the publish waits, never the backend confirmation).
+    test(
+      'a newer trigger queued while the cancel awaits its confirmation goes '
+      'out right after the cancel, without waiting for the confirmation',
+      () async {
+        final harness = _Harness();
+        final outbox = harness.build(
+          confirmationWindow: const Duration(seconds: 5),
+        );
+        addTearDown(outbox.dispose);
+        await outbox.enqueueCancel(cycleKey: 'sos:7:30');
+        for (var i = 0; i < 50 && harness.published.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        expect(harness.published.map((a) => a.kind), [
+          SosOutboxActionKind.cancel,
+        ]);
+
+        await outbox.enqueueTrigger(
+          cycleKey: 'sos:7:31',
+          payload: const <String, dynamic>{},
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(harness.published.map((a) => a.kind), [
+          SosOutboxActionKind.cancel,
+          SosOutboxActionKind.trigger,
+        ]);
+      },
+    );
+
+    test('a newer trigger queued before the cancel reached the broker waits '
+        'for its PUBACK only, then goes out', () async {
+      final harness = _Harness();
+      final release = Completer<void>();
+      harness.beforePublish = (action) async {
+        if (action.kind == SosOutboxActionKind.cancel) {
+          await release.future;
+        }
+      };
+      final outbox = harness.build(
+        confirmationWindow: const Duration(seconds: 5),
+      );
+      addTearDown(outbox.dispose);
+      await outbox.enqueueCancel(cycleKey: 'sos:7:32');
+      await outbox.enqueueTrigger(
+        cycleKey: 'sos:7:33',
+        payload: const <String, dynamic>{},
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(harness.published, isEmpty, reason: 'the trigger waits');
+
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(harness.published.map((a) => a.kind), [
+        SosOutboxActionKind.cancel,
+        SosOutboxActionKind.trigger,
+      ]);
+    });
+
+    test('a stale cancel arriving while a newer trigger is being published is '
+        'dropped: it can never follow that trigger on the wire', () async {
+      var now = DateTime.utc(2026, 11, 10, 13, 0, 0);
+      final harness = _Harness();
+      final release = Completer<void>();
+      final publishing = Completer<void>();
+      harness.beforePublish = (action) async {
+        if (action.kind == SosOutboxActionKind.trigger) {
+          publishing.complete();
+          await release.future;
+        }
+      };
+      final outbox = harness.build(clock: () => now);
+      addTearDown(outbox.dispose);
+      final cancelObservedAt = now;
+      now = now.add(const Duration(seconds: 30));
+      await outbox.enqueueTrigger(
+        cycleKey: 'sos:7:35',
+        payload: const <String, dynamic>{},
+      );
+      await publishing.future;
+
+      final cancel = await outbox.enqueueCancel(
+        cycleKey: 'sos:7:34',
+        observedAt: cancelObservedAt,
+      );
+      release.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(cancel, isNull);
+      expect(harness.published.map((a) => a.kind), [
+        SosOutboxActionKind.trigger,
+      ]);
+    });
+
+    // F17c review r6 MEDIUM-1: A's stale cancel must never follow B's trigger
+    // on the wire (the MQTT cancel is user-scoped: it would close B).
+    test(
+      'a stale cancel arriving while the newer trigger is in its '
+      'pre-publish persist is dropped: the wire is that trigger only',
+      () async {
+        var now = DateTime.utc(2026, 11, 10, 13, 0, 0);
+        final store = _GatedStore();
+        final harness = _Harness();
+        final outbox = harness.build(store: store, clock: () => now);
+        addTearDown(outbox.dispose);
+        final cancelObservedAt = now;
+        now = now.add(const Duration(seconds: 30));
+        // The enqueue persist passes; the attempt's persist (head selected,
+        // before the publish) is held.
+        store.holdSavesAfter(1);
+        await outbox.enqueueTrigger(
+          cycleKey: 'sos:7:35',
+          payload: const <String, dynamic>{},
+        );
+        await store.held;
+
+        final pendingCancel = outbox.enqueueCancel(
+          cycleKey: 'sos:7:34',
+          observedAt: cancelObservedAt,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        store.release();
+        final cancel = await pendingCancel;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(cancel, isNull);
+        expect(harness.published, isNotEmpty);
+        expect(
+          harness.published.map((a) => a.kind),
+          everyElement(SosOutboxActionKind.trigger),
+          reason: 'A\'s cancel never on the wire after B\'s trigger',
+        );
+      },
+    );
+
+    test(
+      'a stale cancel after a failed attempt of the newer trigger (it may '
+      'have reached the broker) is dropped: never before its retry',
+      () async {
+        var now = DateTime.utc(2026, 11, 10, 13, 0, 0);
+        final harness = _Harness();
+        var fail = true;
+        final failed = Completer<void>();
+        harness.beforePublish = (action) async {
+          if (action.kind == SosOutboxActionKind.trigger && fail) {
+            fail = false;
+            failed.complete();
+            throw TimeoutException('puback');
+          }
+        };
+        final outbox = harness.build(clock: () => now);
+        addTearDown(outbox.dispose);
+        final cancelObservedAt = now;
+        now = now.add(const Duration(seconds: 30));
+        await outbox.enqueueTrigger(
+          cycleKey: 'sos:7:36',
+          payload: const <String, dynamic>{},
+        );
+        await failed.future;
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+        final cancel = await outbox.enqueueCancel(
+          cycleKey: 'sos:7:34',
+          observedAt: cancelObservedAt,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        expect(cancel, isNull);
+        expect(harness.published, isNotEmpty);
+        expect(
+          harness.published.map((a) => a.kind),
+          everyElement(SosOutboxActionKind.trigger),
+          reason: 'A\'s cancel never on the wire after B\'s trigger',
+        );
+      },
+    );
+
     test('an expired trigger is reported, not left pending', () async {
       var now = DateTime.utc(2026, 11, 10, 13);
       final expired = <SosOutboxAction>[];
@@ -398,7 +581,7 @@ void main() {
         const Duration(seconds: 6), // T + 1 s
         const Duration(seconds: 95), // T + 90 s
       ];
-      harness.beforePublish = (attempt) {
+      harness.beforePublishAttempt = (attempt) {
         monotonic = schedule[attempt - 1];
         // The wall clock jumps back an hour between creation and retry.
         wall = wall.subtract(const Duration(hours: 1));
@@ -502,11 +685,12 @@ class _Harness {
       SosOutboxBackendCheck.notConfirmed;
   SosOutboxBackendCheck backendOnFailure = SosOutboxBackendCheck.unknown;
   void Function(SosOutboxAction action)? onPublish;
+  Future<void> Function(SosOutboxAction action)? beforePublish;
   SosOutboxDropAction? dropWith;
   bool _lastPublishFailed = false;
 
   /// Called with the 1-based attempt number before each publish.
-  void Function(int attempt)? beforePublish;
+  void Function(int attempt)? beforePublishAttempt;
 
   /// `ageMsOf` read at each publish attempt (what the publisher would send).
   final List<int> ageMsAtAttempt = <int>[];
@@ -532,7 +716,11 @@ class _Harness {
       backoff: const <Duration>[Duration(milliseconds: 5)],
       publish: (action) async {
         publishAttempts++;
-        beforePublish?.call(publishAttempts);
+        final hook = beforePublish;
+        if (hook != null) {
+          await hook(action);
+        }
+        beforePublishAttempt?.call(publishAttempts);
         ageMsAtAttempt.add(_outbox.ageMsOf(action));
         final drop = dropWith;
         if (drop != null) {
@@ -551,5 +739,44 @@ class _Harness {
         return _lastPublishFailed ? backendOnFailure : backendAfterPublish;
       },
     );
+  }
+}
+
+/// Holds every save after the first [holdSavesAfter] ones until [release]:
+/// opens the window between the head selection and its publish.
+final class _GatedStore extends MemorySharedPrefsSdkStore {
+  int? _passBeforeHold;
+  Completer<void>? _gate;
+  final Completer<void> _held = Completer<void>();
+
+  Future<void> get held => _held.future;
+
+  void holdSavesAfter(int saves) {
+    _passBeforeHold = saves;
+    _gate = Completer<void>();
+  }
+
+  void release() {
+    final gate = _gate;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  @override
+  Future<void> saveJson(String key, Map<String, dynamic> value) async {
+    final pass = _passBeforeHold;
+    final gate = _gate;
+    if (pass != null && gate != null) {
+      if (pass > 0) {
+        _passBeforeHold = pass - 1;
+      } else {
+        if (!_held.isCompleted) {
+          _held.complete();
+        }
+        await gate.future;
+      }
+    }
+    await super.saveJson(key, value);
   }
 }

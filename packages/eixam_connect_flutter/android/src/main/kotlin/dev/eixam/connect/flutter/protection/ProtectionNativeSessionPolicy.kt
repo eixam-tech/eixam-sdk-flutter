@@ -54,3 +54,37 @@ internal fun evaluateProtectionNativePreparationFailure(
     }
     return null
 }
+
+internal enum class ProtectionConnectPrecondition {
+    ready,
+    waitForBluetooth,
+    noTarget,
+}
+
+/**
+ * Once native owns the TAG link it never gives up because Bluetooth is off:
+ * that is a wait (slow re-check, and an immediate reconnect on STATE_ON), not
+ * the end of the reconnect loop.
+ */
+internal fun evaluateProtectionConnectPrecondition(
+    adapterEnabled: Boolean,
+    targetKnown: Boolean,
+): ProtectionConnectPrecondition = when {
+    !targetKnown -> ProtectionConnectPrecondition.noTarget
+    !adapterEnabled -> ProtectionConnectPrecondition.waitForBluetooth
+    else -> ProtectionConnectPrecondition.ready
+}
+
+/** Safety-net re-check while Bluetooth is off; STATE_ON reconnects at once. */
+internal const val protectionBluetoothOffRecheckMs = 30_000L
+
+internal const val protectionBluetoothOnWakeReason = "bluetooth_on"
+
+internal fun shouldForceNativeBleReconnect(wakeReason: String): Boolean {
+    // Only abort an in-flight native GATT after Flutter actually released
+    // the radio, or after an adapter off/on cycle invalidated it. Matching
+    // native_owner_ / native_ble_owner force-kills every skipped Flutter
+    // campaign and attach/detach loops the SOS status stream.
+    return wakeReason.contains("flutter_yielded") ||
+        wakeReason == protectionBluetoothOnWakeReason
+}

@@ -84,7 +84,16 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
             'protectionSosResolvedBody': texts.protectionSosResolvedBody,
             'protectionSosStaleStoppedTitle':
                 texts.protectionSosStaleStoppedTitle,
-            'protectionSosStaleStoppedBody': texts.protectionSosStaleStoppedBody,
+            'protectionSosStaleStoppedBody':
+                texts.protectionSosStaleStoppedBody,
+            'protectionSosAmbiguousTitle': texts.protectionSosAmbiguousTitle,
+            'protectionSosAmbiguousBody': texts.protectionSosAmbiguousBody,
+            'protectionSosAmbiguousSendAction':
+                texts.protectionSosAmbiguousSendAction,
+            'protectionSosAmbiguousStopAction':
+                texts.protectionSosAmbiguousStopAction,
+            'protectionSosAmbiguousStoppedBody':
+                texts.protectionSosAmbiguousStoppedBody,
             'nearbyMessageChannelName': texts.nearbyMessageChannelName,
             'nearbyMessageChannelDescription':
                 texts.nearbyMessageChannelDescription,
@@ -216,19 +225,93 @@ class AndroidProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   Future<void> setSosDeliveryPending(bool pending) async {}
 
   @override
+  bool get classifiesOwnTagSosFrames => true;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async {
+    final raw = await _methodChannel.invokeMapMethod<Object?, Object?>(
+      'observeOwnTagSosFrame',
+      <String, dynamic>{
+        'bytes': frame.bytes,
+        'characteristic': frame.characteristic,
+        'receivedAtMs': frame.receivedAt.millisecondsSinceEpoch,
+        'source': 'dart',
+      },
+    );
+    return OwnTagSosFrameVerdict.fromWire(raw?['verdict']);
+  }
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) {
+    return _methodChannel.invokeMethod<void>(
+      'disarmSosStaleGuard',
+      <String, dynamic>{'reason': reason},
+    );
+  }
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) {
+    return _methodChannel.invokeMethod<void>(
+      'noteOwnTagSosLink',
+      <String, dynamic>{'up': up},
+    );
+  }
+
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async {
+    return ProtectionOwnTagSosPrompt.fromMap(
+      await _methodChannel.invokeMethod<Object?>('getOwnTagSosPrompt'),
+    );
+  }
+
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) {
+    return _methodChannel.invokeMethod<void>(
+      'reportOwnTagSosStopWritten',
+      <String, dynamic>{'success': success},
+    );
+  }
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async {
+    final raw = await _methodChannel.invokeMapMethod<Object?, Object?>(
+      'answerOwnTagSosPrompt',
+      <String, dynamic>{'choice': choice},
+    );
+    final action = raw?['action'];
+    return action is String ? action : 'none';
+  }
+
+  @override
   Future<void> closeNativeSosCycle({
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) {
     return _methodChannel.invokeMethod<void>(
       'closeNativeSosCycle',
-      nodeId == null && !force && terminal == null
+      nodeId == null &&
+              !force &&
+              terminal == null &&
+              issuedAt == null &&
+              targetCycleId == null &&
+              !targetCurrentCycle
           ? null
           : <String, dynamic>{
               if (nodeId != null) 'nodeId': nodeId,
               if (force) 'force': true,
               if (terminal != null) 'terminal': terminal,
+              if (issuedAt != null)
+                'issuedAtMs': issuedAt.toUtc().millisecondsSinceEpoch,
+              // F17c item 1: the native cycle the stop is for, or the
+              // current one (the user's own action).
+              if (targetCycleId != null) 'targetCycleId': targetCycleId,
+              if (targetCurrentCycle) 'targetCurrentCycle': true,
             },
     );
   }

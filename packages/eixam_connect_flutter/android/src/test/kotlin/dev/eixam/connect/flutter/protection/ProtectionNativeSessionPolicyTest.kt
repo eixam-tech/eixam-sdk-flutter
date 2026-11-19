@@ -1,7 +1,9 @@
 package dev.eixam.connect.flutter.protection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProtectionNativeSessionPolicyTest {
@@ -100,5 +102,29 @@ class ProtectionNativeSessionPolicyTest {
         val action = protectionTransportActionAfterSuccessfulCommand("SOS TRIGGER APP")
 
         assertEquals(ProtectionSuccessfulCommandTransportAction.keepAlive, action)
+    }
+
+    @Test
+    fun `Bluetooth off is a wait, not the end of the native reconnect loop`() {
+        assertEquals(
+            ProtectionConnectPrecondition.waitForBluetooth,
+            evaluateProtectionConnectPrecondition(adapterEnabled = false, targetKnown = true),
+        )
+        assertEquals(
+            ProtectionConnectPrecondition.ready,
+            evaluateProtectionConnectPrecondition(adapterEnabled = true, targetKnown = true),
+        )
+        assertEquals(
+            ProtectionConnectPrecondition.noTarget,
+            evaluateProtectionConnectPrecondition(adapterEnabled = false, targetKnown = false),
+        )
+    }
+
+    @Test
+    fun `Bluetooth turning on forces an immediate native reconnect`() {
+        assertTrue(shouldForceNativeBleReconnect(protectionBluetoothOnWakeReason))
+        assertTrue(shouldForceNativeBleReconnect("native_owner_flutter_yielded"))
+        assertFalse(shouldForceNativeBleReconnect("app_foreground_resume"))
+        assertFalse(shouldForceNativeBleReconnect("native_ble_owner"))
     }
 }

@@ -112,6 +112,8 @@ ProtectionPlatformSnapshot mapIosProtectionPlatformSnapshot(
     iosBleSosNodeId: snapshot['iosBleSosNodeId'] as int?,
     iosBleSosPacketId: snapshot['iosBleSosPacketId'] as int?,
     iosBleSosCycleKey: snapshot['iosBleSosCycleKey'] as String?,
+    nativeSosCycleId: snapshot['nativeSosCycleId'] as String?,
+    nativeSosCycleOpen: snapshot['nativeSosCycleOpen'] as bool? ?? false,
   );
 }
 
@@ -223,6 +225,8 @@ ProtectionPlatformSnapshot mapAndroidProtectionPlatformSnapshot(
     preSosRemainingSeconds: snapshot['preSosRemainingSeconds'] as int?,
     preSosOriginatorNodeId: snapshot['preSosOriginatorNodeId'] as int?,
     preSosPacketId: snapshot['preSosPacketId'] as int?,
+    nativeSosCycleId: snapshot['nativeSosCycleId'] as String?,
+    nativeSosCycleOpen: snapshot['nativeSosCycleOpen'] as bool? ?? false,
   );
 }
 
@@ -375,6 +379,12 @@ ProtectionPlatformEventType parseIosProtectionPlatformEventType(String? value) {
       return ProtectionPlatformEventType.bluetoothTurnedOff;
     case 'bluetoothTurnedOn':
       return ProtectionPlatformEventType.bluetoothTurnedOn;
+    case 'ownTagSosStopRequired':
+      return ProtectionPlatformEventType.ownTagSosStopRequired;
+    case 'ownTagSosPromptOpened':
+      return ProtectionPlatformEventType.ownTagSosPromptOpened;
+    case 'ownTagSosPromptClosed':
+      return ProtectionPlatformEventType.ownTagSosPromptClosed;
     case 'runtimeError':
       return ProtectionPlatformEventType.runtimeError;
     // Native SOS hand-off (pending create / TAG cancel stored natively).
@@ -466,6 +476,12 @@ ProtectionPlatformEventType parseAndroidProtectionPlatformEventType(
       return ProtectionPlatformEventType.bluetoothTurnedOff;
     case 'bluetoothTurnedOn':
       return ProtectionPlatformEventType.bluetoothTurnedOn;
+    case 'ownTagSosStopRequired':
+      return ProtectionPlatformEventType.ownTagSosStopRequired;
+    case 'ownTagSosPromptOpened':
+      return ProtectionPlatformEventType.ownTagSosPromptOpened;
+    case 'ownTagSosPromptClosed':
+      return ProtectionPlatformEventType.ownTagSosPromptClosed;
     case 'woke':
     default:
       return ProtectionPlatformEventType.woke;

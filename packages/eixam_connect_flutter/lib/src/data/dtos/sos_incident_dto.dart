@@ -8,6 +8,7 @@ class SosIncidentDto {
     required this.id,
     required this.state,
     required this.createdAt,
+    this.occurredAt,
     this.source,
     this.triggerSource,
     this.relaySource,
@@ -37,6 +38,7 @@ class SosIncidentDto {
           (json['occurredAt'] as String?) ??
           (json['timestamp'] as String?) ??
           DateTime.now().toIso8601String(),
+      occurredAt: _stringFromJson(json, const ['occurredAt', 'occurred_at']),
       source: _stringFromJson(json, const ['source']),
       triggerSource:
           _stringFromJson(json, const ['triggerSource', 'trigger_source']),
@@ -72,6 +74,10 @@ class SosIncidentDto {
   final String id;
   final String state;
   final String createdAt;
+
+  /// The SOS occurrence the backend echoes from the trigger's publish
+  /// timestamp (`createdAt` is the server's row time).
+  final String? occurredAt;
   final String? source;
   final String? triggerSource;
   final String? relaySource;
@@ -96,6 +102,7 @@ class SosIncidentDto {
     String? id,
     String? state,
     String? createdAt,
+    String? occurredAt,
     String? source,
     String? triggerSource,
     String? relaySource,
@@ -118,6 +125,7 @@ class SosIncidentDto {
       id: id ?? this.id,
       state: state ?? this.state,
       createdAt: createdAt ?? this.createdAt,
+      occurredAt: occurredAt ?? this.occurredAt,
       source: source ?? this.source,
       triggerSource: triggerSource ?? this.triggerSource,
       relaySource: relaySource ?? this.relaySource,

@@ -287,6 +287,11 @@ class SosDeliveryOutbox {
   Completer<void>? _wake;
   Completer<void>? _confirmSignal;
   bool _running = false;
+
+  /// The action selected for its attempt (from the head selection, before
+  /// its pre-publish persist, until the publish returned): it may reach the
+  /// backend whatever happens to the queue meanwhile.
+  String? _publishInFlightId;
   bool _disposed = false;
   bool _paused = false;
   int _sequence = 0;
@@ -359,6 +364,11 @@ class SosDeliveryOutbox {
         'SOS_OUTBOX_CANCEL_RETIRED reason=newer_trigger_after_puback',
       );
     }
+    if (retired.isNotEmpty) {
+      // Stop waiting for the retired cancel's confirmation: the new SOS goes
+      // out now (its cancel already reached the broker first).
+      _signalConfirm();
+    }
     final normalizedKey = cycleKey?.trim();
     if (normalizedKey != null && normalizedKey.isNotEmpty) {
       final existing = _queue.where(
@@ -409,7 +419,11 @@ class SosDeliveryOutbox {
         _queue.any(
           (action) =>
               action.kind == SosOutboxActionKind.trigger &&
-              action.published &&
+              // A failed attempt (e.g. a PUBACK timeout) may still have
+              // reached the broker: possibly delivered too.
+              (action.published ||
+                  action.attempts > 0 ||
+                  action.id == _publishInFlightId) &&
               action.createdAt.isAfter(observed),
         );
     if (newerTriggerPublished) {
@@ -635,12 +649,18 @@ class SosDeliveryOutbox {
       attempts: head.attempts + 1,
       lastAttemptAt: _clock().toUtc(),
     );
+    // Selected: from here the attempt may reach the broker (MEDIUM-1).
+    _publishInFlightId = attempted.id;
     _replace(attempted);
-    await _persist();
-    _publishStatus();
     var current = attempted;
     try {
-      await _publish(current);
+      try {
+        await _persist();
+        _publishStatus();
+        await _publish(current);
+      } finally {
+        _publishInFlightId = null;
+      }
       if (_queue.firstOrNull?.id != current.id) {
         _completeAttemptWaiter(current.id);
         return _AttemptOutcome.superseded;
@@ -658,6 +678,20 @@ class SosDeliveryOutbox {
         'attempt=${current.attempts}',
       );
       _completeAttemptWaiter(current.id);
+      if (current.kind == SosOutboxActionKind.cancel &&
+          _queue.any((action) => action.kind == SosOutboxActionKind.trigger)) {
+        // Same rule as [enqueueTrigger]: the cancel reached the broker before
+        // the newer SOS can (strict FIFO); that SOS is not held back until
+        // the backend confirms the cancel.
+        _queue.removeWhere((action) => action.id == current.id);
+        await _persist();
+        _completeWaiter(current.id, false);
+        sdkReleaseLog(
+          'SOS_OUTBOX_CANCEL_RETIRED reason=newer_trigger_after_puback',
+        );
+        _publishStatus();
+        return _AttemptOutcome.done;
+      }
     } on SosOutboxDropAction catch (drop) {
       _queue.removeWhere((action) => action.id == current.id);
       await _persist();

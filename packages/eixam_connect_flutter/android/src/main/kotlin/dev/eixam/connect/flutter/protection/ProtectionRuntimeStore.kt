@@ -152,7 +152,24 @@ internal class ProtectionRuntimeStore(context: Context) {
             "preSosRemainingSeconds" to preSosRemainingSeconds,
             "preSosOriginatorNodeId" to preferences.getIntOrNull(keyPreSosOriginatorNodeId),
             "preSosPacketId" to preferences.getIntOrNull(keyPreSosPacketId),
+            // F17c item 1: the current native SOS cycle (id kept after it closed).
+            "nativeSosCycleId" to sosCycleId(),
+            "nativeSosCycleOpen" to (
+                preferences.getString(keyPreSosLifecycleState, "idle") != "idle" ||
+                    ProtectionSosNativeDecision.dartCycleOpen(
+                        loadSosObservedCycle(),
+                        null,
+                        System.currentTimeMillis(),
+                    )
+                ),
         )
+    }
+
+    /** F17c item 1: the id of the newest native SOS cycle; survives process death. */
+    fun sosCycleId(): String? = preferences.getString(keySosCycleId, null)
+
+    fun saveSosCycleId(id: String) {
+        preferences.edit().putString(keySosCycleId, id).apply()
     }
 
     fun markStartRequest(
@@ -255,6 +272,31 @@ internal class ProtectionRuntimeStore(context: Context) {
                 keyProtectionSosStaleStoppedBody,
                 notificationTexts,
                 "protectionSosStaleStoppedBody",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousTitle,
+                notificationTexts,
+                "protectionSosAmbiguousTitle",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousBody,
+                notificationTexts,
+                "protectionSosAmbiguousBody",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousSendAction,
+                notificationTexts,
+                "protectionSosAmbiguousSendAction",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousStopAction,
+                notificationTexts,
+                "protectionSosAmbiguousStopAction",
+            )
+            .putNotificationText(
+                keyProtectionSosAmbiguousStoppedBody,
+                notificationTexts,
+                "protectionSosAmbiguousStoppedBody",
             )
             .putNotificationText(
                 keyNearbyMessageChannelName,
@@ -411,6 +453,36 @@ internal class ProtectionRuntimeStore(context: Context) {
         notificationText(
             keyProtectionSosStaleStoppedBody,
             "We stopped on your TAG an SOS that had already ended.",
+        )
+
+    fun protectionSosAmbiguousTitle(): String =
+        notificationText(
+            keyProtectionSosAmbiguousTitle,
+            "Your TAG is still in SOS",
+        )
+
+    fun protectionSosAmbiguousBody(): String =
+        notificationText(
+            keyProtectionSosAmbiguousBody,
+            "You stopped an SOS, but your TAG didn't get it. Is this a new emergency? If you don't answer, we'll send the SOS in 30 s.",
+        )
+
+    fun protectionSosAmbiguousSendAction(): String =
+        notificationText(
+            keyProtectionSosAmbiguousSendAction,
+            "Send SOS",
+        )
+
+    fun protectionSosAmbiguousStopAction(): String =
+        notificationText(
+            keyProtectionSosAmbiguousStopAction,
+            "No, stop the TAG",
+        )
+
+    fun protectionSosAmbiguousStoppedBody(): String =
+        notificationText(
+            keyProtectionSosAmbiguousStoppedBody,
+            "TAG stopped. No SOS was sent.",
         )
 
     fun nearbyMessageChannelName(): String =
@@ -984,7 +1056,8 @@ internal class ProtectionRuntimeStore(context: Context) {
                 "armedAt" to preferences.getLong(keyStaleGuardArmedAt, 0L).takeIf { it > 0L },
                 "lastFrameAt" to preferences.getLong(keyStaleGuardLastFrameAt, 0L).takeIf { it > 0L },
                 "linkDroppedSinceLastFrame" to preferences.getBoolean(keyStaleGuardLinkDropped, true),
-                "noticeShown" to preferences.getBoolean(keyStaleGuardNoticeShown, false),
+                "promptDeadlineAt" to preferences.getLong(keyStaleGuardPromptDeadlineAt, 0L).takeIf { it > 0L },
+                "stopOwed" to preferences.getBoolean(keyStaleGuardStopOwed, false),
             ),
         )
     }
@@ -998,16 +1071,50 @@ internal class ProtectionRuntimeStore(context: Context) {
                 .remove(keyStaleGuardLastFrameAt)
                 .remove(keyStaleGuardLinkDropped)
                 .remove(keyStaleGuardNoticeShown)
+                .remove(keyStaleGuardPromptDeadlineAt)
+                .remove(keyStaleGuardStopOwed)
         } else {
             editor.putString(keyStaleGuardTerminal, state.terminal.wire)
                 .putLong(keyStaleGuardArmedAt, state.armedAt)
                 .putBoolean(keyStaleGuardLinkDropped, state.linkDroppedSinceLastFrame)
-                .putBoolean(keyStaleGuardNoticeShown, state.noticeShown)
+                .remove(keyStaleGuardNoticeShown)
+            state.promptDeadlineAt?.let { editor.putLong(keyStaleGuardPromptDeadlineAt, it) }
+                ?: editor.remove(keyStaleGuardPromptDeadlineAt)
+            editor.putBoolean(keyStaleGuardStopOwed, state.stopOwed)
             if (state.nodeId == null) editor.remove(keyStaleGuardNodeId) else editor.putInt(keyStaleGuardNodeId, state.nodeId)
             if (state.lastFrameAt == null) {
                 editor.remove(keyStaleGuardLastFrameAt)
             } else {
                 editor.putLong(keyStaleGuardLastFrameAt, state.lastFrameAt)
+            }
+        }
+        editor.apply()
+    }
+
+    /** F17c: an SOS seen only through Dart's forwarded frames; survives process death. */
+    fun loadSosObservedCycle(): ProtectionSosObservedCycle? {
+        val first = preferences.getLong(keyObservedCycleFirstAt, 0L).takeIf { it > 0L } ?: return null
+        val last = preferences.getLong(keyObservedCycleLastAt, 0L).takeIf { it > 0L } ?: first
+        return ProtectionSosObservedCycle(
+            nodeId = preferences.getIntOrNull(keyObservedCycleNodeId),
+            firstSeenAt = first,
+            lastSeenAt = last,
+        )
+    }
+
+    fun saveSosObservedCycle(observed: ProtectionSosObservedCycle?) {
+        val editor = preferences.edit()
+        if (observed == null) {
+            editor.remove(keyObservedCycleFirstAt)
+                .remove(keyObservedCycleLastAt)
+                .remove(keyObservedCycleNodeId)
+        } else {
+            editor.putLong(keyObservedCycleFirstAt, observed.firstSeenAt)
+                .putLong(keyObservedCycleLastAt, observed.lastSeenAt)
+            if (observed.nodeId == null) {
+                editor.remove(keyObservedCycleNodeId)
+            } else {
+                editor.putInt(keyObservedCycleNodeId, observed.nodeId)
             }
         }
         editor.apply()
@@ -1568,12 +1675,27 @@ internal class ProtectionRuntimeStore(context: Context) {
             "notification_protection_sos_stale_stopped_title"
         private const val keyProtectionSosStaleStoppedBody =
             "notification_protection_sos_stale_stopped_body"
+        private const val keyProtectionSosAmbiguousTitle =
+            "notification_protection_sos_ambiguous_title"
+        private const val keyProtectionSosAmbiguousBody =
+            "notification_protection_sos_ambiguous_body"
+        private const val keyProtectionSosAmbiguousSendAction =
+            "notification_protection_sos_ambiguous_sendaction"
+        private const val keyProtectionSosAmbiguousStopAction =
+            "notification_protection_sos_ambiguous_stopaction"
+        private const val keyProtectionSosAmbiguousStoppedBody =
+            "notification_protection_sos_ambiguous_stoppedbody"
         private const val keyStaleGuardTerminal = "sos_stale_guard_terminal"
         private const val keyStaleGuardNodeId = "sos_stale_guard_node_id"
         private const val keyStaleGuardArmedAt = "sos_stale_guard_armed_at"
         private const val keyStaleGuardLastFrameAt = "sos_stale_guard_last_frame_at"
         private const val keyStaleGuardLinkDropped = "sos_stale_guard_link_dropped"
         private const val keyStaleGuardNoticeShown = "sos_stale_guard_notice_shown"
+        private const val keyStaleGuardPromptDeadlineAt = "sos_stale_guard_prompt_deadline_at"
+        private const val keyStaleGuardStopOwed = "sos_stale_guard_stop_owed"
+        private const val keyObservedCycleFirstAt = "sos_observed_cycle_first_at"
+        private const val keyObservedCycleLastAt = "sos_observed_cycle_last_at"
+        private const val keyObservedCycleNodeId = "sos_observed_cycle_node_id"
         private const val keyLastOwnSosFrameAt = "sos_last_own_frame_at"
         private const val keyLastOwnSosCloseAt = "sos_last_own_close_at"
         private const val keyNearbyMessageChannelName = "notification_nearby_message_channel_name"
@@ -1637,6 +1759,7 @@ internal class ProtectionRuntimeStore(context: Context) {
         private const val keyPreSosExpectedActivationAt = "pre_sos_expected_activation_at"
         private const val keyPreSosOriginatorNodeId = "pre_sos_originator_node_id"
         private const val keyPreSosPacketId = "pre_sos_packet_id"
+        private const val keySosCycleId = "native_sos_cycle_id"
         private const val expectedBleServiceUuid = "6ba1b218-15a8-461f-9fa8-5dcae273ea00"
         private val expectedBleCharacteristicUuids = listOf(
             "6ba1b218-15a8-461f-9fa8-5dcae273ea01",

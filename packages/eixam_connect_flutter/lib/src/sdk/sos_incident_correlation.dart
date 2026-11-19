@@ -4,10 +4,7 @@ import 'package:eixam_connect_core/eixam_connect_core.dart';
 ///
 /// Missing identity never counts as a match. Explicit cycle/device conflicts
 /// always win over an otherwise matching incident identifier.
-bool sosIncidentEvidenceMatches(
-  SosIncident current,
-  SosIncident evidence,
-) {
+bool sosIncidentEvidenceMatches(SosIncident current, SosIncident evidence) {
   if (_hasIncidentConflict(current, evidence)) return false;
   if (_ids(current).any(_ids(evidence).contains)) return true;
   return _sameNonEmpty(current.cycleKey, evidence.cycleKey);
@@ -45,7 +42,12 @@ bool _hasLifecycleConflict(
     return true;
   }
   if (_differentInt(lifecycle.nodeId, evidence.originatorNodeId)) return true;
-  if (_differentNonEmpty(lifecycle.deviceId, evidence.deviceId)) return true;
+  // The lifecycle keeps the BLE transport id; a TAG-origin incident carries
+  // the TAG node id as deviceId. The same TAG hardware is not a conflict.
+  if (!_sameNonEmpty(lifecycle.hardwareId, evidence.hardwareId) &&
+      _differentNonEmpty(lifecycle.deviceId, evidence.deviceId)) {
+    return true;
+  }
   if (_differentNonEmpty(lifecycle.hardwareId, evidence.hardwareId)) {
     return true;
   }
@@ -60,9 +62,9 @@ bool _hasLifecycleConflict(
 }
 
 Set<String> _ids(SosIncident? incident) => <String>{
-      if (_normalized(incident?.id) case final id?) id,
-      if (_normalized(incident?.provisionalIncidentId) case final id?) id,
-    };
+  if (_normalized(incident?.id) case final id?) id,
+  if (_normalized(incident?.provisionalIncidentId) case final id?) id,
+};
 
 bool _differentCanonicalIds(String left, String right) {
   final normalizedLeft = _normalized(left);
