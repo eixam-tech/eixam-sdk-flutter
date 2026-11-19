@@ -29,17 +29,21 @@ void main() {
         final harness = _Harness();
         addTearDown(harness.dispose);
         await harness.initialize();
-        await harness.handoff(owner: owner);
-        expect(
-          await harness.ble.isConnected(MockBleClient.demoDeviceId),
-          isFalse,
-        );
-        harness.ble.writtenCommands.clear();
+        // The TAG answers every native 0x23, including the connect-time TAG
+        // session bootstrap's own read on the native owner's connection.
         harness.adapter.reply = () =>
             harness.repository.ingestNativeBleNotification(
               payload: harness.ble.runtimeStatusPayload,
               channel: EixamBleChannel.tel,
             );
+        await harness.handoff(owner: owner);
+        await pumpEventQueue(times: 20);
+        expect(
+          await harness.ble.isConnected(MockBleClient.demoDeviceId),
+          isFalse,
+        );
+        harness.ble.writtenCommands.clear();
+        harness.adapter.commands.clear();
 
         final status = await harness.sdk.getDeviceRuntimeStatus();
 

@@ -249,7 +249,9 @@ void main() {
     // Notifications dead from the very first connection.
     h.ble.notificationsDead = true;
     await h.initialize();
-    await h.settle(const Duration(milliseconds: 300));
+    // The connect-time TAG session bootstrap reads 0x23 too; liveness never
+    // joins it, so let that unanswered read time out first.
+    await h.settle(_bootstrapStatusReadTimeout);
     h.resume();
     expect(
       await h.waitFor(
@@ -274,7 +276,7 @@ void main() {
       // This TAG never answers.
       h.ble.notificationsDead = true;
       await h.initialize();
-      await h.settle(const Duration(milliseconds: 300));
+      await h.settle(_bootstrapStatusReadTimeout);
       final payload = List<int>.of(h.ble.runtimeStatusPayload);
       payload[7] = 0x99;
       payload[8] = 0x99;
@@ -649,6 +651,9 @@ class _LivenessBleClient extends MockBleClient {
     );
   }
 }
+
+/// The bootstrap's one 0x23 (5 s reply timeout) plus margin.
+const Duration _bootstrapStatusReadTimeout = Duration(milliseconds: 5500);
 
 class _Harness {
   _Harness({this.timing = _timing});
