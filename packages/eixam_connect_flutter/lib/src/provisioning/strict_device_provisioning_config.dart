@@ -63,23 +63,6 @@ const _RegulatoryRegion _eu868 = _RegulatoryRegion(
 
 const List<_RegulatoryRegion> _supportedRegions = <_RegulatoryRegion>[_eu868];
 
-/// The TEL spreading factors a provisioning config can carry for
-/// [regionCode] (the envelope [StrictDeviceProvisioningConfig.parse]
-/// enforces), or null for a region provisioning does not support. Firmware's
-/// adaptive TEL SF stays inside it, so a live SF outside it means the radio
-/// is not running an Eixam provisioning config.
-({int min, int max})? provisioningTelSpreadingFactorRange(int regionCode) {
-  for (final region in _supportedRegions) {
-    if (region.code == regionCode) {
-      return (
-        min: region.telMinSpreadingFactor,
-        max: region.telMaxSpreadingFactor,
-      );
-    }
-  }
-  return null;
-}
-
 final class ProvisioningContractException implements Exception {
   const ProvisioningContractException(this.detail, {this.observedInteger});
 

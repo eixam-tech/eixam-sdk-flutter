@@ -253,6 +253,9 @@ final class TagSessionBootstrap {
   final Duration repairBlockCooldown;
   final TagRadioRepairLedger _ledger;
 
+  /// Backstop if the ledger cannot be written: blocked for this process.
+  final Set<String> _blockedThisProcess = <String>{};
+
   final bool Function() _isLinkUp;
   final DateTime Function() _clock;
   final Timer Function(Duration, void Function()) _timer;
@@ -458,17 +461,14 @@ final class TagSessionBootstrap {
     }
   }
 
-  /// Live-status test only: `use_preset` set, or a live mesh SF that no
-  /// provisioning config for the TAG's region can produce. Frequency,
+  /// Repair only a TAG on a Meshtastic preset (`use_preset`, e.g. LONG_FAST
+  /// 869.525 MHz / SF11): our 0x20 always clears it, so a provisioned TAG
+  /// with it set never received (or lost) the provisioning radio. A live SF
+  /// outside the TEL plan without `use_preset` is the SOS PHY (or a config
+  /// saved but not applied yet) and is never a reason to reboot. Frequency,
   /// bandwidth, CR and power are not in status v2.
-  bool _radioSuspect(DeviceRuntimeStatus status) {
-    if (!status.isProvisioned) return false;
-    if (status.usePreset) return true;
-    final range = provisioningTelSpreadingFactorRange(status.region);
-    return range != null &&
-        (status.meshSpreadingFactor < range.min ||
-            status.meshSpreadingFactor > range.max);
-  }
+  bool _radioSuspect(DeviceRuntimeStatus status) =>
+      status.isProvisioned && status.usePreset;
 
   /// The TAG has been connected and silent (no SOS frame) for [quietWindow].
   Duration _quietRemaining(_Session session) {
@@ -501,8 +501,9 @@ final class TagSessionBootstrap {
     }
     final mark = await _readMark(session);
     if (!_isCurrent(session)) return;
-    if (mark?.state == TagRadioRepairState.blocked &&
-        _clock().difference(mark!.at) < repairBlockCooldown) {
+    if (session.deviceKeys.any(_blockedThisProcess.contains) ||
+        mark?.state == TagRadioRepairState.blocked &&
+            _clock().difference(mark!.at) < repairBlockCooldown) {
       session.radioDone = true;
       _emit(TagSessionBootstrapCode.radioRepairSkipped, reason: 'blocked');
       return;
@@ -577,16 +578,6 @@ final class TagSessionBootstrap {
       );
       return;
     }
-    if (!status.usePreset &&
-        status.meshSpreadingFactor == config.sos.spreadingFactor) {
-      // While in SOS the TAG's live radio runs the SOS PHY, whose SF can lie
-      // outside the TEL envelope: that is an SOS, not a wrong radio.
-      _emit(
-        TagSessionBootstrapCode.radioRepairSkipped,
-        reason: 'sos_phy_possible',
-      );
-      return;
-    }
     final preWrite = await _writeGate(session);
     if (preWrite != null) {
       if (_isCurrent(session)) {
@@ -605,20 +596,10 @@ final class TagSessionBootstrap {
       return;
     }
     if (radio == ProvisioningCommandOutcome.okNoChange) {
-      // Firmware compared the saved config with ours and found it equal.
-      // With use_preset still set it ignored the RF block (old firmware);
-      // otherwise the saved radio is already right and the live SF is not
-      // a config problem (it applies at the TAG's next reboot anyway).
-      // Never reboot on it.
+      // use_preset was set, so the RF block must change it: firmware ignored
+      // it (older than 2.7.53). Never reboot on it.
       await _mark(session, TagRadioRepairState.blocked);
-      if (status.usePreset) {
-        _emit(TagSessionBootstrapCode.radioRepairNotApplied);
-      } else {
-        _emit(
-          TagSessionBootstrapCode.radioRepairSkipped,
-          reason: 'saved_config_matches',
-        );
-      }
+      _emit(TagSessionBootstrapCode.radioRepairNotApplied);
       return;
     }
     if (await _skipRebootIfUnsafe(session)) return;
@@ -664,6 +645,9 @@ final class TagSessionBootstrap {
   }
 
   Future<void> _mark(_Session session, TagRadioRepairState? state) async {
+    if (state == TagRadioRepairState.blocked) {
+      _blockedThisProcess.addAll(session.deviceKeys);
+    }
     try {
       await _ledger.write(
         session.deviceKeys,

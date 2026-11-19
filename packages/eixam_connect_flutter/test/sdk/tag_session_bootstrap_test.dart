@@ -148,6 +148,15 @@ final class _MemoryVolumeStore implements TagVolumeStore {
   }
 }
 
+final class _FailingLedger implements TagRadioRepairLedger {
+  @override
+  Future<TagRadioRepairMark?> read(Iterable<String> deviceKeys) async => null;
+
+  @override
+  Future<void> write(Iterable<String> deviceKeys, TagRadioRepairMark? mark) =>
+      Future<void>.error(StateError('prefs unavailable'));
+}
+
 final class _Env {
   _Env(DeviceRuntimeStatus status, {this.storedVolume = 10})
     : tag = _FakeTag(status);
@@ -654,53 +663,33 @@ void main() {
       });
     });
 
-    test('OK_NOCHANGE never reboots (saved config already right)', () {
+    test('live SF outside the plan without use_preset (SOS PHY or a saved '
+        'config not applied yet): never written', () {
       fakeAsync((async) {
-        final env = _Env(_status(sf: 11)); // use_preset already cleared
+        for (final sf in <int>[10, 11, 12]) {
+          final env = _Env(_status(sf: sf));
+          env.build(async);
+          env.connect(async, 's$sf');
+          async.elapse(_quiet * 2);
+          expect(env.radioWrites, isEmpty);
+          expect(env.configFetches, 0);
+          expect(env.codes, contains(TagSessionBootstrapCode.radioOk));
+          unawaited(env.bootstrap.dispose());
+        }
+      });
+    });
+
+    test('ledger writes failing: the TAG stays blocked for this process', () {
+      fakeAsync((async) {
+        final env = _Env(_longFast())..ledger = _FailingLedger();
         env.tag.radioOutcome = ProvisioningCommandOutcome.okNoChange;
         env.build(async);
         env.connect(async, 's1');
         async.elapse(_quiet);
         expect(env.radioWrites, <String>['0x20']);
-        expect(
-          env.events.any((e) => e.reason == 'saved_config_matches'),
-          isTrue,
-        );
         env.connect(async, 's2');
         async.elapse(_quiet * 2);
         expect(env.radioWrites, <String>['0x20']);
-      });
-    });
-
-    test('live SF = the SOS PHY SF: treated as a possible SOS, untouched', () {
-      fakeAsync((async) {
-        // A backend SOS profile outside the TEL envelope (SF10); the TAG on
-        // its SOS PHY reports that SF live.
-        final env = _Env(_status(sf: 10))
-          ..config = const StrictDeviceProvisioningConfig(
-            regionCode: 3,
-            region: 'EU868',
-            tel: ProvisioningTelConfig(
-              frequencyKhz: 866500,
-              bandwidthKhz: 250,
-              spreadingFactor: 9,
-              codingRateDenominator: 5,
-              txPowerDbm: 14,
-            ),
-            sos: ProvisioningSosConfig(
-              frequencyHz: 869618000,
-              bandwidthHz: 62500,
-              spreadingFactor: 10,
-              codingRateDenominator: 5,
-              txPowerDbm: 27,
-              preambleSymbols: 16,
-            ),
-          );
-        env.build(async);
-        env.connect(async, 's1');
-        async.elapse(_quiet * 2);
-        expect(env.radioWrites, isEmpty);
-        expect(env.events.any((e) => e.reason == 'sos_phy_possible'), isTrue);
       });
     });
 
@@ -1005,10 +994,5 @@ void main() {
       await ledger.write(const <String>['hw-1', 'node:7'], null);
       expect(await ledger.read(const <String>['hw-1', 'node:7']), isNull);
     });
-  });
-
-  test('TEL SF envelope comes from the provisioning regulatory table', () {
-    expect(provisioningTelSpreadingFactorRange(3), (min: 7, max: 9));
-    expect(provisioningTelSpreadingFactorRange(1), isNull);
   });
 }
