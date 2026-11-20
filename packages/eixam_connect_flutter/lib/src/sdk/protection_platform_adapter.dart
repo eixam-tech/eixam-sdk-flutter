@@ -2,6 +2,11 @@ import 'dart:async';
 
 import 'package:eixam_connect_core/eixam_connect_core.dart';
 
+import '../device/own_tag_sos_frame_gate.dart';
+
+export '../device/own_tag_sos_frame_gate.dart'
+    show OwnTagSosFrameReport, OwnTagSosFrameVerdict;
+
 enum ProtectionPlatformEventType {
   serviceStarted,
   serviceStopped,
@@ -37,6 +42,49 @@ enum ProtectionPlatformEventType {
   nativeBackendSyncFailed,
   bluetoothTurnedOff,
   bluetoothTurnedOn,
+
+  /// F17c: the native classifier found the TAG still running an SOS the SDK
+  /// closed, and native holds no writable link: Dart writes the SDK's terminal
+  /// command (`reason`: `cancel` -> 0x04, `resolve` -> 0x07).
+  ownTagSosStopRequired,
+
+  /// F17c: native opened the ambiguous-SOS prompt (`reason`: the terminal,
+  /// `cancel` or `resolve`). Read the prompt with `getOwnTagSosPrompt`.
+  ownTagSosPromptOpened,
+
+  /// F17c: the prompt closed (`reason`: answered, timeout, burst, TAG close,
+  /// session change, new SDK SOS).
+  ownTagSosPromptClosed,
+}
+
+/// F17c: the open ambiguous-SOS prompt as native holds it.
+class ProtectionOwnTagSosPrompt {
+  const ProtectionOwnTagSosPrompt({
+    required this.terminal,
+    required this.deadlineAt,
+  });
+
+  /// `cancel` or `resolve`.
+  final String terminal;
+  final DateTime deadlineAt;
+
+  static ProtectionOwnTagSosPrompt? fromMap(Object? raw) {
+    if (raw is! Map) {
+      return null;
+    }
+    final terminal = raw['terminal'];
+    final deadline = raw['deadlineAtMs'];
+    if (terminal is! String || deadline is! num) {
+      return null;
+    }
+    return ProtectionOwnTagSosPrompt(
+      terminal: terminal,
+      deadlineAt: DateTime.fromMillisecondsSinceEpoch(
+        deadline.toInt(),
+        isUtc: true,
+      ),
+    );
+  }
 }
 
 class ProtectionPlatformStartRequest {
@@ -152,6 +200,8 @@ class ProtectionPlatformSnapshot {
     this.iosBleSosNodeId,
     this.iosBleSosPacketId,
     this.iosBleSosCycleKey,
+    this.nativeSosCycleId,
+    this.nativeSosCycleOpen = false,
   });
 
   final bool backgroundCapabilityReady;
@@ -227,6 +277,15 @@ class ProtectionPlatformSnapshot {
   final int? iosBleSosNodeId;
   final int? iosBleSosPacketId;
   final String? iosBleSosCycleKey;
+
+  /// F17c item 1: the id of the newest SOS cycle native opened (native
+  /// countdown / handed-over SOS, or a Dart-forwarded burst); kept after it
+  /// closed until the next one opens.
+  final String? nativeSosCycleId;
+
+  /// F17c item 1: that cycle is still open (running, handed over, or Dart
+  /// forwarded its frames recently).
+  final bool nativeSosCycleOpen;
 }
 
 class ProtectionPlatformCommandRequest {
@@ -441,11 +500,53 @@ abstract class ProtectionPlatformAdapter {
   /// F17b): the SDK's terminal of a handed-over SOS; when the TAG never
   /// confirmed closing it, native writes the matching TAG command itself and
   /// stops (never re-opens) the SOS if the TAG keeps sending it.
+  /// [targetCycleId] (F17c item 1): the native SOS cycle id (snapshot
+  /// `nativeSosCycleId`) the stop is for. An automated stop (backend event,
+  /// portal resolve, reconciliation) carries it and native applies it only to
+  /// that cycle: another id, or none, is ignored and logged
+  /// (`NATIVE_SOS_STALE_STOP_IGNORED`). [targetCurrentCycle]: the user's own
+  /// action targets the cycle running now, by definition (native applies it
+  /// to the current cycle; [targetCycleId] is then informational). [issuedAt]
+  /// (F17c Phase 2, automated stops only): native also ignores a stop issued
+  /// before its current countdown began. [force]: session change.
   Future<void> closeNativeSosCycle({
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
+    bool targetCurrentCycle = false,
   });
+
+  /// F17c: whether this platform's native store classifies own-TAG SOS frames
+  /// (iOS and Android plugins). False: Dart handles frames as before.
+  bool get classifiesOwnTagSosFrames;
+
+  /// F17c: one own-TAG SOS frame that Dart received through its own BLE link.
+  /// The native store is the single "stale vs new" classifier for every BLE
+  /// path and answers with its verdict. Works with or without Protection armed.
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  );
+
+  /// F17c (M3): the SDK opened a new SOS; native drops any stale guard so no
+  /// pending decision can stop it.
+  Future<void> disarmSosStaleGuard({required String reason});
+
+  /// F17c: Dart's own TAG link changed (native sees no link events while Dart
+  /// owns the link); the guard's gap clock follows it.
+  Future<void> noteOwnTagSosLink({required bool up});
+
+  /// F17c: the open ambiguous-SOS prompt, or null.
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt();
+
+  /// F17c: the user's answer (`sendSos` / `stopTag`). Native returns its
+  /// decision: `sosOpened`, `stop` or `none` (no prompt open).
+  Future<String> answerOwnTagSosPrompt(String choice);
+
+  /// F17c: the result of Dart's GATT write of the record's stop. Success
+  /// clears the user's owed "No" (the next retry asks again).
+  Future<void> reportOwnTagSosStopWritten({required bool success});
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({
     required ProtectionPlatformCommandRequest request,
   });
@@ -540,6 +641,9 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {}
 
   @override
@@ -549,6 +653,29 @@ class NoopProtectionPlatformAdapter implements ProtectionPlatformAdapter {
   }) async {
     return true;
   }
+
+  @override
+  bool get classifiesOwnTagSosFrames => false;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async => OwnTagSosFrameVerdict.proceed;
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) async {}
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) async {}
+
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async => null;
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
+
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) async {}
 
   @override
   Future<ProtectionPlatformCommandResult> sendProtectionCommand({

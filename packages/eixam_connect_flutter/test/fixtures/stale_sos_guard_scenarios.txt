@@ -1,0 +1,1003 @@
+# F17b/F17c stale-SOS decision point: ONE scenario set replayed by the iOS store
+# test (ios/Tests/IosNativeSosDeliveryStoreTests.swift), the Android guard test
+# (android/src/test/.../ProtectionSosStaleGuardTest.kt) and the Dart contract test
+# (test/device/own_tag_sos_frame_gate_test.dart). Native is the only classifier:
+# the Dart test cannot run either store; it feeds the Dart-path frames as raw
+# BLE notifications through BleDeviceRuntimeProvider, answers with the native
+# verdicts asserted here, replays the native prompt events into the SDK's
+# prompt tracker and checks what Dart does with them (it never classifies).
+#
+# F17c ambiguous-SOS prompt (DOCS/release/F17C_AMBIGUOUS_SOS_PROMPT.md): ONE
+# "unconfirmed stop" record on every platform. Any SDK cancel/resolve of an
+# own-TAG SOS seen on any path (native handed over, native countdown, Dart
+# forwarded frames) arms it, whatever path saw it, unless native still owes an
+# unclaimed create of that SOS. Only the TAG's close frame, a countdown burst,
+# the user's answer (send / timeout), a session change or a new SDK SOS end it
+# (Roger 16/11/2026: no gap or time cap; a stray retry after any silence still
+# asks). A non-burst frame under it is AMBIGUOUS: native asks the user
+# (prompt), it never stops the TAG and never drops the frame silently. The 30 s
+# native timeout sends the SOS. After "No" the stop is OWED until a GATT write
+# of it succeeded (native write result, or Dart's report when Dart owns the
+# link): retries meanwhile re-attempt it without asking; once written, a retry
+# asks again. F13: a link drop or the link coming up (any path, also after an
+# app restart) ends the owed stop: the next retry asks again (the TAG may run
+# a new SOS by then). Owed survives only while the link stays up.
+#
+# Line format (plain text: the Android unit-test classpath has no JSON parser):
+#   <t_ms> <event> [key=value ...] => <action> [stop=cancel|resolve]
+#          [kind=cancel|resolve] [opened=true|false] [prompt=open|closed]
+#          [armed=true|false]
+# events:
+#   seen source=native|native_unclaimed|countdown|dart|none node=N age=MS
+#                         what native saw of the SOS before the SDK closed it:
+#                         native = its own cycle, handed over (countdown elapsed,
+#                         create claimed by the SDK); native_unclaimed = its own
+#                         cycle reached its create but the SDK never claimed
+#                         it (runtime armed, cycle not handed over); countdown =
+#                         its own cycle, countdown still running, started age ms
+#                         before the terminal; dart = own-TAG frames that Dart
+#                         forwarded (observeOwnTagSosFrame), the first one age ms
+#                         before the terminal; none = nothing
+#   terminal kind=cancel|resolve node=N connected=true|false [issued=MS]
+#                         the SDK's cancel/resolve (closeNativeSosCycle); arms
+#                         the record when the SOS was seen on any path.
+#                         issued (F17c Phase 2): when the SDK decided that stop
+#                         (scenario time). A stop issued before the current
+#                         countdown began (native countdown or Dart-forwarded
+#                         burst) targets an older SOS: ignored and logged (no
+#                         close, no record). Absent: today's behaviour.
+#                         target (F17c item 1, Roger 17/11/2026): which native
+#                         cycle the stop names. An automated stop (backend
+#                         event, portal resolve, reconciliation) carries the
+#                         exact native cycle id: target=NAME (an id captured by
+#                         cycleid=NAME), default the native cycle id current at
+#                         this step. Native applies it only to that cycle: any
+#                         other id is ignored and logged
+#                         (NATIVE_SOS_STALE_STOP_IGNORED reason=cycle_id_mismatch,
+#                         no close, no record) and so is target=none (no id:
+#                         the SDK's guard never sends it; reason=no_cycle_id).
+#                         target=user: the user's own action (cancel / resolve
+#                         button) targets the cycle running now, by definition:
+#                         never ignored, no id or issued check.
+#                         target=user:NAME (F1, Roger 17/11/2026): the user's
+#                         action carrying the native cycle id the SDK captured
+#                         at the tap (NAME, captured by cycleid=NAME). Ignored
+#                         (NATIVE_SOS_STALE_STOP_IGNORED
+#                         reason=user_stop_for_older_cycle, no close, no
+#                         record) ONLY when that id is not the current native
+#                         cycle id AND the current cycle began after issued:
+#                         the user stopped an older SOS, the stop arrived after
+#                         a new one began. Otherwise applied as target=user
+#   frame node=N source=native|dart [delivered=MS]
+#                         one BLE SOS push as delivered by that path; for a
+#                         dart frame t is Dart's receivedAtMs and delivered
+#                         the native clock when it reached native (default t).
+#                         Native counts a Dart frame at its receivedAtMs when
+#                         plausible (not in the future, at most 5 s old; never
+#                         before the last counted push), else at delivery
+#   decide                the 2.0 s decision timer of the open candidate
+#   answer choice=sendSos|stopTag|timeout
+#                         the user's answer to the prompt (notification action
+#                         or app), or the native 30 s timer firing
+#   stop_written ok=true|false
+#                         the result of the GATT write of the owed stop (native
+#                         write callback, or Dart's reportOwnTagSosStopWritten)
+#   close source=native|dart [node=N] [code=E1|E2|E3]
+#                         the TAG's own close frame 0xE1/0xE2/0xE3 (default
+#                         E1), any path; another TAG's close never ends the
+#                         record
+#   link_drop | link_up [source=native|dart] | session
+#                         source=dart: Dart's own link note (noteOwnTagSosLink),
+#                         which never resets a burst being counted
+#   sdk_open              the SDK opened a new SOS lifecycle (Dart disarms native)
+# actions: pass (normal path: not armed / ignored / disarmed; a native-path
+#          frame that passes reaches the native cycle: it runs after the
+#          step, countdown or SOS, asserted on every platform), pending, duplicate,
+#          newSos, prompt (ambiguous: ask the user; opened=true when this step
+#          opened the prompt, false while one is already open), stale (the
+#          user's "No" is still owed, not yet written: re-attempt it), sosOpened
+#          (send / timeout: native opens the SOS through its create), stop (the
+#          user's "No": write the matching stop), none, - (no decision).
+#          Dart verdicts: pass -> proceed, newSos -> newSos, others -> suppress.
+# Asserted keys (absent = default): stop (default none) = the stop written by
+# this step; kind = the prompt's terminal; opened (default false); prompt = the
+# prompt state after the step; owed = the user's stop still owed after the
+# step; armed = the record after the step; cycle=running|idle = the native
+# TAG cycle (countdown / handed-over SOS) after the step; cycleid=NAME (F17c
+# item 1) = the native cycle id after the step: the first use of NAME captures
+# it (it must differ from every id captured before in the scenario: unique per
+# cycle), a later use asserts it is unchanged; countdown=T (native-path frames
+# only) = after this push the native TAG countdown runs, counted from T (the
+# scenario time of the burst's first push: never later, never earlier). A
+# platform may start it at the first push or at the push that completes the
+# burst; it must run, from T, once the burst is complete.
+# Times are ms since the scenario start. Firmware facts: every push arrives
+# twice (SOS + TEL characteristic, ms apart); a TAG countdown pushes every
+# 500 ms in its first 2 s; an ACTIVE/ACK SOS pushes once per retry
+# (2/8/20 s, then 60 s). The same push can also arrive through both paths.
+
+# Case 4b shape: the TAG still runs the SOS after an unconfirmed cancel; no
+# answer -> the native timeout sends the SOS (fail safe).
+scenario cancel_while_disconnected_then_reconnect_times_out_into_an_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true prompt=closed
+1000 link_drop => - armed=true
+200000 link_up => - armed=true
+230000 frame node=7 source=native => pending
+230005 frame node=7 source=native => duplicate
+232000 decide => prompt kind=cancel opened=true prompt=open armed=true
+240000 frame node=7 source=native => pending
+240005 frame node=7 source=native => duplicate
+242000 decide => prompt kind=cancel opened=false prompt=open armed=true
+261000 answer choice=timeout => none prompt=open armed=true
+262000 answer choice=timeout => sosOpened prompt=closed armed=false
+320000 frame node=7 source=native => pass armed=false
+
+scenario ios_stale_frame_through_both_paths_is_one_push_then_no
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+200000 link_up => - armed=true
+230000 frame node=7 source=native => pending
+230004 frame node=7 source=dart => duplicate
+230008 frame node=7 source=native => duplicate
+230012 frame node=7 source=dart => duplicate
+232000 decide => prompt kind=cancel opened=true prompt=open armed=true
+240000 answer choice=stopTag => stop stop=cancel prompt=closed armed=true
+240100 close source=native => - armed=false prompt=closed
+
+scenario ios_stale_frame_reaches_dart_first_then_send
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+200000 link_up => - armed=true
+230000 frame node=7 source=dart => pending
+230003 frame node=7 source=native => duplicate
+230006 frame node=7 source=dart => duplicate
+232000 decide => prompt kind=cancel opened=true prompt=open armed=true
+235000 answer choice=sendSos => sosOpened prompt=closed armed=false
+235000 answer choice=sendSos => none prompt=closed armed=false
+
+# (i) "No": the stop is owed until a write of it succeeded. A retry before
+# that re-attempts the stop without a second prompt.
+scenario no_retry_before_the_write_reattempts_the_stop
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+200000 link_up => - armed=true
+230000 frame node=7 source=dart => pending
+230005 frame node=7 source=dart => duplicate
+232000 decide => prompt kind=cancel opened=true prompt=open armed=true
+236000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+250000 frame node=7 source=dart => pending
+252000 decide => stale stop=cancel prompt=closed owed=true armed=true
+252100 close source=dart => - armed=false
+
+# A failed write (or no link) keeps the stop owed: the next retry re-attempts.
+# A timeout while owed never happens: no prompt is open.
+scenario no_write_failure_keeps_the_stop_owed
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+125200 stop_written ok=false => - owed=true armed=true
+152000 answer choice=timeout => none prompt=closed owed=true armed=true
+180000 frame node=7 source=native => pending
+182000 decide => stale stop=cancel prompt=closed owed=true armed=true
+182200 stop_written ok=true => - owed=false armed=true
+
+# F13 (review B2, Roger 18/11/2026): the user's "No" is owed only while the
+# link stays up. A link drop ends it (any path): out of range the user may
+# cancel on the TAG and press a genuine new SOS, so after reconnect the next
+# ambiguous retry asks again; nothing is stopped automatically.
+scenario f13_no_then_link_drop_asks_again_dart
+0 seen source=dart node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+22000 link_up => - armed=true
+22000 frame node=7 source=dart => pending
+24000 decide => prompt kind=cancel opened=true prompt=open armed=true
+30000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+30100 stop_written ok=false => - owed=true armed=true
+31000 link_drop source=dart => - owed=false armed=true
+200000 link_up source=dart => - owed=false armed=true
+220000 frame node=7 source=dart => pending
+220005 frame node=7 source=dart => duplicate
+222000 decide => prompt kind=cancel opened=true prompt=open owed=false armed=true
+
+# Device case 13 shape after "No": the link drops before the stop reached the
+# TAG; out of range the user cancels on the TAG and presses a new SOS whose
+# countdown ends unseen: only ACTIVE retries at reconnect -> ask, never stop.
+scenario f13_no_then_link_drop_then_new_sos_out_of_range_is_asked
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=resolve prompt=closed owed=true armed=true
+125050 link_drop => - owed=false armed=true
+300000 link_up => - owed=false armed=true
+330000 frame node=7 source=native => pending
+330005 frame node=7 source=native => duplicate
+332000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
+362000 answer choice=timeout => sosOpened prompt=closed armed=false
+
+# F13 re-check BL1 (Roger 18/11/2026): an owed "No" survives only while the
+# link stays continuously up. The link coming back ends it too: a "No" given
+# while the link was down, or a persisted one across an app restart (no drop
+# callback), never stops the TAG on its own after reconnect.
+scenario f13_drop_then_no_then_link_up_asks_again
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+123000 link_drop => - armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+125100 stop_written ok=false => - owed=true armed=true
+300000 link_up => - owed=false armed=true
+330000 frame node=7 source=native => pending
+330005 frame node=7 source=native => duplicate
+332000 decide => prompt kind=cancel opened=true prompt=open owed=false armed=true
+
+# Persisted owed "No", then a process death (no drop callback): the link
+# coming up after the relaunch ends it; the next retry asks again.
+scenario f13_owed_no_then_restart_link_up_asks_again
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=resolve prompt=closed owed=true armed=true
+400000 link_up => - owed=false armed=true
+420000 frame node=7 source=dart => pending
+422000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
+
+# "No" with the link up: the stop is written at once (unchanged).
+scenario f13_no_with_link_up_writes_the_stop_at_once
+0 seen source=dart node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+15000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+15100 stop_written ok=true => - owed=false armed=true
+
+# (ii) Once the stop was written, a retry asks again (no silent window).
+scenario no_retry_after_the_write_asks_again
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=resolve prompt=closed owed=true armed=true
+125300 stop_written ok=true => - owed=false armed=true
+185000 frame node=7 source=dart => pending
+187000 decide => prompt kind=resolve opened=true prompt=open owed=false armed=true
+
+# (iii) A genuine new countdown while the stop is owed: the normal new SOS.
+scenario countdown_burst_while_the_stop_is_owed_is_a_new_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+140000 frame node=7 source=dart => pending
+140500 frame node=7 source=dart => pending
+141000 frame node=7 source=dart => newSos owed=false armed=false
+
+scenario countdown_burst_after_the_stop_was_written_is_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+125000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+125200 stop_written ok=true => - owed=false armed=true
+140000 frame node=7 source=native => pending
+140500 frame node=7 source=native => pending
+141000 frame node=7 source=native => newSos armed=false
+
+scenario android_foreground_portal_resolve_seen_only_by_dart_then_no
+0 seen source=dart node=7 age=45000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+150000 link_up => - armed=true
+170000 frame node=7 source=dart => pending
+170005 frame node=7 source=dart => duplicate
+172000 decide => prompt kind=resolve opened=true prompt=open armed=true
+175000 answer choice=stopTag => stop stop=resolve prompt=closed armed=true
+
+scenario portal_resolve_while_disconnected_times_out_into_an_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+150000 link_up => - armed=true
+170000 frame node=7 source=native => pending
+170005 frame node=7 source=native => duplicate
+172000 decide => prompt kind=resolve opened=true prompt=open armed=true
+202000 answer choice=timeout => sosOpened prompt=closed armed=false
+
+# A late "No" after the 30 s deadline is never a stop: the timeout applies.
+scenario a_no_after_the_deadline_sends_the_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+152500 answer choice=stopTag => sosOpened prompt=closed armed=false
+
+scenario sos_never_seen_arms_nothing
+0 seen source=none node=7 age=0 => -
+0 terminal kind=cancel node=7 connected=true => - armed=false
+10000 frame node=7 source=dart => pass armed=false
+10500 answer choice=sendSos => none prompt=closed armed=false
+
+# A cancel during the TAG countdown is an unconfirmed stop like any other. When
+# the TAG gets the 0x04 it confirms (close frame) and the record ends.
+scenario countdown_cancel_inside_its_burst_confirmed_by_the_tag
+0 seen source=dart node=7 age=1000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+300 close source=dart => - armed=false
+10000 frame node=7 source=dart => pass armed=false
+
+scenario native_countdown_cancel_inside_its_burst_confirmed_by_the_tag
+0 seen source=countdown node=7 age=1000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+300 close source=native => - armed=false
+
+# The TAG never confirmed the countdown cancel and keeps sending: ask.
+scenario countdown_cancel_seen_by_dart_unconfirmed_is_ambiguous
+0 seen source=dart node=7 age=5000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending armed=true
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+# F17c-cdc, device Case 1: the app cancels DURING the TAG countdown (8 s in)
+# while the TAG is out of range: the stop never reaches it, it goes ACTIVE and
+# retries once back (~22 s). Ask; "No" -> 0x04, no incident.
+scenario countdown_cancel_out_of_range_seen_by_dart_then_no
+0 seen source=dart node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+22000 link_up => - armed=true
+22000 frame node=7 source=dart => pending
+24000 decide => prompt kind=cancel opened=true prompt=open armed=true
+30000 answer choice=stopTag => stop stop=cancel prompt=closed armed=true
+30100 close source=dart => - armed=false
+
+scenario native_countdown_cancel_out_of_range_times_out_into_an_sos
+0 seen source=countdown node=7 age=8000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+22000 link_up => - armed=true
+22000 frame node=7 source=native => pending
+24000 decide => prompt kind=cancel opened=true prompt=open armed=true
+54000 answer choice=timeout => sosOpened prompt=closed armed=false
+
+# Fixture parity (Roger, 16/11/2026): native saw only the countdown, Dart saw
+# the SOS past it, the stop was never confirmed, the TAG reconnects with only
+# ACTIVE retries. ONE expected outcome on every platform: prompt.
+scenario native_saw_only_the_countdown_dart_saw_the_rest_is_ambiguous
+0 seen source=countdown node=7 age=15000 => -
+0 seen source=dart node=7 age=14000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+scenario native_saw_only_the_countdown_dart_saw_the_rest_native_retry
+0 seen source=countdown node=7 age=15000 => -
+0 seen source=dart node=7 age=14000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+scenario countdown_burst_after_reconnect_is_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+120005 frame node=7 source=native => duplicate
+120500 frame node=7 source=native => pending
+120505 frame node=7 source=native => duplicate
+121000 frame node=7 source=native => newSos armed=false prompt=closed
+
+scenario countdown_burst_through_dart_is_a_new_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+120005 frame node=7 source=dart => duplicate
+120500 frame node=7 source=dart => pending
+120505 frame node=7 source=dart => duplicate
+121000 frame node=7 source=dart => newSos armed=false
+121005 frame node=7 source=dart => pass armed=false
+121500 frame node=7 source=dart => pass armed=false
+
+scenario countdown_burst_through_both_paths_is_one_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+120004 frame node=7 source=dart => duplicate
+120500 frame node=7 source=dart => pending
+120504 frame node=7 source=native => duplicate
+121000 frame node=7 source=native => newSos armed=false
+121004 frame node=7 source=dart => pass armed=false
+
+# A burst while the prompt is open closes it and is the normal new SOS.
+scenario countdown_burst_while_the_prompt_is_open_is_a_new_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+130000 frame node=7 source=dart => pending prompt=open
+130500 frame node=7 source=dart => pending prompt=open
+131000 frame node=7 source=dart => newSos prompt=closed armed=false
+135000 answer choice=timeout => none prompt=closed armed=false
+
+scenario native_countdown_burst_while_the_prompt_is_open_is_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+122000 decide => prompt kind=resolve opened=true prompt=open armed=true
+130000 frame node=7 source=native => pending prompt=open
+130500 frame node=7 source=native => pending prompt=open
+131000 frame node=7 source=native => newSos prompt=closed armed=false
+
+scenario resend_pair_is_ambiguous
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+30000 frame node=7 source=native => pending
+30800 frame node=7 source=native => pending
+32000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+# The TAG confirmed (close frame) while the prompt is open: close it, open nothing.
+scenario tag_close_ends_record_and_prompt_then_new_press_admitted
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=native => pending
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+13000 close source=native => - armed=false prompt=closed
+42000 answer choice=timeout => none prompt=closed armed=false
+73000 frame node=7 source=native => pass armed=false
+
+scenario tag_close_through_dart_ends_record_and_prompt_then_new_press_admitted
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+13000 close source=dart => - armed=false prompt=closed
+73000 frame node=7 source=dart => pass armed=false
+
+scenario new_sdk_sos_drops_a_pending_decision
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending
+10500 sdk_open => - armed=false
+12000 decide => none armed=false prompt=closed
+13000 frame node=7 source=dart => pass armed=false
+
+scenario new_sdk_sos_closes_an_open_prompt
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+14000 sdk_open => - armed=false prompt=closed
+42000 answer choice=timeout => none prompt=closed armed=false
+
+# Roger 16/11/2026: no 90 s gap end. A stray retry after the link stayed up
+# and silent for longer still asks (was: passed, then dropped by Dart).
+scenario connected_silence_never_ends_the_record
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=7 source=native => pending
+12000 decide => prompt kind=cancel opened=true prompt=open armed=true
+15000 answer choice=stopTag => stop stop=cancel prompt=closed owed=true armed=true
+15200 stop_written ok=true => - owed=false armed=true
+105000 frame node=7 source=dart => pending armed=true
+107000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+scenario connected_silence_then_native_retry_still_asks
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+200000 frame node=7 source=native => pending armed=true
+202000 decide => prompt kind=resolve opened=true prompt=open armed=true
+
+# No time cap either (a TAG out of range for long is the 4b case).
+scenario ambiguous_after_ten_minutes_still_prompts
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+601000 frame node=7 source=dart => pending armed=true
+603000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+scenario ambiguous_after_a_day_still_prompts
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+86401000 frame node=7 source=dart => pending armed=true
+86403000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+scenario other_tag_never_ends_the_record
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+10000 frame node=99 source=dart => pass armed=true
+
+scenario session_change_ends_the_record
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+5000 session => - armed=false
+
+scenario session_change_closes_an_open_prompt
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+10000 frame node=7 source=dart => pending
+12000 decide => prompt kind=resolve opened=true prompt=open armed=true
+13000 session => - armed=false prompt=closed
+42000 answer choice=timeout => none prompt=closed armed=false
+
+# F17c review M-D: original H2. The native runtime saw the SOS but its create
+# was never claimed by the SDK (not handed over): native still owes that SOS to
+# the backend, so the SDK terminal is not a stop of it. No record on any path.
+scenario unclaimed_native_create_arms_nothing
+0 seen source=native_unclaimed node=7 age=30000 => -
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=false
+10000 frame node=7 source=dart => pass armed=false
+
+# M-B: a Dart link note (also an owner handover native<->Dart) mid-burst
+# never turns a genuine countdown into a prompt.
+scenario dart_link_flap_mid_burst_is_still_a_new_sos
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+120200 link_drop source=dart => - armed=true
+120300 link_up source=dart => - armed=true
+120500 frame node=7 source=dart => pending
+121000 frame node=7 source=dart => newSos armed=false
+
+scenario dart_link_note_keeps_the_open_decision
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart => pending
+120300 link_up source=dart => - armed=true
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+# M-C: Dart frames delivered late together count at their receivedAtMs.
+scenario late_delivered_dart_burst_counts_by_received_at
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=dart delivered=121400 => pending
+120500 frame node=7 source=dart delivered=121410 => pending
+121000 frame node=7 source=dart delivered=121420 => newSos armed=false
+
+scenario implausible_received_at_falls_back_to_the_native_clock
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+110000 frame node=7 source=dart delivered=130000 => pending
+140000 frame node=7 source=dart delivered=130100 => duplicate
+132000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+# Dual path: a late Dart copy of a push native already counted stays a copy,
+# even when it reaches native after the next push.
+scenario dual_path_late_dart_copy_of_a_stale_pair_is_still_one_push
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+120500 frame node=7 source=native => pending
+120002 frame node=7 source=dart delivered=120600 => duplicate
+120502 frame node=7 source=dart delivered=120610 => duplicate
+122000 decide => prompt kind=cancel opened=true prompt=open armed=true
+
+scenario dual_path_burst_with_late_dart_copies_is_one_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+100000 link_up => - armed=true
+120000 frame node=7 source=native => pending
+120003 frame node=7 source=dart delivered=120450 => duplicate
+120500 frame node=7 source=native => pending
+120503 frame node=7 source=dart delivered=120900 => duplicate
+121000 frame node=7 source=native => newSos armed=false
+121003 frame node=7 source=dart delivered=121300 => pass armed=false
+
+# Low: another TAG's close frame forwarded by Dart never ends this record.
+scenario other_tag_close_through_dart_never_ends_the_record
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+5000 close source=dart node=99 => - armed=true
+10000 frame node=7 source=dart => pending
+
+# Owner requirement (Roger 16/11/2026): after a TAG-confirmed close (0xE1,
+# 0xE2, 0xE3; native and Dart paths) a genuine NEW countdown burst (3 pushes
+# within 1.7 s) at +0.5 s, +5 s and +25 s is admitted at once: the native
+# countdown starts at the burst's first push, from that push on. ONE rule on
+# every platform (F17c M-a): no post-close hold. A lone ACTIVE retry after a
+# TAG-confirmed close starts a new SOS at once (owner: an acceptable
+# duplicate; a missed SOS is worse), so a genuine SOS whose burst the phone
+# missed is never delayed.
+
+scenario tag_close_e1_native_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false prompt=closed
+6000 frame node=7 source=native => pass armed=false countdown=6000
+6500 frame node=7 source=native => pass armed=false countdown=6000
+7000 frame node=7 source=native => pass armed=false countdown=6000
+
+scenario tag_close_e1_native_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false prompt=closed
+26000 frame node=7 source=native => pass armed=false countdown=26000
+26500 frame node=7 source=native => pass armed=false countdown=26000
+27000 frame node=7 source=native => pass armed=false countdown=26000
+
+scenario tag_close_e1_dart_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E1 => - armed=false prompt=closed
+6000 frame node=7 source=dart => pass armed=false
+6500 frame node=7 source=dart => pass armed=false
+7000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_dart_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E1 => - armed=false prompt=closed
+26000 frame node=7 source=dart => pass armed=false
+26500 frame node=7 source=dart => pass armed=false
+27000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_native_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false prompt=closed
+1500 frame node=7 source=native => pass armed=false countdown=1500
+2000 frame node=7 source=native => pass armed=false countdown=1500
+2500 frame node=7 source=native => pass armed=false countdown=1500
+
+scenario tag_close_e1_dart_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E1 => - armed=false prompt=closed
+1500 frame node=7 source=dart => pass armed=false
+2000 frame node=7 source=dart => pass armed=false
+2500 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_then_lone_native_retry_at_plus_2s_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false
+3000 frame node=7 source=native => pass armed=false countdown=3000
+3005 frame node=7 source=native => pass armed=false countdown=3000
+
+scenario tag_close_e1_then_lone_native_retry_at_plus_10s_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E1 => - armed=false
+11000 frame node=7 source=native => pass armed=false countdown=11000
+11005 frame node=7 source=native => pass armed=false countdown=11000
+
+scenario tag_close_e1_then_lone_dart_retry_at_plus_2s_is_admitted
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E1 => - armed=false
+3000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e2_native_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false prompt=closed
+6000 frame node=7 source=native => pass armed=false countdown=6000
+6500 frame node=7 source=native => pass armed=false countdown=6000
+7000 frame node=7 source=native => pass armed=false countdown=6000
+
+scenario tag_close_e2_native_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false prompt=closed
+26000 frame node=7 source=native => pass armed=false countdown=26000
+26500 frame node=7 source=native => pass armed=false countdown=26000
+27000 frame node=7 source=native => pass armed=false countdown=26000
+
+scenario tag_close_e2_dart_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E2 => - armed=false prompt=closed
+6000 frame node=7 source=dart => pass armed=false
+6500 frame node=7 source=dart => pass armed=false
+7000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e2_dart_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E2 => - armed=false prompt=closed
+26000 frame node=7 source=dart => pass armed=false
+26500 frame node=7 source=dart => pass armed=false
+27000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e2_native_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false prompt=closed
+1500 frame node=7 source=native => pass armed=false countdown=1500
+2000 frame node=7 source=native => pass armed=false countdown=1500
+2500 frame node=7 source=native => pass armed=false countdown=1500
+
+scenario tag_close_e2_dart_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E2 => - armed=false prompt=closed
+1500 frame node=7 source=dart => pass armed=false
+2000 frame node=7 source=dart => pass armed=false
+2500 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e2_then_lone_native_retry_at_plus_2s_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false
+3000 frame node=7 source=native => pass armed=false countdown=3000
+3005 frame node=7 source=native => pass armed=false countdown=3000
+
+scenario tag_close_e2_then_lone_native_retry_at_plus_10s_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false
+11000 frame node=7 source=native => pass armed=false countdown=11000
+11005 frame node=7 source=native => pass armed=false countdown=11000
+
+scenario tag_close_e2_then_lone_dart_retry_at_plus_2s_is_admitted
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=dart code=E2 => - armed=false
+3000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e3_native_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false prompt=closed
+6000 frame node=7 source=native => pass armed=false countdown=6000
+6500 frame node=7 source=native => pass armed=false countdown=6000
+7000 frame node=7 source=native => pass armed=false countdown=6000
+
+scenario tag_close_e3_native_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false prompt=closed
+26000 frame node=7 source=native => pass armed=false countdown=26000
+26500 frame node=7 source=native => pass armed=false countdown=26000
+27000 frame node=7 source=native => pass armed=false countdown=26000
+
+scenario tag_close_e3_dart_then_new_burst_at_plus_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=dart code=E3 => - armed=false prompt=closed
+6000 frame node=7 source=dart => pass armed=false
+6500 frame node=7 source=dart => pass armed=false
+7000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e3_dart_then_new_burst_at_plus_25s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=dart code=E3 => - armed=false prompt=closed
+26000 frame node=7 source=dart => pass armed=false
+26500 frame node=7 source=dart => pass armed=false
+27000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e3_native_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false prompt=closed
+1500 frame node=7 source=native => pass armed=false countdown=1500
+2000 frame node=7 source=native => pass armed=false countdown=1500
+2500 frame node=7 source=native => pass armed=false countdown=1500
+
+scenario tag_close_e3_dart_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=dart code=E3 => - armed=false prompt=closed
+1500 frame node=7 source=dart => pass armed=false
+2000 frame node=7 source=dart => pass armed=false
+2500 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e3_then_lone_native_retry_at_plus_2s_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false
+3000 frame node=7 source=native => pass armed=false countdown=3000
+3005 frame node=7 source=native => pass armed=false countdown=3000
+
+scenario tag_close_e3_then_lone_native_retry_at_plus_10s_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=native code=E3 => - armed=false
+11000 frame node=7 source=native => pass armed=false countdown=11000
+11005 frame node=7 source=native => pass armed=false countdown=11000
+
+scenario tag_close_e3_then_lone_dart_retry_at_plus_2s_is_admitted
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=resolve node=7 connected=true => - armed=true
+1000 close source=dart code=E3 => - armed=false
+3000 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_then_burst_with_tel_copies_starts_at_its_first_push
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+1000 close source=native code=E2 => - armed=false
+3000 frame node=7 source=native => pass countdown=3000
+3005 frame node=7 source=native => pass countdown=3000
+3500 frame node=7 source=native => pass countdown=3000
+3505 frame node=7 source=native => pass countdown=3000
+4000 frame node=7 source=native => pass countdown=3000
+
+# F17c single stale-SOS decision (Roger 16/11/2026): the real 0xE1 order. The
+# TAG closes a sent SOS BEFORE the SDK knows (no SDK terminal yet: the backend
+# has not confirmed the cancel, which is still in the outbox) and a new burst
+# follows at +0.5 s. The TAG's close is local proof the old SOS is closed: the
+# new countdown starts at once from its first push, nothing arms, nothing is
+# held. The SDK sends no terminal of the closed SOS to native afterwards (the
+# TAG confirmed the close; it would land on the new countdown).
+scenario tag_close_e1_before_any_sdk_terminal_native_then_new_burst_at_plus_0_5s
+0 seen source=native node=7 age=30000 => -
+1000 close source=native code=E1 => - armed=false prompt=closed
+1500 frame node=7 source=native => pass armed=false countdown=1500
+1505 frame node=7 source=native => pass armed=false countdown=1500
+2000 frame node=7 source=native => pass armed=false countdown=1500
+2500 frame node=7 source=native => pass armed=false countdown=1500
+
+scenario tag_close_e1_before_any_sdk_terminal_dart_then_new_burst_at_plus_0_5s
+0 seen source=dart node=7 age=30000 => -
+1000 close source=dart code=E1 => - armed=false prompt=closed
+1500 frame node=7 source=dart => pass armed=false
+2000 frame node=7 source=dart => pass armed=false
+2500 frame node=7 source=dart => pass armed=false
+
+scenario tag_close_e1_before_any_sdk_terminal_then_lone_native_retry_starts_a_new_sos
+0 seen source=native node=7 age=30000 => -
+1000 close source=native code=E1 => - armed=false
+3000 frame node=7 source=native => pass armed=false countdown=3000
+
+# L1 (Roger 16/11/2026): the iOS same-TAG rule on every platform. The SDK
+# terminal of another TAG never arms the record on this TAG's countdown, and
+# this TAG's countdown keeps running.
+scenario sdk_terminal_of_another_tag_never_arms_on_this_tags_countdown
+0 seen source=countdown node=7 age=5000 => -
+0 terminal kind=cancel node=99 connected=true => - armed=false
+3000 frame node=7 source=native => pass armed=false
+
+scenario sdk_terminal_of_the_same_tag_arms_on_its_countdown
+0 seen source=countdown node=7 age=5000 => -
+0 terminal kind=cancel node=7 connected=true => - armed=true
+
+# L2 (Roger 16/11/2026): ONE decision delay on every platform (F17b): a lone
+# push is decided 2.0 s after it, not earlier.
+scenario lone_push_is_decided_exactly_2000ms_after_it
+0 seen source=native node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+10000 frame node=7 source=native => pending prompt=closed
+11999 decide => none prompt=closed
+12000 decide => prompt opened=true prompt=open
+
+scenario lone_dart_push_is_decided_exactly_2000ms_after_it
+0 seen source=dart node=7 age=30000 => -
+0 terminal kind=cancel node=7 connected=false => - armed=true
+10000 frame node=7 source=dart => pending prompt=closed
+11999 decide => none prompt=closed
+12000 decide => prompt opened=true prompt=open
+
+# F17c Phase 2 (decided 16/11/2026): the SDK's stop / close carries when it
+# was issued. A late stop of an older SOS (A) reaching native after the new
+# SOS's (B) countdown began is ignored and logged: B's countdown continues,
+# nothing arms. A stop issued for B (after its countdown began) works as
+# before; a stop without the field keeps today's behaviour.
+scenario stale_stop_for_an_older_sos_after_the_native_countdown_began_is_ignored
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true issued=900 => - armed=false cycle=running countdown=1000
+2000 frame node=7 source=native => pass armed=false countdown=1000
+
+scenario stop_for_the_current_countdown_issued_after_it_began_cancels_it
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true issued=1400 => - armed=true cycle=idle
+
+scenario stop_without_issue_time_keeps_todays_behaviour_on_the_countdown
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true => - armed=true cycle=idle
+
+scenario stale_stop_for_an_older_sos_after_dart_forwarded_the_new_countdown_is_ignored
+1000 seen source=dart node=7 age=500 => -
+1500 terminal kind=cancel node=7 connected=true issued=400 => - armed=false
+2000 frame node=7 source=dart => pass armed=false
+
+scenario stop_for_the_dart_seen_sos_issued_after_it_began_arms
+1000 seen source=dart node=7 age=500 => -
+1500 terminal kind=resolve node=7 connected=true issued=1400 => - armed=true
+2000 frame node=7 source=dart => pending armed=true
+
+# F17c item 1 (Roger 17/11/2026): every SDK stop names the native cycle it is
+# for. A = an SOS seen through Dart's link and closed on the TAG (0xE1); B = a
+# genuine new TAG SOS whose countdown native opened right after, unseen by
+# Dart. A's late automated terminal (portal resolve / backend event decided
+# after B's countdown began) names A's cycle: never applied to B, B's countdown
+# continues (the issue time alone would not catch it: decided after B began).
+scenario a_late_portal_resolve_after_b_started_natively_unseen_never_reaches_b
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=resolve node=7 connected=true target=A issued=1400 => - armed=false cycle=running countdown=1000 cycleid=B
+2000 frame node=7 source=native => pass armed=false countdown=1000
+
+scenario stop_with_an_old_cycle_id_is_ignored
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=A => - armed=false cycle=running countdown=1000
+
+scenario stop_with_the_current_cycle_id_cancels_the_countdown
+1000 seen source=countdown node=7 age=0 => - cycleid=A
+1500 terminal kind=cancel node=7 connected=true target=A => - armed=true cycle=idle cycleid=A
+
+scenario stop_with_the_current_cycle_id_closes_the_handed_over_sos
+0 seen source=native node=7 age=30000 => - cycleid=A
+0 terminal kind=resolve node=7 connected=true target=A => - armed=true cycle=idle
+
+scenario stop_without_cycle_id_is_never_applied
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true target=none => - armed=false cycle=running countdown=1000
+
+scenario user_cancel_of_b_targets_the_current_cycle
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user => - armed=true cycle=idle
+
+# Review N2: the user cancelled at 500; native opened a countdown for the same
+# TAG's frames at 1000 (BLE owner handover) before the stop arrived. The
+# user's stop targets the cycle running now: applied, never dropped by its
+# issue time.
+scenario user_cancel_issued_before_the_current_countdown_still_stops_it
+1000 seen source=countdown node=7 age=0 => -
+1500 terminal kind=cancel node=7 connected=true target=user issued=500 => - armed=true cycle=idle
+
+# The same SOS seen by Dart and then by native (owner handover): one cycle,
+# one id: a stop naming it applies.
+scenario dart_seen_sos_continued_natively_keeps_its_cycle_id
+0 seen source=dart node=7 age=5000 => - cycleid=A
+1000 frame node=7 source=native => pass cycle=running cycleid=A
+1500 terminal kind=cancel node=7 connected=true target=A => - armed=true cycle=idle
+
+# F1 (review af2f32f, Roger 17/11/2026): the user's stop names the native
+# cycle in front of them AT THE TAP. The user cancelled A at 50 (0x04 written
+# at once, the TAG closed A at 100); B, a genuine new TAG SOS, began natively
+# at 1000, unseen by Dart; A's deferred native close lands at 1500. It names A
+# and was issued before B began: ignored, B's countdown continues.
+scenario user_stop_of_an_older_cycle_after_a_new_one_began_is_ignored
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user:A issued=50 => - armed=false cycle=running countdown=1000 cycleid=B
+2000 frame node=7 source=native => pass armed=false countdown=1000
+
+# The user's stop naming the cycle running now: applied, even issued before
+# that cycle's native countdown began (the same SOS continued natively keeps
+# its id: owner handover).
+scenario user_stop_with_the_current_cycle_id_is_applied
+0 seen source=dart node=7 age=5000 => - cycleid=A
+1000 frame node=7 source=native => pass cycle=running cycleid=A
+1500 terminal kind=cancel node=7 connected=true target=user:A issued=500 => - armed=true cycle=idle cycleid=A
+
+# No id captured at the tap: the user's stop goes to the cycle running now.
+scenario user_stop_without_a_tap_id_stops_the_current_cycle
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user issued=50 => - armed=true cycle=idle
+
+# The id the SDK held at the tap was stale (A), but B was already ringing when
+# the user tapped (issued after B began): the user saw B, the stop applies.
+scenario user_stop_with_a_stale_id_issued_after_the_current_cycle_began_is_applied
+0 seen source=dart node=7 age=5000 => - cycleid=A
+100 close source=dart node=7 => - armed=false
+1000 frame node=7 source=native => pass cycle=running countdown=1000 cycleid=B
+1500 terminal kind=cancel node=7 connected=true target=user:A issued=1200 => - armed=true cycle=idle

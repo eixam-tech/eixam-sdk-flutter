@@ -27,6 +27,24 @@ enum IosSosTerminalKind: String {
   case resolve
 }
 
+/// F17c item 1: which native cycle an SDK stop / close targets.
+enum IosSosStopTarget: Equatable {
+  /// The user's own action (cancel / resolve button, logout): the cycle
+  /// running now, by definition. F1 (Roger 17/11/2026): [tapCycleId] is the
+  /// native cycle id the SDK captured at the user's tap (nil: none known, and
+  /// always for the session change). The stop is ignored only when that id
+  /// is not the current cycle's AND the current cycle began after the tap
+  /// (the user stopped an older SOS; a newer one began since). Otherwise it
+  /// applies to the current cycle.
+  case currentCycle(tapCycleId: String?)
+  /// An automated stop (backend event, portal resolve, reconciliation):
+  /// applied only when [id] is the current native cycle id (and, when given,
+  /// issued after that cycle began).
+  case cycle(String)
+  /// An automated stop without a cycle id: never applied.
+  case missing
+}
+
 struct IosNativeSosTransition: Equatable {
   /// A new pending create was stored: emit `nativeBackendSyncQueued(create)`.
   var queuedCreate = false
@@ -36,10 +54,12 @@ struct IosNativeSosTransition: Equatable {
   var countdownDeadlineAt: Int?
   /// The countdown ended without promotion (closed): drop its timer.
   var countdownStopped = false
-  /// F17b: the TAG still runs an SOS the SDK closed: write this command.
+  /// F17b/F17c: write this command to the TAG (the user's "No", or a later
+  /// retry within the "No" consent window). Never on ambiguous evidence alone.
   var stopTag: IosSosTerminalKind?
-  /// F17b: first stop of this guard: tell the user (once).
-  var staleStopNotice = false
+  /// F17c: ambiguous: open the prompt (notification + SDK event) until this
+  /// deadline (ms since epoch); the native timer then sends the SOS.
+  var openPromptDeadlineAt: Int?
   /// F17b: a guarded frame waits for a countdown burst: call
   /// `evaluateStaleCandidate()` at this time (ms since epoch).
   var evaluateStaleAt: Int?
@@ -47,12 +67,6 @@ struct IosNativeSosTransition: Equatable {
 
 final class IosNativeSosDeliveryStore {
   static let countdownMs = 20_000
-  /// After a close, frames are the TAG's close burst / stale repeats for
-  /// this long; a new SOS needs a frame after it (no zombie SOS).
-  static let closeQuietMs = 30_000
-  /// Frames this long after a close can belong to a new SOS: its countdown
-  /// is backdated to the first of them once the quiet window has passed.
-  static let closeBurstMs = 5_000
   static let eventQueueCapacity = 64
   /// F17b stale guard. Firmware (verified): every BLE SOS push is sent twice
   /// (SOS then TEL characteristic, ms apart); a TAG countdown pushes in its
@@ -64,7 +78,13 @@ final class IosNativeSosDeliveryStore {
   static let staleBurstPushes = 3
   static let staleDecisionMs = 2_000
   static let staleGapMs = 90_000
-  static let staleGuardMaxMs = 600_000
+  /// F17c: the native prompt timeout; no answer sends the SOS.
+  static let promptMs = 30_000
+  /// F17c: an SOS Dart forwarded frames of this recently was seen.
+  static let observedRecentMs = 600_000
+  /// F17c M-C: a Dart receive time older than this (or in the future) is
+  /// not trusted; the native clock is used instead.
+  static let forwardedFrameMaxAgeMs = 5_000
   static let sosEventTypes: Set<String> = [
     "ownDeviceSosLifecycleObserved",
     "nativeBackendSyncQueued",
@@ -76,8 +96,15 @@ final class IosNativeSosDeliveryStore {
     static let cycleNodeId = "native_sos_cycle_node_id"
     static let cycleDeadlineAt = "native_sos_cycle_deadline_at"
     static let cycleStartedAt = "native_sos_cycle_started_at"
-    static let lastClosedAt = "native_sos_last_closed_at"
-    static let firstFrameAfterCloseAt = "native_sos_first_frame_after_close_at"
+    /// F17c M-a: no longer used (the post-close hold is gone); still removed
+    /// so values persisted by an older build never linger.
+    static let retiredPostCloseKeys = [
+      "native_sos_last_closed_at",
+      "native_sos_first_frame_after_close_at",
+      "native_sos_post_close_candidate_at",
+      "native_sos_post_close_candidate_pushes",
+      "native_sos_post_close_last_push_at",
+    ]
     static let cycleKeptAfterStop = "native_sos_cycle_kept_after_stop"
     static let pendingCreate = "pending_native_sos_create"
     static let pendingCancel = "pending_native_sos_cancel"
@@ -91,7 +118,15 @@ final class IosNativeSosDeliveryStore {
     static let staleGuardCandidatePushes = "native_sos_stale_guard_candidate_pushes"
     static let staleGuardLastPushAt = "native_sos_stale_guard_last_push_at"
     static let staleGuardNoticeShown = "native_sos_stale_guard_notice_shown"
+    static let staleGuardPromptDeadlineAt = "native_sos_stale_guard_prompt_deadline_at"
+    static let staleGuardStopOwed = "native_sos_stale_guard_stop_owed"
     static let lastSosFrameAt = "native_sos_last_frame_at"
+    static let dartCycleFirstSeenAt = "native_sos_dart_cycle_first_seen_at"
+    static let dartCycleLastSeenAt = "native_sos_dart_cycle_last_seen_at"
+    static let dartCycleNodeId = "native_sos_dart_cycle_node_id"
+    /// F17c item 1: the id of the newest native SOS cycle (native countdown /
+    /// handed-over SOS, or a Dart-forwarded burst), persisted with the cycle.
+    static let cycleId = "native_sos_cycle_id"
   }
 
   private let defaults: UserDefaults
@@ -114,6 +149,33 @@ final class IosNativeSosDeliveryStore {
 
   var cycleDeadlineAt: Int? { defaults.object(forKey: Keys.cycleDeadlineAt) as? Int }
 
+  /// F17c item 1: the id of the newest SOS cycle native opened (kept after it
+  /// closed, until the next one opens). Unique per cycle, persisted.
+  var currentCycleId: String? { defaults.string(forKey: Keys.cycleId) }
+
+  /// F17c item 1: a cycle (native countdown / SOS, or a recent Dart-forwarded
+  /// burst) is open for [nodeId] now.
+  func cycleOpen(nodeId: Int?) -> Bool {
+    nativeCycleOpen(nodeId: nodeId) || dartCycleOpen(nodeId: nodeId)
+  }
+
+  private func nativeCycleOpen(nodeId: Int?) -> Bool {
+    cycleState != .idle && (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId)
+  }
+
+  private func dartCycleOpen(nodeId: Int?) -> Bool {
+    dartCycleSeenRecently &&
+      (nodeId == nil || dartCycleNodeId == nil || nodeId == dartCycleNodeId)
+  }
+
+  /// F17c item 1: a cycle opens for [nodeId]. It joins the cycle already open
+  /// for that TAG on the other path (the same SOS seen by Dart and native,
+  /// e.g. a BLE owner handover); otherwise it is a new SOS: new id.
+  private func openCycleId(nodeId: Int?, alreadyOpen: Bool) {
+    if alreadyOpen, currentCycleId != nil { return }
+    defaults.set(UUID().uuidString.lowercased(), forKey: Keys.cycleId)
+  }
+
   /// Applies one classified TAG SOS frame. `deviceId` is the protected
   /// device identity used when the frame carries no node id.
   func observe(
@@ -135,33 +197,19 @@ final class IosNativeSosDeliveryStore {
       // backend is told only once the countdown elapsed without a cancel.
       switch cycleState {
       case .idle:
-        let timestamp = now()
-        if let closedAt = defaults.object(forKey: Keys.lastClosedAt) as? Int,
-           timestamp - closedAt < Self.closeQuietMs {
-          // Close burst / stale repeats of the SOS that just closed. Remember
-          // when frames kept coming, in case this is a new SOS.
-          if timestamp - closedAt >= Self.closeBurstMs,
-             defaults.object(forKey: Keys.firstFrameAfterCloseAt) == nil {
-            defaults.set(timestamp, forKey: Keys.firstFrameAfterCloseAt)
-          }
-          break
-        }
-        var start = timestamp
-        if let first = defaults.object(forKey: Keys.firstFrameAfterCloseAt) as? Int,
-           timestamp - first < Self.closeQuietMs + Self.countdownMs {
-          // Frames kept coming through the quiet window: a new SOS that
-          // started then (its TAG countdown is already running).
-          start = first
-        }
-        defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+        // F17c M-a: ONE rule with Android and Dart. Not guarded (no
+        // unconfirmed stop record): the first frame starts the countdown at
+        // once, also right after a TAG-confirmed close. A missed SOS is worse
+        // than a duplicate (owner): a lone ACTIVE retry of the SOS the TAG just
+        // closed is an accepted duplicate; a genuine SOS whose 2 s burst the
+        // phone missed is never held back. The TEL copy of a push lands on
+        // the running countdown (preConfirmSeen) and changes nothing.
+        let start = now()
         let deadline = start + Self.countdownMs
+        openCycleId(nodeId: nodeId, alreadyOpen: dartCycleOpen(nodeId: nodeId))
         setCycle(.preConfirmSeen, key: cycleKey, nodeId: nodeId, deadlineAt: deadline)
         defaults.set(start, forKey: Keys.cycleStartedAt)
-        if timestamp >= deadline {
-          transition = promoteExpiredCountdown(deviceId: deviceId)
-        } else {
-          transition.countdownDeadlineAt = deadline
-        }
+        transition.countdownDeadlineAt = deadline
       case .preConfirmSeen:
         // A later frame after the deadline: the phone was suspended when the
         // countdown elapsed.
@@ -173,6 +221,7 @@ final class IosNativeSosDeliveryStore {
     case .cancelled, .resolved:
       // The TAG's own close: it confirmed the stop (or closed by itself).
       disarmStaleGuard()
+      clearDartCycle()
       let state = cycleState
       if state == .createPending, kind == .cancelled {
         // Never claimed by the SDK: nothing reached the broker, so the
@@ -192,8 +241,13 @@ final class IosNativeSosDeliveryStore {
   private func closeCycle() {
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
-    defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
-    defaults.set(now(), forKey: Keys.lastClosedAt)
+    clearRetiredPostCloseKeys()
+  }
+
+  private func clearRetiredPostCloseKeys() {
+    for key in Keys.retiredPostCloseKeys {
+      defaults.removeObject(forKey: key)
+    }
   }
 
   /// The SDK says the SOS is over (cancelled / resolved / idle). Closes a
@@ -205,25 +259,202 @@ final class IosNativeSosDeliveryStore {
   /// countdown would be promoted into a false SOS at its deadline. Only the
   /// terminal of the same TAG closes it; when either node id is unknown the
   /// terminal closes it (keeping it would risk a false SOS).
-  /// F17b: with [terminal], a handed-over SOS the TAG never confirmed
-  /// closing arms the stale guard: the TAG still runs it (the SDK's own stop
-  /// may not have reached it), so its frames must stop it, never open a new
-  /// incident.
-  func closeDeliveredCycle(nodeId: Int? = nil, terminal: IosSosTerminalKind? = nil) -> Bool {
+  /// F17c ONE rule (same as Android and the shared fixture): with
+  /// [terminal], any SDK cancel/resolve of an own-TAG SOS seen on any path
+  /// arms the "unconfirmed stop" record: a handed-over native create, a native
+  /// countdown, or frames Dart forwarded recently. Never while native still
+  /// owes an unclaimed create of that SOS. The record never stops the TAG by
+  /// itself: an ambiguous frame asks the user.
+  /// F17c-cdc: the SDK cancel of this TAG's running countdown ends it: it is
+  /// never promoted into a native create at its deadline.
+  /// F17c Phase 2 / item 1: why the SDK's last stop was ignored
+  /// (`cycle_id_mismatch`, `no_cycle_id`, `issued_before_current_cycle`), nil
+  /// when it was applied.
+  private(set) var lastSdkStopIgnoredReason: String?
+
+  var lastSdkStopIgnoredAsStale: Bool { lastSdkStopIgnoredReason != nil }
+
+  /// F17c Phase 2: when the countdown native or Dart is running for [nodeId]
+  /// began (the newest of the native cycle and the Dart-forwarded burst), nil
+  /// when none runs.
+  func currentCycleStartedAt(nodeId: Int?) -> Int? {
+    var starts: [Int] = []
+    let sameNode = nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId
+    if cycleState != .idle, sameNode,
+       let started = defaults.object(forKey: Keys.cycleStartedAt) as? Int {
+      starts.append(started)
+    }
+    let sameDartNode = nodeId == nil || dartCycleNodeId == nil || nodeId == dartCycleNodeId
+    if dartCycleSeenRecently, sameDartNode,
+       let first = defaults.object(forKey: Keys.dartCycleFirstSeenAt) as? Int {
+      starts.append(first)
+    }
+    return starts.max()
+  }
+
+  /// [target] (F17c item 1): an automated stop (`.cycle(id)`) is applied
+  /// only to the native cycle it names: another id (an older SOS's stop
+  /// delivered late, after a newer cycle opened) or no id is ignored (no
+  /// close, no record) and the running cycle continues. [issuedAtMs] (F17c
+  /// Phase 2, automated stops only): a stop issued before the current
+  /// countdown began targets an older SOS: ignored too. A user action
+  /// (`.currentCycle`) targets the cycle running now, unless (F1) it names
+  /// another cycle at the tap and the current one began after the tap.
+  func closeDeliveredCycle(
+    nodeId: Int? = nil,
+    terminal: IosSosTerminalKind? = nil,
+    issuedAtMs: Int? = nil,
+    target: IosSosStopTarget = .currentCycle(tapCycleId: nil)
+  ) -> Bool {
+    lastSdkStopIgnoredReason = nil
+    switch target {
+    case .currentCycle(let tapCycleId):
+      if let tapCycleId, !tapCycleId.isEmpty, tapCycleId != currentCycleId,
+         let issuedAtMs, let started = currentCycleStartedAt(nodeId: nodeId),
+         issuedAtMs < started {
+        lastSdkStopIgnoredReason = "user_stop_for_older_cycle"
+        return false
+      }
+    case .missing:
+      lastSdkStopIgnoredReason = "no_cycle_id"
+      return false
+    case .cycle(let id):
+      guard id == currentCycleId else {
+        lastSdkStopIgnoredReason = "cycle_id_mismatch"
+        return false
+      }
+      if let issuedAtMs, let started = currentCycleStartedAt(nodeId: nodeId), issuedAtMs < started {
+        lastSdkStopIgnoredReason = "issued_before_current_cycle"
+        return false
+      }
+    }
+    let unclaimed = pendingCreateRecord != nil
+    let sameNode = nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId
     let keptCountdown = cycleState == .preConfirmSeen &&
-      defaults.bool(forKey: Keys.cycleKeptAfterStop) &&
-      (nodeId == nil || cycleNodeId == nil || nodeId == cycleNodeId)
-    let handedOver = cycleState == .createPending && pendingCreateRecord == nil
-    guard keptCountdown || handedOver else {
+      defaults.bool(forKey: Keys.cycleKeptAfterStop) && sameNode
+    let handedOver = cycleState == .createPending && !unclaimed
+    let countdownRunning = cycleState == .preConfirmSeen && !unclaimed && sameNode
+    let cancelledCountdown = !keptCountdown && terminal == .cancel && countdownRunning &&
+      (defaults.object(forKey: Keys.cycleStartedAt) as? Int).map { now() >= $0 } == true
+    let arm = terminal != nil && !unclaimed &&
+      (handedOver || countdownRunning || dartCycleSeenRecently)
+    guard keptCountdown || handedOver || cancelledCountdown || arm else {
       return false
     }
-    let guardNode = cycleNodeId ?? nodeId
+    let guardNode = cycleNodeId ?? dartCycleNodeId ?? nodeId
     let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
-    closeCycle()
-    if handedOver, let terminal {
+    if keptCountdown || handedOver || cancelledCountdown {
+      closeCycle()
+    }
+    if arm, let terminal {
       armStaleGuard(terminal, nodeId: guardNode, linkDropped: linkDropped)
+      clearDartCycle()
     }
     return true
+  }
+
+  // MARK: - F17c Dart-forwarded frames (native is the single classifier)
+
+  /// Dart's answer for one forwarded own-TAG frame: `proceed` (not guarded,
+  /// handle it as before), `newSos` (a countdown burst under the guard:
+  /// handle it) or `suppress` (a copy, still deciding, or the closed SOS).
+  /// The same guard, copy collapse (which also merges the same push arriving
+  /// through both paths) and burst rule as the native frame path. Pure
+  /// persistence: works whether or not Protection is armed. A burst admitted
+  /// here never opens the native cycle (Dart runs that SOS).
+  func observeForwardedSosFrame(
+    kind: IosBleSosSnapshotKind,
+    nodeId: Int?,
+    receivedAtMs: Int? = nil
+  ) -> (verdict: String, transition: IosNativeSosTransition) {
+    switch kind {
+    case .cancelled, .resolved:
+      if let guardNode = defaults.object(forKey: Keys.staleGuardNodeId) as? Int,
+         let nodeId, guardNode != nodeId {
+        // Another TAG's close never ends this guard.
+        lastStaleAction = "ignored"
+        return ("proceed", IosNativeSosTransition())
+      }
+      disarmStaleGuard()
+      clearDartCycle()
+      lastStaleAction = "close"
+      return ("proceed", IosNativeSosTransition())
+    case .preSos, .active:
+      defaults.set(now(), forKey: Keys.lastSosFrameAt)
+      let transition = observeGuardedFrame(
+        nodeId: nodeId, driveCycle: false, at: forwardedFrameAt(receivedAtMs))
+      let verdict: String
+      switch lastStaleAction {
+      case "notArmed", "ignored", "disarmed": verdict = "proceed"
+      case "newSos": verdict = "newSos"
+      default: verdict = "suppress"
+      }
+      if verdict != "suppress" {
+        noteDartCycleFrame(nodeId: nodeId)
+      }
+      return (verdict, transition ?? IosNativeSosTransition())
+    }
+  }
+
+  /// M-C: when a Dart-forwarded push happened. Dart's receive time when
+  /// plausible (not in the future, at most 5 s old), so pushes delivered late
+  /// together still count as distinct pushes; else the native clock. Never
+  /// before the last counted push: a late copy of a push already counted
+  /// (other path) stays a copy.
+  private func forwardedFrameAt(_ receivedAtMs: Int?) -> Int {
+    let timestamp = now()
+    var at = timestamp
+    if let receivedAtMs, receivedAtMs <= timestamp,
+       timestamp - receivedAtMs <= Self.forwardedFrameMaxAgeMs {
+      at = receivedAtMs
+    }
+    if let lastPush = defaults.object(forKey: Keys.staleGuardLastPushAt) as? Int,
+       at < lastPush, lastPush <= timestamp {
+      at = lastPush
+    }
+    return at
+  }
+
+  /// The SDK opened a new SOS lifecycle: no pending decision may stop it (M3).
+  func disarmForNewSdkSos() {
+    disarmStaleGuard()
+  }
+
+  private var dartCycleNodeId: Int? { defaults.object(forKey: Keys.dartCycleNodeId) as? Int }
+
+  private var dartCycleSeenRecently: Bool {
+    guard let first = defaults.object(forKey: Keys.dartCycleFirstSeenAt) as? Int else {
+      return false
+    }
+    let last = defaults.object(forKey: Keys.dartCycleLastSeenAt) as? Int ?? first
+    let timestamp = now()
+    return timestamp - last >= 0 && timestamp - last <= Self.observedRecentMs
+  }
+
+  private func noteDartCycleFrame(nodeId: Int?) {
+    let timestamp = now()
+    let last = defaults.object(forKey: Keys.dartCycleLastSeenAt) as? Int
+    let node = dartCycleNodeId
+    let sameTag = node == nil || nodeId == nil || node == nodeId
+    if defaults.object(forKey: Keys.dartCycleFirstSeenAt) == nil || !sameTag ||
+       last == nil || timestamp - last! < 0 || timestamp - last! > Self.staleGapMs {
+      // A Dart-seen burst joins the native cycle of that TAG (or the Dart
+      // cycle seen recently: same SOS after a gap); otherwise a new SOS.
+      openCycleId(
+        nodeId: nodeId,
+        alreadyOpen: nativeCycleOpen(nodeId: nodeId) || (sameTag && dartCycleSeenRecently))
+      defaults.set(timestamp, forKey: Keys.dartCycleFirstSeenAt)
+      set(nodeId, forKey: Keys.dartCycleNodeId)
+    } else if node == nil, let nodeId {
+      defaults.set(nodeId, forKey: Keys.dartCycleNodeId)
+    }
+    defaults.set(timestamp, forKey: Keys.dartCycleLastSeenAt)
+  }
+
+  private func clearDartCycle() {
+    for key in [Keys.dartCycleFirstSeenAt, Keys.dartCycleLastSeenAt, Keys.dartCycleNodeId] {
+      defaults.removeObject(forKey: key)
+    }
   }
 
   // MARK: - F17b stale guard
@@ -231,6 +462,12 @@ final class IosNativeSosDeliveryStore {
   var staleGuardKind: IosSosTerminalKind? {
     IosSosTerminalKind(rawValue: defaults.string(forKey: Keys.staleGuardKind) ?? "")
   }
+
+  /// Last guard decision (`notArmed`, `ignored`, `duplicate`, `disarmed`,
+  /// `pending`, `newSos`, `prompt`, `stale`, `sosOpened`, `stop`, `none`,
+  /// `close`), named like the Android guard actions so the shared scenario
+  /// fixture replays identically.
+  private(set) var lastStaleAction = "notArmed"
 
   /// Right after arming: the TAG link is up and its SOS frames are recent,
   /// so the stop can be written now (the frame path covers the rest).
@@ -245,9 +482,13 @@ final class IosNativeSosDeliveryStore {
   }
 
   /// The TAG link dropped. The guard survives it (A1): after a reconnect the
-  /// TAG may still run the SOS the SDK closed.
+  /// TAG may still run the SOS the SDK closed. F13 (Roger 18/11/2026): the
+  /// user's "No" is no longer owed: out of range the TAG may start a genuine
+  /// new SOS, so the next ambiguous retry asks again (never an automatic
+  /// stop after a drop).
   func noteLinkDropped() {
     defaults.set(true, forKey: Keys.staleGuardLinkDropped)
+    defaults.set(false, forKey: Keys.staleGuardStopOwed)
   }
 
   /// The TAG link is back. An armed guard measures its gap from now: a TAG
@@ -258,24 +499,108 @@ final class IosNativeSosDeliveryStore {
       defaults.set(now(), forKey: Keys.staleGuardLastFrameAt)
     }
     defaults.set(false, forKey: Keys.staleGuardLinkDropped)
+    // F13 re-check BL1: an owed "No" survives only while the link stays up.
+    // A "No" given while the link was down, or one persisted across an app
+    // restart (no drop callback), is not written on its own after reconnect:
+    // the next ambiguous retry asks again.
+    defaults.set(false, forKey: Keys.staleGuardStopOwed)
   }
 
-  /// No countdown burst followed the guarded frame: it belongs to the SOS
-  /// the SDK closed. Stop it again; tell the user once.
+  /// F17c: the open prompt's deadline (ms since epoch), nil when none.
+  var promptDeadlineAt: Int? {
+    staleGuardKind == nil ? nil : defaults.object(forKey: Keys.staleGuardPromptDeadlineAt) as? Int
+  }
+
+  /// F17c: the user's "No" whose stop was not written to the TAG yet.
+  var stopOwed: Bool {
+    staleGuardKind != nil && defaults.bool(forKey: Keys.staleGuardStopOwed)
+  }
+
+  /// F17c: the result of a GATT write of the record's stop (native write
+  /// callback, or Dart's report when Dart owns the link). Success: no longer
+  /// owed, the next retry asks again. Failure: still owed (re-attempted).
+  func noteStopWritten(success: Bool) {
+    if success, staleGuardKind != nil {
+      defaults.set(false, forKey: Keys.staleGuardStopOwed)
+    }
+  }
+
+  /// No countdown burst followed the guarded frame: AMBIGUOUS. Ask the user
+  /// (once: an open prompt is never re-opened), unless the user's "No" is
+  /// still owed (not written yet): then the stop is re-attempted.
+  /// L2 (one rule with Android and the fixture, F17b): decided
+  /// [staleDecisionMs] after the candidate's first push, never earlier; an
+  /// early call asks to be called again at that time.
   func evaluateStaleCandidate() -> IosNativeSosTransition {
+    decideStaleCandidate(force: false)
+  }
+
+  /// [force]: a later push outside the burst window already proves the
+  /// candidate was no burst: decided now.
+  private func decideStaleCandidate(force: Bool) -> IosNativeSosTransition {
     var transition = IosNativeSosTransition()
     guard let kind = staleGuardKind,
-          let candidateAt = defaults.object(forKey: Keys.staleGuardCandidateAt) as? Int,
-          now() - candidateAt > Self.staleBurstWindowMs else {
+          let candidateAt = defaults.object(forKey: Keys.staleGuardCandidateAt) as? Int else {
+      lastStaleAction = "none"
+      return transition
+    }
+    guard force || now() - candidateAt >= Self.staleDecisionMs else {
+      lastStaleAction = "none"
+      transition.evaluateStaleAt = candidateAt + Self.staleDecisionMs
       return transition
     }
     defaults.removeObject(forKey: Keys.staleGuardCandidateAt)
     defaults.removeObject(forKey: Keys.staleGuardCandidatePushes)
-    transition.stopTag = kind
-    if !defaults.bool(forKey: Keys.staleGuardNoticeShown) {
-      defaults.set(true, forKey: Keys.staleGuardNoticeShown)
-      transition.staleStopNotice = true
+    let timestamp = now()
+    if promptDeadlineAt == nil, stopOwed {
+      lastStaleAction = "stale"
+      transition.stopTag = kind
+      return transition
     }
+    lastStaleAction = "prompt"
+    if promptDeadlineAt == nil {
+      let deadline = timestamp + Self.promptMs
+      defaults.set(deadline, forKey: Keys.staleGuardPromptDeadlineAt)
+      transition.openPromptDeadlineAt = deadline
+    }
+    return transition
+  }
+
+  /// F17c: the user's answer (`sendSos`, `stopTag`) or the native timer
+  /// (`timeout`), only while a prompt is open. Send and the timeout open the
+  /// SOS through the native create (Dart claims it, cancellable as usual) and
+  /// end the record; "No" writes the matching stop and keeps the record until
+  /// the TAG confirms. A "No" at or after the deadline is the timeout.
+  func answerPrompt(_ choice: String) -> IosNativeSosTransition {
+    var transition = IosNativeSosTransition()
+    guard let kind = staleGuardKind, let deadline = promptDeadlineAt else {
+      lastStaleAction = "none"
+      return transition
+    }
+    let timestamp = now()
+    let sendSos = choice == "sendSos" ||
+      (choice == "timeout" && timestamp >= deadline) ||
+      (choice == "stopTag" && timestamp >= deadline)
+    if sendSos {
+      lastStaleAction = "sosOpened"
+      let node = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
+      disarmStaleGuard()
+      if cycleState == .idle {
+        openCycleId(nodeId: node, alreadyOpen: false)
+        setCycle(.preConfirmSeen, key: nil, nodeId: node, deadlineAt: timestamp)
+        defaults.set(timestamp, forKey: Keys.cycleStartedAt)
+        transition = promoteExpiredCountdown(deviceId: nil)
+      }
+      return transition
+    }
+    guard choice == "stopTag" else {
+      lastStaleAction = "none"
+      return transition
+    }
+    lastStaleAction = "stop"
+    defaults.removeObject(forKey: Keys.staleGuardPromptDeadlineAt)
+    defaults.set(true, forKey: Keys.staleGuardStopOwed)
+    transition.stopTag = kind
     return transition
   }
 
@@ -289,36 +614,47 @@ final class IosNativeSosDeliveryStore {
   }
 
   /// Also the session change (`force`): a guard never crosses accounts.
+  func disarmStaleGuardForSessionChange() {
+    disarmStaleGuard()
+    clearDartCycle()
+  }
+
   func disarmStaleGuard() {
     for key in [Keys.staleGuardKind, Keys.staleGuardNodeId, Keys.staleGuardArmedAt,
                 Keys.staleGuardLastFrameAt, Keys.staleGuardLinkDropped,
                 Keys.staleGuardCandidateAt, Keys.staleGuardCandidatePushes,
-                Keys.staleGuardLastPushAt, Keys.staleGuardNoticeShown] {
+                Keys.staleGuardLastPushAt, Keys.staleGuardNoticeShown,
+                Keys.staleGuardPromptDeadlineAt, Keys.staleGuardStopOwed] {
       defaults.removeObject(forKey: key)
     }
   }
 
   /// nil: not guarded, handle the frame normally. Otherwise the guard's
   /// decision for this countdown/active frame.
-  private func observeGuardedFrame(nodeId: Int?) -> IosNativeSosTransition? {
-    guard staleGuardKind != nil else { return nil }
-    let timestamp = now()
-    let armedAt = defaults.object(forKey: Keys.staleGuardArmedAt) as? Int ?? timestamp
-    let lastFrameAt = defaults.object(forKey: Keys.staleGuardLastFrameAt) as? Int ?? armedAt
-    let linkDropped = defaults.bool(forKey: Keys.staleGuardLinkDropped)
-    let guardNode = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
-    if guardNode != nil && nodeId != nil && guardNode != nodeId {
-      return nil  // another TAG: not this guard's business (never disarms it)
-    }
-    if timestamp - armedAt > Self.staleGuardMaxMs ||
-       (!linkDropped && timestamp - lastFrameAt > Self.staleGapMs) {
-      // Cap, or the TAG went idle (gap without a link drop).
-      disarmStaleGuard()
+  /// `at`: when the push happened, if not now (a late Dart-forwarded push, M-C).
+  private func observeGuardedFrame(
+    nodeId: Int?,
+    driveCycle: Bool = true,
+    at: Int? = nil
+  ) -> IosNativeSosTransition? {
+    guard staleGuardKind != nil else {
+      lastStaleAction = "notArmed"
       return nil
     }
+    let timestamp = at ?? now()
+    let guardNode = defaults.object(forKey: Keys.staleGuardNodeId) as? Int
+    if guardNode != nil && nodeId != nil && guardNode != nodeId {
+      lastStaleAction = "ignored"
+      return nil  // another TAG: not this guard's business (never disarms it)
+    }
+    // F17c (Roger 16/11/2026): no gap and no time cap: a stray retry after
+    // any silence is still ambiguous and asks the user.
     if let lastPush = defaults.object(forKey: Keys.staleGuardLastPushAt) as? Int,
        timestamp - lastPush < Self.staleDuplicateMs {
-      return IosNativeSosTransition()  // the TEL copy of the same push
+      // The TEL copy of the same push, or (F17c) the same push through the
+      // other BLE path.
+      lastStaleAction = "duplicate"
+      return IosNativeSosTransition()
     }
     defaults.set(timestamp, forKey: Keys.staleGuardLastPushAt)
     defaults.set(timestamp, forKey: Keys.staleGuardLastFrameAt)
@@ -328,14 +664,20 @@ final class IosNativeSosDeliveryStore {
       let pushes = (defaults.object(forKey: Keys.staleGuardCandidatePushes) as? Int ?? 1) + 1
       defaults.set(pushes, forKey: Keys.staleGuardCandidatePushes)
       guard pushes >= Self.staleBurstPushes else {
+        lastStaleAction = "pending"
         return IosNativeSosTransition()
       }
       // Countdown burst: a new SOS, counted from its first push.
+      lastStaleAction = "newSos"
       disarmStaleGuard()
+      guard driveCycle else {
+        // Dart received this burst and runs the SOS (F17c).
+        return IosNativeSosTransition()
+      }
       let deadline = candidateAt + Self.countdownMs
+      openCycleId(nodeId: nodeId, alreadyOpen: false)
       setCycle(.preConfirmSeen, key: nil, nodeId: nodeId, deadlineAt: deadline)
       defaults.set(candidateAt, forKey: Keys.cycleStartedAt)
-      defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
       var transition = IosNativeSosTransition()
       if timestamp >= deadline {
         transition = promoteExpiredCountdown(deviceId: nil)
@@ -344,12 +686,15 @@ final class IosNativeSosDeliveryStore {
       }
       return transition
     }
-    // An earlier candidate whose decision was missed (suspended) was the
-    // closed SOS: stop it now. This push opens the next candidate.
-    var transition = evaluateStaleCandidate()
+    // An earlier candidate whose decision was missed (suspended) is decided
+    // now (ambiguous: ask). This push opens the next candidate.
+    var transition = decideStaleCandidate(force: true)
     defaults.set(timestamp, forKey: Keys.staleGuardCandidateAt)
     defaults.set(1, forKey: Keys.staleGuardCandidatePushes)
-    transition.evaluateStaleAt = timestamp + Self.staleDecisionMs
+    // Scheduled from delivery: later pushes of a late-delivered burst still
+    // arrive before the decision (M-C).
+    transition.evaluateStaleAt = max(timestamp, now()) + Self.staleDecisionMs
+    lastStaleAction = "pending"
     return transition
   }
 
@@ -361,8 +706,17 @@ final class IosNativeSosDeliveryStore {
 
   /// A pending TAG cancel only cancels a pending SOS created before it; a
   /// newer SOS (created while an older cancel was not yet handed over) wins.
+  /// F17c: so does a newer TAG cycle still counting down. The TAG's close
+  /// idles the cycle, so a cycle running now started after that cancel: it
+  /// is reported as itself, never as the old SOS's cancel (the SDK would
+  /// clear the new countdown).
   var pendingCancelSupersedesCreate: Bool {
     guard let cancelAt = pendingCancelCreatedAt else { return false }
+    if cycleState != .idle,
+       let startedAt = defaults.object(forKey: Keys.cycleStartedAt) as? Int,
+       startedAt >= cancelAt {
+      return false
+    }
     guard let createAt = pendingCreateRecord?["createdAt"] as? Int else { return true }
     return cancelAt >= createAt
   }
@@ -416,7 +770,7 @@ final class IosNativeSosDeliveryStore {
     let wasCounting = cycleState == .preConfirmSeen
     setCycle(.idle, key: nil, nodeId: nil, deadlineAt: nil)
     defaults.removeObject(forKey: Keys.cycleStartedAt)
-    defaults.removeObject(forKey: Keys.firstFrameAfterCloseAt)
+    clearRetiredPostCloseKeys()
     defaults.removeObject(forKey: Keys.pendingEvents)
     return wasCounting
   }

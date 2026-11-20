@@ -2993,6 +2993,12 @@ void main() {
 
           expect(cancelDataSource.cancelDeviceIds.single, isNull);
           expect(cancelDataSource.cancelIncidentIds.single, isNull);
+          // With no backend incident to name, the time the cancel was received
+          // is what keeps it from closing an SOS raised after it.
+          expect(
+            cancelDataSource.cancelOccurredAts.single,
+            DateTime.utc(2026, 4, 28, 10, 20),
+          );
           expect(
             BleDebugRegistry.instance.currentState.events.any(
               (event) =>
@@ -3803,6 +3809,7 @@ class _MissingCurrentIncidentSosRepository extends FakeSosRepository {
 class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
   final List<String?> cancelDeviceIds = <String?>[];
   final List<String?> cancelIncidentIds = <String?>[];
+  final List<DateTime?> cancelOccurredAts = <DateTime?>[];
   Object? cancelError;
 
   bool get sentCancelWithoutDeviceId =>
@@ -3842,9 +3849,11 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     cancelDeviceIds.add(deviceId);
     cancelIncidentIds.add(incidentId);
+    cancelOccurredAts.add(occurredAt);
     final error = cancelError;
     if (error != null) {
       throw error;
@@ -3868,7 +3877,30 @@ class _FakeCancelRemoteDataSource implements SosRemoteDataSource {
 }
 
 class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
+  @override
+  Future<ProtectionOwnTagSosPrompt?> getOwnTagSosPrompt() async => null;
+
+  @override
+  Future<String> answerOwnTagSosPrompt(String choice) async => 'none';
+
+  @override
+  Future<void> reportOwnTagSosStopWritten({required bool success}) async {}
+
   int ackPendingNativeSosCancelCalls = 0;
+
+  @override
+  bool get classifiesOwnTagSosFrames => false;
+
+  @override
+  Future<OwnTagSosFrameVerdict> observeOwnTagSosFrame(
+    OwnTagSosFrameReport frame,
+  ) async => OwnTagSosFrameVerdict.proceed;
+
+  @override
+  Future<void> disarmSosStaleGuard({required String reason}) async {}
+
+  @override
+  Future<void> noteOwnTagSosLink({required bool up}) async {}
 
   @override
   Future<void> setSosDeliveryPending(bool pending) async {}
@@ -3878,6 +3910,9 @@ class _FakeProtectionPlatformAdapter implements ProtectionPlatformAdapter {
     int? nodeId,
     bool force = false,
     String? terminal,
+    DateTime? issuedAt,
+    String? targetCycleId,
+    bool targetCurrentCycle = false,
   }) async {}
 
   @override
@@ -4056,7 +4091,10 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   Future<void> Function(DateTime timestamp)? publishSosCancelHook;
 
   @override
-  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+  Future<void> publishOperationalSosCancel({
+    required DateTime timestamp,
+    int? ageMs,
+  }) async {
     publishedSosCancels.add(timestamp);
     await publishSosCancelHook?.call(timestamp);
   }

@@ -48,6 +48,8 @@ internal class ProtectionBleRuntimeOwner(
     /** F17b: the SDK closed an SOS the TAG may still be running (persisted). */
     private var sosStaleGuard: ProtectionSosStaleGuardState? = runtimeStore.loadSosStaleGuard()
     private var sosStaleDecideRunnable: Runnable? = null
+    /** F17c: an SOS native saw only through Dart's forwarded frames (persisted). */
+    private var sosObservedCycle: ProtectionSosObservedCycle? = runtimeStore.loadSosObservedCycle()
     /** One lock for the native SOS lifecycle, its activation timer and the stale guard (M3). */
     private val sosLifecycleLock = Any()
     private var backendRetryRunnable: Runnable? = null
@@ -65,6 +67,18 @@ internal class ProtectionBleRuntimeOwner(
             runtimeStore = runtimeStore,
             scheduleRetry = ::scheduleBackendFlush,
         )
+
+    /** F17c: the native 30 s prompt timer (works with Flutter not running). */
+    private var sosPromptTimeoutRunnable: Runnable? = null
+
+    init {
+        // F17c: a prompt that outlived the process: its timer is re-armed, or
+        // the timeout applies at once when the deadline already passed.
+        val deadline = synchronized(sosLifecycleLock) { sosStaleGuard?.promptDeadlineAt }
+        if (deadline != null) {
+            mainHandler.post { synchronized(sosLifecycleLock) { schedulePromptTimeoutLocked(deadline) } }
+        }
+    }
 
     /** The SDK's MQTT outbox accepted the TAG cancel: retire the native record. */
     fun ackPendingNativeSosCancel(): Boolean = backendHandoff.ackPendingCancelHandedToMqtt()
@@ -732,6 +746,19 @@ internal class ProtectionBleRuntimeOwner(
                 type = "runtimeError",
                 reason = "bluetooth_unavailable",
             )
+            val precondition = evaluateProtectionConnectPrecondition(
+                adapterEnabled = adapter?.isEnabled == true,
+                targetKnown = !deviceId.isNullOrBlank(),
+            )
+            if (precondition == ProtectionConnectPrecondition.waitForBluetooth) {
+                // Bluetooth off must not end the native reconnect loop;
+                // STATE_ON reconnects at once, this is the safety net.
+                connectionInFlight = false
+                scheduleReconnect(
+                    "bluetooth_unavailable",
+                    delayMs = protectionBluetoothOffRecheckMs,
+                )
+            }
             return
         }
 
@@ -859,10 +886,12 @@ internal class ProtectionBleRuntimeOwner(
     }
 
     @SuppressLint("MissingPermission")
-    private fun scheduleReconnect(reason: String) {
+    private fun scheduleReconnect(reason: String, delayMs: Long = reconnectBackoffMs) {
         if (isStopping || !runtimeActive) {
             return
         }
+        // One pending retry at most: never stack two reconnect chains.
+        reconnectRunnable?.let(mainHandler::removeCallbacks)
         reconnectAttemptCount += 1
         runtimeStore.markReconnectAttempt(reconnectAttemptCount)
         ProtectionRuntimeBridge.recordBleEvent(
@@ -875,7 +904,7 @@ internal class ProtectionBleRuntimeOwner(
                 connect(reason = "scheduled_reconnect_$reconnectAttemptCount")
             }
         }.also {
-            mainHandler.postDelayed(it, reconnectBackoffMs)
+            mainHandler.postDelayed(it, delayMs)
         }
     }
 
@@ -1873,19 +1902,8 @@ internal class ProtectionBleRuntimeOwner(
         )
     }
 
-    private fun readPacketOriginatorNodeId(payload: List<Int>): Int? {
-        ProtectionBleSosIdentityClassifier.boundSosBody(payload)?.let { return readU32OrNull(it, 0) }
-        if (
-            payload.size == 6 &&
-            (payload[0] == 0xE1 || payload[0] == 0xE2 || payload[0] == 0xE3)
-        ) {
-            return readU32OrNull(payload, 2)
-        }
-        if (payload.size == 7 || payload.size == 12) {
-            return readU32OrNull(payload, 0)
-        }
-        return null
-    }
+    private fun readPacketOriginatorNodeId(payload: List<Int>): Int? =
+        ProtectionSosNativeDecision.originatorNodeId(payload)
 
     private fun logSosPacketDecodeForTrace(
         payload: List<Int>,
@@ -1990,15 +2008,13 @@ internal class ProtectionBleRuntimeOwner(
         when (payload.size) {
             4, 6 -> {
                 val opcode = payload[0] and 0xFF
-                val subcode = payload[1] and 0xFF
-                val closed = (opcode == 0xE1 && (subcode == 0x01 || subcode == 0x02)) ||
-                    (opcode == 0xE2 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03)) ||
-                    (opcode == 0xE3 && (subcode == 0x01 || subcode == 0x02 || subcode == 0x03))
+                val closed = ProtectionSosNativeDecision.closeOpcode(payload) != null
                 if (closed) {
                     runtimeStore.recordOwnSosCloseObserved(System.currentTimeMillis())
                     // The TAG confirmed the stop (or closed the SOS itself): the guard
                     // ends. A cycle the SDK already closed is idle, so no backend cancel.
                     disarmSosStaleGuardLocked("tag_close_0x${"%02X".format(opcode)}")
+                    setSosObservedCycleLocked(null)
                 }
                 if (closed && pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
                     val lifecycleSnapshot = runtimeStore.snapshot()
@@ -2035,24 +2051,33 @@ internal class ProtectionBleRuntimeOwner(
             5, 7, 10, 12 -> {
                 val now = System.currentTimeMillis()
                 runtimeStore.recordOwnSosFrameObserved(now)
-                val outcome = ProtectionSosStaleGuard.onFrame(
+                expirePromptLocked(now, effects)
+                // The same decision code the shared fixture replays.
+                val step = ProtectionSosNativeDecision.onSosFrame(
                     sosStaleGuard,
-                    readPacketOriginatorNodeId(payload),
+                    pendingSosLifecycleState,
+                    payload,
                     now,
                 )
-                applySosStaleOutcomeLocked(outcome, effects)
-                if (!outcome.passesToLifecycle) {
+                applySosStaleOutcomeLocked(step.outcome, effects)
+                if (!step.passes) {
                     // The closed SOS, a copy, or still deciding: never a new SOS.
                     return false
                 }
-                val observedAt =
-                    if (outcome.action == ProtectionSosStaleAction.newSos) outcome.startedAt ?: now else now
                 val parsedCycle = parsePreSosCycle(payload)
-                val nextState = ProtectionSosLifecycleLogic.onMeshPacket(pendingSosLifecycleState)
-                if (nextState == ProtectionSosLifecycleState.preConfirmSeen &&
-                    pendingSosLifecycleState != ProtectionSosLifecycleState.preConfirmSeen
-                ) {
-                    pendingSosLifecycleState = nextState
+                val observedAt = step.countdownObservedAt
+                if (observedAt != null) {
+                    // F17c item 1: a countdown opens a native cycle (joins the
+                    // Dart-seen cycle of that TAG; a guard burst is a new SOS).
+                    openSosCycleIdLocked(
+                        alreadyOpen = step.outcome.action != ProtectionSosStaleAction.newSos &&
+                            ProtectionSosNativeDecision.dartCycleOpen(
+                                sosObservedCycle,
+                                ProtectionSosNativeDecision.originatorNodeId(payload),
+                                now,
+                            ),
+                    )
+                    pendingSosLifecycleState = step.nextLifecycle
                     val startedAt = observedAt - observedPreSosSkewMs
                     val expectedActivationAt = startedAt + sosActivationDelayMs
                     runtimeStore.recordPreSosLifecycle(
@@ -2082,7 +2107,14 @@ internal class ProtectionBleRuntimeOwner(
      * native GATT session writes the SDK's own terminal command at once. Never
      * depends on Dart's connection state.
      */
-    fun closeNativeSosCycle(terminalWire: String?, nodeId: Int?, force: Boolean) {
+    fun closeNativeSosCycle(
+        terminalWire: String?,
+        nodeId: Int?,
+        force: Boolean,
+        issuedAtMs: Long? = null,
+        target: ProtectionSosStopTarget = ProtectionSosStopTarget.CurrentCycle(),
+        targetCycleId: String? = null,
+    ) {
         mainHandler.post {
             val now = System.currentTimeMillis()
             val stopNow = synchronized(sosLifecycleLock) {
@@ -2092,9 +2124,19 @@ internal class ProtectionBleRuntimeOwner(
                     pendingSosLifecycleState = ProtectionSosLifecycleState.idle
                     runtimeStore.clearPreSosLifecycle()
                     disarmSosStaleGuardLocked("session_changed")
+                    setSosObservedCycleLocked(null)
                     return@synchronized false
                 }
                 val terminal = ProtectionSosStaleTerminal.fromWire(terminalWire)
+                val currentCycleId = runtimeStore.sosCycleId()
+                if (target is ProtectionSosStopTarget.CurrentCycle) {
+                    Log.i(
+                        logTag,
+                        "NATIVE_SOS_STOP_CURRENT_CYCLE source=user_action " +
+                            "terminal=${terminalWire ?: "none"} idKnown=${targetCycleId != null} " +
+                            "idMatches=${targetCycleId != null && targetCycleId == currentCycleId}",
+                    )
+                }
                 val snapshot = runtimeStore.snapshot()
                 val storedState = (snapshot["preSosLifecycleState"] as? String)
                     ?.let { name -> ProtectionSosLifecycleState.entries.firstOrNull { it.name == name } }
@@ -2106,7 +2148,36 @@ internal class ProtectionBleRuntimeOwner(
                     }
                 val storedNodeId = snapshot["preSosOriginatorNodeId"] as? Int
                 val unclaimed = runtimeStore.hasPendingNativeSosCreate()
-                val nextState = ProtectionSosLifecycleLogic.onSdkClose(lifecycleState, unclaimed)
+                val observed = sosObservedCycle
+                // The same decision code the shared fixture replays: F17c-cdc
+                // (only the cancel of this TAG's countdown ends it) and L1 (a
+                // countdown arms the record only for the same TAG).
+                val step = ProtectionSosNativeDecision.onSdkTerminal(
+                    terminal = terminal,
+                    lifecycle = lifecycleState,
+                    lifecycleNodeId = storedNodeId,
+                    terminalNodeId = nodeId,
+                    hasUnclaimedNativeCreate = unclaimed,
+                    countdownStartedAt = snapshot["preSosStartedAt"] as? Long,
+                    observed = observed,
+                    now = now,
+                    issuedAt = issuedAtMs,
+                    target = target,
+                    currentCycleId = currentCycleId,
+                )
+                step.ignoredReason?.let { reason ->
+                    // F17c item 1 / Phase 2: an automated stop for another
+                    // (older) SOS, or naming none; F1: the user's stop of an
+                    // older cycle that arrived after a newer one began. The
+                    // running cycle is never touched.
+                    Log.i(
+                        logTag,
+                        "NATIVE_SOS_STALE_STOP_IGNORED reason=$reason " +
+                            "terminal=${terminalWire ?: "none"} lifecycle=${lifecycleState.name}",
+                    )
+                    return@synchronized false
+                }
+                val nextState = step.nextLifecycle
                 if (nextState != lifecycleState) {
                     cancelSosActivationTimeout()
                     pendingSosLifecycleState = nextState
@@ -2117,30 +2188,32 @@ internal class ProtectionBleRuntimeOwner(
                             "lifecycle=${lifecycleState.name}",
                     )
                 }
-                if (terminal == null ||
-                    !ProtectionSosStaleGuard.shouldArm(terminal, lifecycleState, unclaimed)
-                ) {
+                val dartSeen = ProtectionSosStaleGuard.observedRecently(observed, now)
+                if (terminal == null || !step.arm) {
                     Log.i(
                         logTag,
                         "NATIVE_SOS_STALE_GUARD_NOT_ARMED terminal=${terminalWire ?: "none"} " +
-                            "lifecycle=${lifecycleState.name} unclaimedCreate=$unclaimed",
+                            "lifecycle=${lifecycleState.name} unclaimedCreate=$unclaimed " +
+                            "dartSeen=$dartSeen",
                     )
                     return@synchronized false
                 }
                 val connected = lastPublishedCommandReadiness?.ready == true
                 val armed = ProtectionSosStaleGuard.arm(
                     terminal = terminal,
-                    nodeId = nodeId ?: storedNodeId ?: connectedBleNodeId,
+                    nodeId = nodeId ?: storedNodeId ?: observed?.nodeId ?: connectedBleNodeId,
                     now = now,
                     connected = connected,
                 )
-                cancelSosStaleDecide()
+                // One record at a time: a new unconfirmed stop replaces an older one.
+                disarmSosStaleGuardLocked("rearmed")
                 sosStaleGuard = armed
                 runtimeStore.saveSosStaleGuard(armed)
+                setSosObservedCycleLocked(null)
                 Log.i(
                     logTag,
                     "NATIVE_SOS_STALE_GUARD_ARMED terminal=${terminal.wire} " +
-                        "lifecycle=${lifecycleState.name} connected=$connected",
+                        "lifecycle=${lifecycleState.name} connected=$connected dartSeen=$dartSeen",
                 )
                 ProtectionSosStaleGuard.shouldSendStopOnArm(
                     lastSosFrameAt = runtimeStore.lastOwnSosFrameAt(),
@@ -2154,18 +2227,147 @@ internal class ProtectionBleRuntimeOwner(
         }
     }
 
+    /**
+     * F17c: one own-TAG SOS frame Dart received through its own BLE link
+     * (flutter_blue_plus). Native is the single classifier for every own-TAG
+     * frame whichever path received it: the same guard, copy collapse (< 300 ms,
+     * also across paths) and burst rule. Works with or without Protection
+     * armed (pure persistence). Dart acts only on the returned verdict.
+     * [receivedAtMs]: when Dart received the frame (M-C, sanity-bounded).
+     */
+    fun observeForwardedOwnTagSosFrame(
+        payload: List<Int>,
+        receivedAtMs: Long? = null,
+    ): Pair<ProtectionOwnTagSosVerdict, String?> {
+        val frame = ProtectionSosForwardedFrame.parse(payload)
+            ?: return ProtectionOwnTagSosVerdict.proceed to null
+        val effects = SosStaleEffects()
+        val result = synchronized(sosLifecycleLock) {
+            val now = System.currentTimeMillis()
+            expirePromptLocked(now, effects)
+            val decision = ProtectionSosStaleGuard.onForwardedFrame(
+                sosStaleGuard,
+                sosObservedCycle,
+                frame,
+                now,
+                receivedAt = receivedAtMs,
+            )
+            val otherTag = decision.outcome.action == ProtectionSosStaleAction.ignored
+            if (frame.close && !otherTag) {
+                runtimeStore.recordOwnSosCloseObserved(now)
+            } else if (!frame.close) {
+                runtimeStore.recordOwnSosFrameObserved(now)
+            }
+            if (frame.close) {
+                // Another TAG's close never ends this guard.
+                if (!otherTag) disarmSosStaleGuardLocked("tag_close_dart")
+            } else {
+                applySosStaleOutcomeLocked(decision.outcome, effects)
+            }
+            if (!frame.close &&
+                ProtectionSosNativeDecision.dartCycleOpened(sosObservedCycle, decision.observed)
+            ) {
+                // F17c item 1: a Dart-seen burst joins the native cycle of that
+                // TAG (or its recent Dart cycle); otherwise a new SOS.
+                val stored = runtimeStore.snapshot()
+                val lifecycle = if (pendingSosLifecycleState != ProtectionSosLifecycleState.idle) {
+                    pendingSosLifecycleState
+                } else {
+                    (stored["preSosLifecycleState"] as? String)
+                        ?.let { name -> ProtectionSosLifecycleState.entries.firstOrNull { it.name == name } }
+                        ?: ProtectionSosLifecycleState.idle
+                }
+                openSosCycleIdLocked(
+                    alreadyOpen = ProtectionSosNativeDecision.nativeCycleOpen(
+                        lifecycle,
+                        stored["preSosOriginatorNodeId"] as? Int,
+                        frame.nodeId,
+                    ) || ProtectionSosNativeDecision.dartCycleOpen(sosObservedCycle, frame.nodeId, now),
+                )
+            }
+            setSosObservedCycleLocked(decision.observed)
+            ForwardedFrameResult(decision, runtimeStore.sosCycleId())
+        }
+        runSosStaleEffects(effects)
+        if (result.decision.verdict != ProtectionOwnTagSosVerdict.proceed) {
+            Log.i(
+                logTag,
+                "NATIVE_SOS_STALE_DART_FRAME verdict=${result.decision.verdict.name} " +
+                    "action=${result.decision.outcome.action.name}",
+            )
+        }
+        // F17c item 1: the native cycle this frame belongs to (Dart binds the
+        // SOS it runs to it); none for a close or a suppressed frame.
+        val cycleId = result.cycleId.takeIf {
+            !frame.close && result.decision.verdict != ProtectionOwnTagSosVerdict.suppress
+        }
+        return result.decision.verdict to cycleId
+    }
+
+    private data class ForwardedFrameResult(
+        val decision: ProtectionSosForwardedDecision,
+        val cycleId: String?,
+    )
+
+    /** F17c item 1: a native SOS cycle opens (see [ProtectionSosNativeDecision.cycleIdOnOpen]). */
+    private fun openSosCycleIdLocked(alreadyOpen: Boolean) {
+        val current = runtimeStore.sosCycleId()
+        val next = ProtectionSosNativeDecision.cycleIdOnOpen(current, alreadyOpen) {
+            java.util.UUID.randomUUID().toString()
+        }
+        if (next != current) runtimeStore.saveSosCycleId(next)
+    }
+
+    /** F17c: the SDK opened a new SOS lifecycle: no pending decision may stop it (M3). */
+    fun disarmSosStaleGuard(reason: String) {
+        synchronized(sosLifecycleLock) { disarmSosStaleGuardLocked(reason) }
+    }
+
+    /**
+     * F17c: Dart's own TAG link changed (native sees no link events while Dart
+     * owns it). M-B: Dart notes every command-path flip, a native<->Dart owner
+     * handover included, so this never resets a burst being counted nor
+     * cancels its pending decision (iOS noteLinkUp semantics).
+     */
+    fun noteForwardedOwnTagLink(up: Boolean) {
+        val now = System.currentTimeMillis()
+        synchronized(sosLifecycleLock) {
+            val current = sosStaleGuard ?: return
+            val next = if (up) {
+                ProtectionSosStaleGuard.onForwardedLinkUp(current, now)
+            } else {
+                ProtectionSosStaleGuard.onForwardedLinkDropped(current)
+            }
+            sosStaleGuard = next
+            runtimeStore.saveSosStaleGuard(next)
+        }
+        Log.i(logTag, "NATIVE_SOS_STALE_GUARD_DART_LINK up=$up")
+    }
+
+    private fun setSosObservedCycleLocked(observed: ProtectionSosObservedCycle?) {
+        if (observed == sosObservedCycle) return
+        sosObservedCycle = observed
+        runtimeStore.saveSosObservedCycle(observed)
+    }
+
     private class SosStaleEffects {
         var sendStop = false
-        var showNotice = false
+        var stopReason = "stale_frame"
+        /** F17c: the user's "No": show the post-"No" confirmation. */
+        var stoppedByUser = false
+        /** F17c: the native create was queued (send / timeout). */
+        var openSos: String? = null
     }
 
     private fun applySosStaleOutcomeLocked(outcome: ProtectionSosStaleOutcome, effects: SosStaleEffects) {
         when (outcome.action) {
             ProtectionSosStaleAction.notArmed,
-            ProtectionSosStaleAction.none,
             ProtectionSosStaleAction.ignored,
             ProtectionSosStaleAction.duplicate,
             -> Unit
+
+            // L2: a decision timer that fired early is scheduled again.
+            ProtectionSosStaleAction.none -> outcome.decideAt?.let(::scheduleSosStaleDecideLocked)
 
             ProtectionSosStaleAction.disarmed ->
                 disarmSosStaleGuardLocked(outcome.reason ?: "disarmed")
@@ -2173,25 +2375,178 @@ internal class ProtectionBleRuntimeOwner(
             ProtectionSosStaleAction.newSos ->
                 disarmSosStaleGuardLocked(outcome.reason ?: "countdown_burst")
 
+            ProtectionSosStaleAction.sosOpened -> {
+                val reason = outcome.reason ?: "prompt_send_sos"
+                disarmSosStaleGuardLocked(reason)
+                // M2: the active notification and the create only when native
+                // actually opens the SOS (not when one is already running).
+                val step = ProtectionSosNativeDecision.onPromptSos(pendingSosLifecycleState)
+                if (step.opensNativeSos) {
+                    openNativeSosFromPromptLocked(reason)
+                } else {
+                    Log.i(
+                        logTag,
+                        "NATIVE_SOS_PROMPT_SOS_ALREADY_RUNNING lifecycle=${pendingSosLifecycleState.name}",
+                    )
+                }
+                if (step.queuesCreate) {
+                    effects.openSos = reason
+                }
+            }
+
             ProtectionSosStaleAction.pending,
             ProtectionSosStaleAction.stale,
+            ProtectionSosStaleAction.prompt,
+            ProtectionSosStaleAction.stop,
             -> {
                 sosStaleGuard = outcome.state
                 runtimeStore.saveSosStaleGuard(outcome.state)
                 outcome.decideAt?.let(::scheduleSosStaleDecideLocked)
+                if (outcome.closePrompt) {
+                    closePromptLocked(outcome.reason ?: outcome.action.name)
+                }
+                val deadline = outcome.state?.promptDeadlineAt
+                if (outcome.openPrompt && deadline != null) {
+                    openPromptLocked(outcome.state.terminal, deadline)
+                }
             }
         }
         if (outcome.sendStop) effects.sendStop = true
-        if (outcome.showNotice) effects.showNotice = true
+        if (outcome.action == ProtectionSosStaleAction.stop) {
+            effects.stopReason = "prompt_stop_tag"
+            effects.stoppedByUser = true
+        }
     }
 
     private fun runSosStaleEffects(effects: SosStaleEffects) {
         if (effects.sendStop) {
-            sendSosStaleStop(reason = "stale_frame")
+            sendSosStaleStop(reason = effects.stopReason)
         }
-        if (effects.showNotice) {
-            ProtectionForegroundService.showSosStaleStoppedNotification(context)
+        if (effects.stoppedByUser) {
+            ProtectionSosPromptNotifications.showStopped(context)
         }
+        effects.openSos?.let { reason ->
+            ProtectionForegroundService.showActiveSosNotification(context)
+            backendHandoff.queueCreate("ambiguous_$reason")
+        }
+    }
+
+    /**
+     * F17c: the user's answer to the ambiguous-SOS prompt (`sendSos`, `stopTag`)
+     * from the notification or the app. Returns the decision name (`sosOpened`,
+     * `stop`, or `none` when no prompt is open).
+     */
+    fun answerOwnTagSosPrompt(choice: String, source: String): String {
+        val effects = SosStaleEffects()
+        val action = synchronized(sosLifecycleLock) {
+            val now = System.currentTimeMillis()
+            val outcome = ProtectionSosStaleGuard.onAnswer(sosStaleGuard, choice, now)
+            applySosStaleOutcomeLocked(outcome, effects)
+            outcome.action
+        }
+        Log.i(logTag, "NATIVE_SOS_PROMPT_ANSWERED choice=$choice source=$source action=${action.name}")
+        runSosStaleEffects(effects)
+        return action.name
+    }
+
+    /**
+     * F17c: the result of a GATT write of the record's stop (native callback,
+     * or Dart's report when Dart owns the link). Success: the user's "No" is
+     * no longer owed and the next retry asks again; failure keeps it owed.
+     */
+    fun noteOwnTagSosStopWritten(success: Boolean, source: String) {
+        synchronized(sosLifecycleLock) {
+            val current = sosStaleGuard ?: return
+            val next = ProtectionSosStaleGuard.onStopWritten(current, success)
+            if (next != current) {
+                sosStaleGuard = next
+                runtimeStore.saveSosStaleGuard(next)
+            }
+        }
+        Log.i(logTag, "NATIVE_SOS_STALE_STOP_WRITTEN success=$success source=$source")
+    }
+
+    /** F17c: the open prompt for the SDK (`{terminal, deadlineAtMs}`), or null. */
+    fun currentOwnTagSosPrompt(): Map<String, Any>? {
+        val effects = SosStaleEffects()
+        val prompt = synchronized(sosLifecycleLock) {
+            // A deadline that passed (timer not run yet) is the timeout first.
+            expirePromptLocked(System.currentTimeMillis(), effects)
+            val state = sosStaleGuard ?: return@synchronized null
+            val deadline = state.promptDeadlineAt ?: return@synchronized null
+            mapOf("terminal" to state.terminal.wire, "deadlineAtMs" to deadline)
+        }
+        runSosStaleEffects(effects)
+        return prompt
+    }
+
+    private fun openPromptLocked(terminal: ProtectionSosStaleTerminal, deadline: Long) {
+        Log.i(logTag, "NATIVE_SOS_PROMPT_OPENED terminal=${terminal.wire} deadlineAt=$deadline")
+        schedulePromptTimeoutLocked(deadline)
+        ProtectionSosPromptNotifications.show(context, deadline)
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "ownTagSosPromptOpened",
+            reason = terminal.wire,
+        )
+    }
+
+    private fun closePromptLocked(reason: String) {
+        sosPromptTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        sosPromptTimeoutRunnable = null
+        ProtectionSosPromptNotifications.cancel(context)
+        Log.i(logTag, "NATIVE_SOS_PROMPT_CLOSED reason=$reason")
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "ownTagSosPromptClosed",
+            reason = reason,
+        )
+    }
+
+    private fun schedulePromptTimeoutLocked(deadline: Long) {
+        sosPromptTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        sosPromptTimeoutRunnable = Runnable {
+            val effects = SosStaleEffects()
+            synchronized(sosLifecycleLock) {
+                sosPromptTimeoutRunnable = null
+                expirePromptLocked(System.currentTimeMillis(), effects)
+            }
+            runSosStaleEffects(effects)
+        }.also {
+            mainHandler.postDelayed(it, (deadline - System.currentTimeMillis()).coerceAtLeast(0L))
+        }
+    }
+
+    /** F17c: no answer by the deadline (also checked before any frame): send the SOS. */
+    private fun expirePromptLocked(now: Long, effects: SosStaleEffects) {
+        val state = sosStaleGuard ?: return
+        val deadline = state.promptDeadlineAt ?: return
+        if (now < deadline) return
+        applySosStaleOutcomeLocked(ProtectionSosStaleGuard.onAnswer(state, "timeout", now), effects)
+    }
+
+    /**
+     * F17c: send / timeout opens the SOS through the native create, as for a
+     * TAG SOS whose countdown elapsed (Dart claims it into the MQTT outbox; it
+     * is cancellable as usual). Nothing when a native SOS is already running.
+     * Only while the native lifecycle is idle ([ProtectionSosNativeDecision.onPromptSos]).
+     */
+    private fun openNativeSosFromPromptLocked(reason: String) {
+        val now = System.currentTimeMillis()
+        cancelSosActivationTimeout()
+        // F17c item 1: the prompt's SOS is a new native cycle.
+        openSosCycleIdLocked(alreadyOpen = false)
+        pendingSosLifecycleState = ProtectionSosLifecycleState.createPending
+        runtimeStore.recordPreSosLifecycle(
+            state = pendingSosLifecycleState.name,
+            cycleKey = "ambiguous-prompt",
+            owner = "device",
+            startedAt = now,
+            expectedActivationAt = now,
+            originatorNodeId = connectedBleNodeId,
+            packetId = null,
+        )
+        Log.i(logTag, "NATIVE_SOS_PROMPT_SOS_OPENED reason=$reason")
     }
 
     private fun scheduleSosStaleDecideLocked(decideAt: Long) {
@@ -2230,7 +2585,12 @@ internal class ProtectionBleRuntimeOwner(
 
     private fun disarmSosStaleGuardLocked(reason: String) {
         val had = sosStaleGuard != null
+        val promptOpen = sosStaleGuard?.promptDeadlineAt != null
         cancelSosStaleDecide()
+        if (promptOpen) {
+            // Answered, timeout, burst, TAG close, cap, session, new SDK SOS.
+            closePromptLocked(reason)
+        }
         sosStaleGuard = null
         runtimeStore.saveSosStaleGuard(null)
         if (had) {
@@ -2241,16 +2601,12 @@ internal class ProtectionBleRuntimeOwner(
     /**
      * Reconnect never writes a stop by itself: a COUNTDOWN started while
      * disconnected is a genuine new SOS. A TAG still running the closed SOS is
-     * stopped on its next retry frame; one silent > 90 s disarms by gap.
+     * asked about on its next retry frame (F17c: no gap or cap end).
      */
     private fun onSosStaleGuardReconnected(reason: String) {
         val now = System.currentTimeMillis()
         synchronized(sosLifecycleLock) {
             val current = sosStaleGuard ?: return
-            if (ProtectionSosStaleGuard.isExpired(current, now)) {
-                disarmSosStaleGuardLocked("cap")
-                return
-            }
             cancelSosStaleDecide()
             val next = ProtectionSosStaleGuard.onReconnected(current, now)
             sosStaleGuard = next
@@ -2259,10 +2615,18 @@ internal class ProtectionBleRuntimeOwner(
         Log.i(logTag, "NATIVE_SOS_STALE_GUARD_RECONNECTED reason=$reason")
     }
 
-    /** The SDK's own terminal command, written by this native GATT session. */
+    /**
+     * The SDK's own terminal command. F17c: written by this native GATT session
+     * when it owns a writable link; otherwise (Dart owns the link, e.g. the app
+     * in the foreground) Dart writes it on `ownTagSosStopRequired`.
+     */
     private fun sendSosStaleStop(reason: String) {
         val current = synchronized(sosLifecycleLock) { sosStaleGuard } ?: return
         val terminal = current.terminal
+        if (!runtimeActive || lastPublishedCommandReadiness?.ready != true) {
+            requestDartSosStaleStop(terminal, reason)
+            return
+        }
         Log.i(
             logTag,
             "NATIVE_SOS_STALE_STOP_SENT terminal=${terminal.wire} command=${terminal.commandLabel} reason=$reason",
@@ -2272,12 +2636,34 @@ internal class ProtectionBleRuntimeOwner(
             payload = terminal.stopPayload,
             forceCmdCharacteristic = true,
         ) { result ->
+            val success = result["success"] == true
             Log.i(
                 logTag,
-                "NATIVE_SOS_STALE_STOP_RESULT terminal=${terminal.wire} " +
-                    "success=${result["success"] == true}",
+                "NATIVE_SOS_STALE_STOP_RESULT terminal=${terminal.wire} success=$success",
             )
+            // F17c: a written stop is no longer owed (the next retry asks).
+            noteOwnTagSosStopWritten(success, source = "native")
+            // Only while the guard is still armed: a new SDK SOS may have
+            // disarmed it while the write was queued (M3).
+            if (!success && synchronized(sosLifecycleLock) { sosStaleGuard } != null) {
+                requestDartSosStaleStop(terminal, "${reason}_native_write_failed")
+            }
         }
+    }
+
+    private fun requestDartSosStaleStop(terminal: ProtectionSosStaleTerminal, reason: String) {
+        Log.i(
+            logTag,
+            "NATIVE_SOS_STALE_STOP_REQUIRED_FROM_DART terminal=${terminal.wire} reason=$reason " +
+                "dartListening=${ProtectionRuntimeBridge.isFlutterListening()}",
+        )
+        // M-A: delivered to a live listener only, never buffered and replayed
+        // later (ProtectionPlatformEventBuffer.liveOnlyTypes).
+        ProtectionRuntimeBridge.recordPlatformEvent(
+            context = context,
+            type = "ownTagSosStopRequired",
+            reason = terminal.wire,
+        )
     }
 
     private fun scheduleSosActivationTimeout(expectedActivationAt: Long = System.currentTimeMillis() + sosActivationDelayMs) {

@@ -129,6 +129,7 @@ export 'src/tag_alerts/tag_alert_permission_state.dart';
 export 'src/tag_alerts/tag_alert_settings.dart';
 export 'src/tag_alerts/tag_alert_text.dart';
 export 'src/tag_alerts/tag_alerts_control.dart';
+export 'src/ambiguous_sos/ambiguous_tag_sos_prompt.dart';
 export 'src/tag_alerts/tag_alerts_exception.dart';
 export 'src/tag_alerts/tag_battery_alert_policy.dart';
 export 'src/tag_alerts/tag_disconnect_alert_policy.dart';

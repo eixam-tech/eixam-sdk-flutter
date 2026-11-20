@@ -2260,6 +2260,7 @@ final class _FakeSosRemoteDataSource implements SosRemoteDataSource {
     String? relayHardwareId,
     String? incidentId,
     String? cycleKey,
+    DateTime? occurredAt,
   }) async {
     cancelCalls += 1;
     lastCancelIncidentId = incidentId;
@@ -2306,7 +2307,10 @@ class _FakeOperationalRealtimeClient implements OperationalRealtimeClient {
   Future<void> Function(DateTime timestamp)? publishSosCancelHook;
 
   @override
-  Future<void> publishOperationalSosCancel({required DateTime timestamp}) async {
+  Future<void> publishOperationalSosCancel({
+    required DateTime timestamp,
+    int? ageMs,
+  }) async {
     publishedSosCancels.add(timestamp);
     await publishSosCancelHook?.call(timestamp);
   }

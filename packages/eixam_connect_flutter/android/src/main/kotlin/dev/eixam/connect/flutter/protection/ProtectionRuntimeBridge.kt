@@ -308,6 +308,54 @@ internal object ProtectionRuntimeBridge {
                     else store.ackPendingExternalRelayCancel(signature),
                 )
             }
+            "observeOwnTagSosFrame" -> {
+                // F17c: Dart forwards every own-TAG SOS frame it receives itself; the
+                // native store is the only classifier and answers with a verdict.
+                val arguments = call.arguments as? Map<*, *>
+                val bytes = (arguments?.get("bytes") as? List<*>)
+                    ?.mapNotNull { (it as? Number)?.toInt() }
+                    .orEmpty()
+                val receivedAtMs = (arguments?.get("receivedAtMs") as? Number)?.toLong()
+                val (verdict, cycleId) = ensureRuntimeOwner(context)
+                    .observeForwardedOwnTagSosFrame(bytes, receivedAtMs)
+                result.success(
+                    if (cycleId == null) {
+                        mapOf("verdict" to verdict.name)
+                    } else {
+                        mapOf("verdict" to verdict.name, "cycleId" to cycleId)
+                    },
+                )
+            }
+            "disarmSosStaleGuard" -> {
+                val reason = (call.arguments as? Map<*, *>)?.get("reason") as? String ?: "sdk"
+                ensureRuntimeOwner(context).disarmSosStaleGuard(reason)
+                result.success(null)
+            }
+            "answerOwnTagSosPrompt" -> {
+                // F17c: the user's answer from the app's full-screen prompt.
+                val choice = (call.arguments as? Map<*, *>)?.get("choice") as? String
+                if (choice != "sendSos" && choice != "stopTag") {
+                    result.error("invalid_choice", "choice must be sendSos or stopTag", null)
+                } else {
+                    result.success(
+                        mapOf("action" to ensureRuntimeOwner(context).answerOwnTagSosPrompt(choice, source = "app")),
+                    )
+                }
+            }
+            "reportOwnTagSosStopWritten" -> {
+                // F17c: Dart wrote (or failed to write) the record's stop.
+                val success = (call.arguments as? Map<*, *>)?.get("success") as? Boolean ?: false
+                ensureRuntimeOwner(context).noteOwnTagSosStopWritten(success, source = "dart")
+                result.success(null)
+            }
+            "getOwnTagSosPrompt" -> {
+                result.success(ensureRuntimeOwner(context).currentOwnTagSosPrompt())
+            }
+            "noteOwnTagSosLink" -> {
+                val up = (call.arguments as? Map<*, *>)?.get("up") as? Boolean ?: false
+                ensureRuntimeOwner(context).noteForwardedOwnTagLink(up)
+                result.success(null)
+            }
             "closeNativeSosCycle" -> {
                 // F17b: the SDK ended an SOS. The native runtime closes its cycle and
                 // stops the TAG itself when it may still be running that SOS.
@@ -316,6 +364,16 @@ internal object ProtectionRuntimeBridge {
                     terminalWire = arguments?.get("terminal") as? String,
                     nodeId = (arguments?.get("nodeId") as? Number)?.toInt(),
                     force = arguments?.get("force") as? Boolean ?: false,
+                    // F17c Phase 2: when the SDK issued this stop (absent =
+                    // today's behaviour).
+                    issuedAtMs = (arguments?.get("issuedAtMs") as? Number)?.toLong(),
+                    // F17c item 1: an automated stop names its native cycle; the
+                    // user's own action targets the current one.
+                    target = ProtectionSosStopTarget.fromArguments(
+                        targetCurrentCycle = arguments?.get("targetCurrentCycle") as? Boolean == true,
+                        targetCycleId = arguments?.get("targetCycleId") as? String,
+                    ),
+                    targetCycleId = arguments?.get("targetCycleId") as? String,
                 )
                 result.success(null)
             }

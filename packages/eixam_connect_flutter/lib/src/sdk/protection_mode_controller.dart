@@ -1100,6 +1100,11 @@ class ProtectionModeController {
         _emitStatus();
         _emitDiagnostics();
         break;
+      case ProtectionPlatformEventType.ownTagSosStopRequired:
+      case ProtectionPlatformEventType.ownTagSosPromptOpened:
+      case ProtectionPlatformEventType.ownTagSosPromptClosed:
+        // F17c: handled by the SDK (stale stop, ambiguous-SOS prompt).
+        break;
     }
 
     final shouldRehydrate =
